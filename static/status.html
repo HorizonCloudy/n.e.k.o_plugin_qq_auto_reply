@@ -139,7 +139,7 @@ ul.list .empty { color:var(--text-secondary); font-size:12px; padding:4px 0; }
     <!-- 流程小字 + 管理员提醒。两种模式的流程不同，按当前模式显示其中一条。
          "配管理员"这步最容易漏：漏了的现象是"连上了、也收到消息了，但她一声不吭"。 -->
     <div class="muted" style="margin-top:12px;line-height:1.8">
-      <span id="mode-hint-napcat" data-i18n="ui.status.flow_napcat">流程：部署 NapCat → 扫码登录 → 自动补写配置并启动自动回复。<b>记得在下方「信任名单」把自己的 QQ 号设为管理员</b> —— 管理员才是「主人」，其余人只是好友。</span>
+      <span id="mode-hint-napcat" data-i18n="ui.status.flow_napcat">流程：填写机器人 QQ 号 → 部署并写入配置 → 使用该账号扫码登录 → 自动回复。<b>记得在下方「信任名单」把自己的 QQ 号设为管理员</b> —— 管理员才是「主人」，其余人只是好友。</span>
       <span id="mode-hint-openplat" style="display:none" data-i18n="ui.status.flow_openplat">流程：扫码绑定 → 自动写入凭据并启动自动回复，<b>扫码的人会自动成为管理员</b>。群里其他人的 openid 与 QQ 号对不上，需要手动「合并身份」才会被当成同一个人。</span>
     </div>
   </div>
@@ -157,8 +157,17 @@ ul.list .empty { color:var(--text-secondary); font-size:12px; padding:4px 0; }
   <div id="sec-napcat">
   <div class="card">
     <h2 data-i18n="ui.status.deploy">一键部署</h2>
+    <div id="napcat-login" role="status" aria-live="polite" style="margin-bottom:12px;line-height:1.8">
+      <strong id="napcat-login-title">正在检查登录状态…</strong>
+      <div class="row" style="margin:8px 0;gap:16px;flex-wrap:wrap">
+        <span id="napcat-account-state">QQ 登录：检测中</span>
+        <span id="napcat-connection-state">插件连接：检测中</span>
+        <span id="napcat-reply-state">自动回复：检测中</span>
+      </div>
+      <div id="napcat-login-detail" class="muted">状态与二维码会自动更新</div>
+    </div>
     <div class="row">
-      <input id="uin" inputmode="numeric" placeholder="机器人 QQ 号（选填）" data-i18n-placeholder="ui.status.uin_ph">
+      <input id="uin" required aria-label="机器人 QQ 号（必填）" inputmode="numeric" placeholder="机器人 QQ 号（必填）" data-i18n-placeholder="ui.status.uin_ph">
       <button id="btn-deploy" data-i18n="ui.status.deploy_btn">一键部署</button>
       <button class="ghost" id="btn-apply" data-i18n="ui.status.apply_btn">补写 OneBot 配置</button>
     </div>
@@ -169,7 +178,7 @@ ul.list .empty { color:var(--text-secondary); font-size:12px; padding:4px 0; }
     <h2 data-i18n="ui.qrcode.title">登录二维码</h2>
     <!-- 这句放在码**上面**：得先读到再扫。扫错号的代价是"登录成功了，却发现
          没人和她说话"。 -->
-    <div class="muted" style="margin-bottom:12px;line-height:1.8">
+    <div id="qr-instructions" class="muted" style="margin-bottom:12px;line-height:1.8">
       <span data-i18n="ui.qrcode.which_account">用「猫娘要登录的那个 QQ 号」扫码</span><br>
       <span data-i18n="ui.qrcode.chat_with_other">然后用「另一个 QQ 号」去找她聊天 —— 她自己那个号没法跟自己聊</span>
     </div>
@@ -373,10 +382,53 @@ function applyMode(mode) {
 }
 
 /* 只读区：二维码 + 启动异常 —— 一键流程需要它们判断下一步（扫码/排错） */
-async function load() {
+let dashboardLoad = null;
+function load() {
+  if (!dashboardLoad) dashboardLoad = loadDashboardState().finally(() => { dashboardLoad = null; });
+  return dashboardLoad;
+}
+function renderNapcatLogin(rt, login, syncError = '') {
+  const online = login.status === 'online' && !!String(login.self_id || '').trim();
+  const connected = online || rt.onebot_connected === true;
+  const qr = online ? '' : (rt.qrcode_url || '');
+  const title = document.getElementById('napcat-login-title');
+  const detail = document.getElementById('napcat-login-detail');
+  const img = document.getElementById('qr');
+  const empty = document.getElementById('qr-empty');
+  document.getElementById('napcat-login').dataset.state = online ? 'online' : (qr ? 'scan' : 'pending');
+  document.getElementById('napcat-account-state').textContent = 'QQ 登录：' + (online ? '已登录' : (qr && !connected ? '等待扫码确认' : '尚未确认'));
+  document.getElementById('napcat-connection-state').textContent = '插件连接：' + (connected ? '已连接' : (rt.napcat_running || rt.auto_reply_running ? '等待连接' : '未连接'));
+  document.getElementById('napcat-reply-state').textContent = '自动回复：' + (rt.auto_reply_running ? (online ? '运行中' : '已启动，等待登录确认') : '未启动');
+  title.textContent = online ? '已登录 · 已连接 · ' + (login.nickname ? login.nickname + '（' + login.self_id + '）' : login.self_id)
+    : (connected ? '已连接，正在确认 QQ 登录状态' : (rt.startup_error ? '启动异常，尚未确认登录' : (qr ? '等待扫码登录' : (rt.napcat_running || rt.auto_reply_running ? '等待连接，正在确认登录状态' : '未连接，尚未确认登录'))));
+  detail.textContent = online
+    ? 'QQ 已连接，' + (rt.auto_reply_running ? '自动回复运行中。' : '自动回复尚未启动。') + '无需再次扫码。'
+    : (syncError || login.last_error || rt.startup_error || (qr ? '请用机器人 QQ 扫码，二维码和登录状态会自动更新。' : '未收到在线确认；若 QQ 已登录，请检查 OneBot 连接。页面会自动重试。'));
+  img.style.display = qr ? '' : 'none';
+  if (qr) img.src = qr + '?_ts=' + Date.now(); else img.removeAttribute('src');
+  empty.style.display = qr ? 'none' : '';
+  empty.textContent = online ? '已登录，无需二维码' : (syncError || '暂未获取到二维码，正在自动检测；也可点击“刷新二维码”。');
+  document.getElementById('qr-instructions').style.display = online ? 'none' : '';
+  document.getElementById('btn-qr').disabled = online;
+}
+async function loadDashboardState() {
   let d;
   try { d = await call('query', {action:'dashboard'}); }
-  catch (e) { showErr('读取状态失败：' + ((e && e.message) ? e.message : e)); return; }
+  catch (e) {
+    renderNapcatLogin({}, {status:'error', last_error:'连接检查失败，将自动重试。'});
+    document.getElementById('napcat-login-title').textContent = '登录状态暂时无法获取';
+    document.getElementById('napcat-login-detail').textContent = '连接检查失败，将自动重试。';
+    document.getElementById('napcat-account-state').textContent = 'QQ 登录：状态未知';
+    document.getElementById('napcat-connection-state').textContent = '插件连接：状态未知';
+    document.getElementById('napcat-reply-state').textContent = '自动回复：状态未知';
+    showErr('读取状态失败：' + ((e && e.message) ? e.message : e)); return;
+  }
+  let syncError = '';
+  if ((d.settings || {}).qq_connection_mode !== 'open_platform'
+      && !((d.login || {}).status === 'online' && (d.login || {}).self_id)) {
+    try { d = await call('deploy', {action:'qrcode_sync'}); }
+    catch (e) { syncError = '二维码同步失败，将自动重试：' + (e.message || e); }
+  }
   /* 每一段各自 try：页面刚打开时任何一段抛了都不该把后面全带下去 ——
      那种"开页空白、点一下刷新才出来"的现象就是这么来的。 */
   const st = d.settings || {};
@@ -386,15 +438,7 @@ async function load() {
   const rt = d.runtime || {};
   try {
     if (!openplat) {
-      /* NapCat 登录二维码只对 OneBot 那套有意义 */
-      const qr = rt.qrcode_url || '';
-      const img = document.getElementById('qr');
-      if (img) {
-        img.style.display = qr ? '' : 'none';
-        if (qr) img.src = qr + '?_ts=' + Date.now();
-      }
-      const empty = document.getElementById('qr-empty');
-      if (empty) empty.style.display = qr ? 'none' : '';
+      renderNapcatLogin(rt, d.login || {}, syncError);
     }
   } catch (e) { /* 二维码区失败不该挡住下面的名单 */ }
   try { renderLists(d.permissions || {}); } catch (e) { /* 同上 */ }
@@ -566,6 +610,7 @@ function startLoginPoll(){
       await load();
     } else if (r.status === 'already') {
       stopLoginPoll();          /* 已经收尾过了，别再打接口 */
+      await load();
     } else if (asked % 12 === 0) {
       deployLog('仍在等待扫码登录…');   /* 约每分钟提一次，免得日志刷屏 */
     }
@@ -578,23 +623,24 @@ function startLoginPoll(){
 const DEPLOY_TIMEOUT_MS = 300000;
 
 document.getElementById('btn-deploy').addEventListener('click', async () => {
+  const uinInput = document.getElementById('uin');
+  const uin = uinInput.value.trim();
+  if (!/^[1-9][0-9]*$/.test(uin)) {
+    showErr('请先填写有效的机器人 QQ 号（非零开头的纯数字），并使用该账号登录 NapCat。');
+    uinInput.focus();
+    return;
+  }
   stopLoginPoll();
   busy('btn-deploy', true);
   document.getElementById('deploy-log').innerHTML = '';
   deployLog('开始一键部署（先检查运行环境；需要时才下载 NapCat，那时可能要几分钟）…');
   try {
-    const r = await call('deploy', {action:'one_click',  uin: document.getElementById('uin').value.trim() },
+    const r = await call('deploy', {action:'one_click', uin },
                          { timeout: DEPLOY_TIMEOUT_MS });
-    deployLog(r.qrcode_ready ? '完成：二维码已就绪，请扫码登录' : '完成：暂未出现二维码，可稍后点「刷新二维码」');
-    /* 登录成功后要记自动登录、补写配置、起自动回复 —— 以前这步要用户自己点
-       「补写 OneBot 配置」。现在开一个轮询替用户盯着，扫完就自动收尾。
-
-       **填没填 QQ 号都要盯**。填了的话配置在部署阶段就写好了、NapCat 登录后会直接
-       拨进来，看似不用管；但"记下自动登录账号"这步仍然在等登录确认（后端按 self_id
-       判，那时才拿得到真正登进去的号 —— 用户手填的未必就是它）。 */
-    deployLog(r.needs_uin
-      ? '未填 QQ 号 —— 扫码登录后会自动收尾，不必手动点「补写 OneBot 配置」'
-      : '登录成功后会自动记下自动登录账号');
+    deployLog(r.logged_in ? '完成：QQ ' + r.login_uin + ' 已登录，无需扫码'
+      : (r.qrcode_ready ? '完成：二维码已就绪，请扫码登录' : '部署完成：正在自动检测登录状态并更新二维码'));
+    // 配置已预写；继续等待真实登录，确认后记下自动登录账号。
+    deployLog('请使用填写的机器人 QQ 号登录；登录成功后会自动记下自动登录账号');
     startLoginPoll();
     /* 自动回复的收尾结果单独报：反向模式下它是"先监听、等 NapCat 登录后自动接上"，
        所以此刻报"未启动"多半只是正向模式还没登录，不是部署失败。 */
@@ -789,15 +835,6 @@ document.getElementById('btn-upload-sticker').addEventListener('click', uploadSt
 (async () => {
   await load();
   setAuto(true);
-  /* 开页补一次二维码同步。`load()` 只读静态缓存里的那张码，而 NapCat 可能已经
-     换过码 —— 不补这一下，刚打开看到的可能是过期的二维码，得手动点「刷新二维码」。
-     开放平台那套没有登录码，跳过。 */
-  if (lastMode !== 'open_platform') {
-    try {
-      await call('deploy', {action: 'qrcode_sync'});
-      await load();
-    } catch (e) { /* 补同步失败不影响页面已经渲染出的内容 */ }
-  }
 })();
 </script>
 </body>

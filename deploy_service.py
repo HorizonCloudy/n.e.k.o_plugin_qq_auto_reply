@@ -123,6 +123,9 @@ class QQDeployService:
                      auto_start: bool = True,
                      emit: Callable[[dict], None] | None = None) -> dict:
         """跑完整条部署。返回结果字典；失败抛 ``RuntimeError``。"""
+        uin = str(uin or "").strip()
+        if not uin or not uin.isascii() or not uin.isdigit() or uin.startswith("0"):
+            raise RuntimeError("请先填写有效的机器人 QQ 号（非零开头的纯数字），并使用该账号登录 NapCat。")
         # 节流表是实例状态、跨次部署不清零：第二次跑到某个百分比时，若它恰好等于
         # 上次留下的最后值，那一行会被当成"重复"整行吞掉（表现为进度凭空少一格）。
         self._progress_last.clear()
@@ -139,46 +142,36 @@ class QQDeployService:
         napcat_dir = svc.get_napcat_directory()
         launcher = napcat_platform.find_launcher(napcat_dir) if napcat_dir else None
 
-        if configured and launcher is None:
-            # 配置指向的目录里没有启动器 —— 那是个**陈旧存档**（仓库搬过、目录被手删、
-            # 或早期版本把解析结果回填过）。这里不硬失败，而是就地清掉它：
-            # 一键部署无论如何都只装到 ``bundled_napcat_dir()``（见 _fetch 的
-            # target），所以这个配置**既不可能被满足、也不影响安装位置** ——
-            # 留着只会让用户卡在"部署不了、也改不动"的死角。
-            #
-            # 原实现是 raise（注释说"不要帮他装到别处，那会让设置与实际位置长期
-            # 不一致"）—— 那条理由在"配置能决定安装位置"的前提下成立，而这个前提
-            # 不成立。清掉存档反而是唯一能让设置与实际重新一致的动作。
-            step("locate", f"配置的 NapCat 目录里没有启动器，已清除该存档: {configured}")
+        if configured and not napcat_dir.is_dir():
+            # 目录已不存在时回退到自带位置；目录还在但启动器损坏则原地修复。
+            step("locate", f"配置的 NapCat 目录不存在，已清除该存档: {configured}")
             await self.plugin.settings_service.save_settings(napcat_directory="")
             configured = ""
             napcat_dir = svc.get_napcat_directory()
             launcher = napcat_platform.find_launcher(napcat_dir) if napcat_dir else None
-        if launcher is not None and not force:
+        if not configured and launcher is None:
+            napcat_dir = bundled_napcat_dir()
+        if napcat_dir.is_dir() and not force:
             step("locate", f"正在检查已安装 NapCat 的完整性: {napcat_dir}")
             ok, detail = await asyncio.to_thread(napcat_integrity.check_installation, napcat_dir, launcher=launcher)
             if not ok:
-                raise RuntimeError(f"NapCat 完整性检查未通过: {detail}。请修复或重新安装 NapCat。")
-            step("locate", f"已有 NapCat: {napcat_dir}；{detail}")
+                step("locate", f"NapCat 完整性检查未通过: {detail}；正在自动修复，保留配置和用户数据")
+                napcat_dir = await self._fetch(step, emit, repair_target=napcat_dir)
+                step("locate", "NapCat 自动修复完成，继续部署")
+            else:
+                step("locate", f"已有 NapCat: {napcat_dir}；{detail}")
         else:
             step("locate", "未发现可用 NapCat，准备下载")
             napcat_dir = await self._fetch(step, emit)
 
         # ③ 写配置（放在启动之前，省一次热读往返；不是硬性要求）--------
         mode = str(self._settings().get("qq_connection_mode") or "napcat")
-        uin = str(uin or "").strip()
         # 先把目录/地址写回插件：一是配置页要显示得对，二是下面 _write_config
         # 读的就是这里补出来的 onebot_url —— 顺序反了两边就对不上。
         await self._persist_connection_settings(napcat_dir, mode, step, emit)
-        if uin:
-            await self._write_config(napcat_dir, uin, mode, step, emit)
-            # 记下"这份配置是插件预写的"：登录轮询靠它区分判据 —— 预写过就不能再拿
-            # ``onebot11_<uin>.json`` 出现当登录信号，那文件此刻就已经在了。
-            self.plugin._deploy_prewrote_onebot_uin = str(uin)
-        else:
-            self.plugin._deploy_prewrote_onebot_uin = ""
-            step("config", "未填机器人 QQ 号：扫码登录后请点「补写 OneBot 配置」",
-                 needs_uin=True)
+        await self._write_config(napcat_dir, uin, mode, step, emit)
+        # 预写的账号配置不能作为已登录的证据，仍需等待实时连接确认。
+        self.plugin._deploy_prewrote_onebot_uin = uin
 
         # ④ 先起自动回复，**再**启动 NapCat ------------------------
         #
@@ -200,15 +193,21 @@ class QQDeployService:
 
         # ⑥ 二维码 -----------------------------------------------
         ready = await self._wait_qrcode(svc)
-        step("qrcode", "二维码已就绪，请扫码登录" if ready
-             else "暂未出现二维码，NapCat 可能仍在启动（可点「刷新二维码」重试）",
-             ready=ready)
+        login_uin = await self._online_login_uin()
+        if login_uin:
+            ready = False
+        step("qrcode", f"QQ {login_uin} 已登录，无需扫码" if login_uin else (
+            "二维码已就绪，请扫码登录" if ready
+            else "尚未确认登录，页面将自动检测登录状态并更新二维码"
+        ), ready=ready, logged_in=bool(login_uin))
 
         return {
             "ok": True,
             "napcat_directory": str(napcat_dir),
             "uin": uin,
             "qrcode_ready": ready,
+            "logged_in": bool(login_uin),
+            "login_uin": login_uin,
             "needs_uin": not uin,
             "steps": steps,
             **self.plugin._auto_start_fields(auto),
@@ -236,11 +235,11 @@ class QQDeployService:
             )
         step("node", f"未检测到系统 Node（{ver}）；{why}，继续部署")
 
-    async def _fetch(self, step, emit) -> Path:
-        """下载并解包到插件自带位置。"""
+    async def _fetch(self, step, emit, *, repair_target: Path | None = None) -> Path:
+        """下载并解包；自动修复使用原安装目录，避免丢失自定义路径的数据。"""
         self._check_node(step)
 
-        target = bundled_napcat_dir()
+        target = Path(repair_target) if repair_target is not None else bundled_napcat_dir()
         asset = napcat_install.asset_name()
         downloads = self.plugin.data_path("downloads")
 
@@ -280,9 +279,15 @@ class QQDeployService:
             except RuntimeError:
                 pass  # 循环已关（部署被打断/进程在退）：进度是尽力而为，别掀翻解包
 
+        repair_options = {}
+        if repair_target is not None:
+            step("fetch", "准备替换损坏程序；停止插件管理的 NapCat，校验新文件后保留数据并替换")
+            await self.plugin.napcat_service.stop_managed_napcat()
+            repair_options["validate_installation"] = True
         await asyncio.to_thread(
             napcat_install.extract_zip, zip_path, target,
             progress=_on_extract_progress,
+            **repair_options,
         )
         # 校验通过、解包完成，zip 已无用；留着白占 28MB。
         zip_path.unlink(missing_ok=True)
@@ -356,6 +361,8 @@ class QQDeployService:
     async def _wait_qrcode(self, svc) -> bool:
         deadline = time.time() + QRCODE_WAIT_SECONDS
         while time.time() < deadline:
+            if await self._online_login_uin():
+                return False
             try:
                 if await svc.sync_napcat_qrcode_into_static():
                     return True
@@ -363,6 +370,18 @@ class QQDeployService:
                 pass
             await asyncio.sleep(1.0)
         return False
+
+    async def _online_login_uin(self) -> str:
+        """仅实时连接可确认在线；历史配置文件不作为页面登录状态。"""
+        runtime = getattr(self.plugin, "runtime_service", None)
+        if runtime is not None:
+            try:
+                payload = await runtime.fetch_login_status_payload()
+            except Exception:
+                return ""
+            if isinstance(payload, dict) and payload.get("status") == "online":
+                return str(payload.get("self_id") or "").strip()
+        return ""
 
     async def poll_login(self, *, auto_start: bool = True,
                          emit: Callable[[dict], None] | None = None) -> dict:
@@ -423,16 +442,9 @@ class QQDeployService:
 
     async def _detect_login(self, napcat_dir: Path, *, prewrote: str) -> str:
         """已登录的 QQ 号；还没登录返回空串。判据见 ``poll_login`` 的说明。"""
-        runtime = getattr(self.plugin, "runtime_service", None)
-        if runtime is not None:
-            try:
-                payload = await runtime.fetch_login_status_payload()
-            except Exception:
-                payload = {}
-            if isinstance(payload, dict) and payload.get("status") == "online":
-                self_id = str(payload.get("self_id") or "").strip()
-                if self_id:
-                    return self_id
+        self_id = await self._online_login_uin()
+        if self_id:
+            return self_id
         if prewrote:
             # 插件预写过配置 → 文件判据此刻恒真，不能用
             return ""

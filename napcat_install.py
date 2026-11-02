@@ -300,7 +300,8 @@ def safe_member_path(name: str, root: Path) -> Path | None:
 
 
 def extract_zip(zip_path: Path | str, target_dir: Path | str,
-                *, progress: Callable[[int, int], None] | None = None) -> Path:
+                *, progress: Callable[[int, int], None] | None = None,
+                validate_installation: bool = False) -> Path:
     """安全解包到 ``target_dir``（先解到同级 staging，再原子提升）。
 
     原子提升的理由：解到一半失败时，目标目录要么还是旧的完整版本、要么不存在，
@@ -349,6 +350,10 @@ def extract_zip(zip_path: Path | str, target_dir: Path | str,
                     shutil.copy2(old, dest)
 
         napcat_integrity.write_manifest(staging, [i.filename for i in infos])
+        if validate_installation:
+            ok, detail = napcat_integrity.check_installation(staging)
+            if not ok:
+                raise RuntimeError(f"自动修复包完整性检查未通过，原安装已保留: {detail}")
 
         # 提升：旧目录先挪走（不是直接删 —— 删了就没法回滚），再改名，最后清掉旧的。
         if final.exists():

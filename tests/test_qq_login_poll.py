@@ -12,9 +12,32 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from plugin.plugins.qq_auto_reply import napcat_onebot_config as cfg
 from plugin.plugins.qq_auto_reply.deploy_service import QQDeployService
+
+
+async def test_already_online_does_not_wait_for_or_sync_a_stale_qrcode(tmp_path):
+    svc, _ = _svc(tmp_path, runtime_uin="123")
+    napcat = SimpleNamespace(sync_napcat_qrcode_into_static=AsyncMock(return_value=True))
+    assert await svc._wait_qrcode(napcat) is False
+    napcat.sync_napcat_qrcode_into_static.assert_not_called()
+    assert await svc._online_login_uin() == "123"
+
+
+async def test_saved_account_is_not_a_live_login_status(tmp_path):
+    svc, _ = _svc(tmp_path, logged_uin="123")
+    assert await svc._online_login_uin() == ""
+    napcat = SimpleNamespace(sync_napcat_qrcode_into_static=AsyncMock(return_value=True))
+    assert await svc._wait_qrcode(napcat) is True
+
+
+async def test_live_status_error_still_allows_qrcode(tmp_path):
+    svc, _ = _svc(tmp_path)
+    svc.plugin.runtime_service.fetch_login_status_payload = AsyncMock(side_effect=RuntimeError("offline"))
+    napcat = SimpleNamespace(sync_napcat_qrcode_into_static=AsyncMock(return_value=True))
+    assert await svc._wait_qrcode(napcat) is True
 
 
 def _svc(tmp_path, *, logged_uin: str = "", auto_ok: bool = True,
