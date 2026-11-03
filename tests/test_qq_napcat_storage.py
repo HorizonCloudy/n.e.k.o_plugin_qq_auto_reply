@@ -5,15 +5,18 @@ from plugin.plugins.qq_auto_reply import napcat_service as ns
 
 
 @pytest.mark.parametrize("configured", ["", "directory", "launcher"])
-async def test_migrated_install_survives_payload_replacement(tmp_path, monkeypatch, configured):
+@pytest.mark.parametrize("windows", [True, False])
+async def test_migrated_install_survives_payload_replacement(tmp_path, monkeypatch, configured, windows):
+    monkeypatch.setattr(ns.napcat_platform, "is_windows", lambda: windows)
+    launcher = "launcher.bat" if windows else "napcat.mjs"
     package = tmp_path / "package"
     old = package / "NapCat.Shell"
     old.mkdir(parents=True)
-    (old / "launcher.bat").write_text("launcher")
+    (old / launcher).write_text("launcher")
     (old / "config").mkdir()
     (old / "config/account.json").write_text("account data")
     monkeypatch.setattr(ns, "bundled_napcat_dir", lambda: old)
-    settings = {"napcat_directory": str(old / "launcher.bat") if configured == "launcher" else str(old) if configured else ""}
+    settings = {"napcat_directory": str(old / launcher) if configured == "launcher" else str(old) if configured else ""}
     svc = ns.QQNapcatService(get_settings=lambda: settings, config_dir=package, data_dir=tmp_path / "persistent")
     await svc.migrate_napcat_storage()
     target = tmp_path / "persistent/NapCat.Shell"
@@ -22,7 +25,7 @@ async def test_migrated_install_survives_payload_replacement(tmp_path, monkeypat
     # Simulate the host replacing the entire plugin payload on update.
     shutil.rmtree(package)
     assert svc.get_napcat_directory() == target
-    assert svc.find_napcat_launcher() == target / "launcher.bat"
+    assert svc.find_napcat_launcher() == target / launcher
     await svc.migrate_napcat_storage()
     assert (target / "config/account.json").read_text() == "account data"
 
