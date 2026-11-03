@@ -176,6 +176,21 @@ class QQReplyGenerationService:
                 session_key=session_key, user_data=user_data, context=context,
                 reply_text=ai_reply,
             )
+            deepchat = getattr(self.plugin, "deepchat_service", None)
+            if deepchat is not None and not is_synthetic_source(
+                getattr(context, "source_kind", "")
+            ):
+                try:
+                    deepchat.writeback(
+                        sender_id=context.sender_id,
+                        text=context.message,
+                        is_group=context.is_group,
+                        group_id=context.group_id,
+                    )
+                except Exception as deepchat_error:  # noqa: BLE001
+                    self.plugin.logger.warning(
+                        f"[DeepChat] 情绪/关系写回失败: {deepchat_error}"
+                    )
             self.plugin.logger.info(f"AI 生成回复完成 (会话: {session_key}, length: {len(ai_reply)})")
             stage_trace.status = "success"
             stage_trace.metadata["reply_length"] = len(ai_reply)

@@ -457,6 +457,18 @@ class QQReplyContextNode:
             system_prompt,
             getattr(instruction_bundle, "cross_session_section", ""),
         )
+        deepchat = getattr(self.plugin, "deepchat_service", None)
+        if deepchat is not None and not is_synthetic_source(source_kind):
+            try:
+                system_prompt = deepchat.enrich_system_prompt(
+                    system_prompt=system_prompt,
+                    sender_id=sender_id,
+                    group_id=group_id,
+                    is_group=is_group,
+                    sender_name=user_title,
+                )
+            except Exception as exc:  # noqa: BLE001 —— 状态注入失败不应阻断回复
+                self.plugin.logger.warning(f"[DeepChat] 情绪/关系片段注入失败: {exc}")
         self.plugin._emit_log("INFO", f"[UserMsg] (system {len(system_prompt)}字) {prompt_message[:200]}")
 
         return QQReplyContext(

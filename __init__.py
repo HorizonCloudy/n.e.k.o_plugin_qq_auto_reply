@@ -47,6 +47,7 @@ from .backlog_models import QQBacklogMessage as QQBacklogMessage
 from .backlog_service import QQBacklogService
 from .config_store import QQAutoReplyConfigStore
 from .dashboard_service import QQDashboardService
+from .deepchat import DeepChatService
 from .deploy_service import QQDeployService
 from .display_name_service import QQDisplayNameService
 from .enrichment import QQMessageEnricher
@@ -182,6 +183,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self.attention_service = QQAttentionService(self)
         self.prompt_builder = QQPromptBuilder(self)
         self.memory_bridge = QQMemoryBridge(self)
+        self.deepchat_service = DeepChatService(self)
         self.display_name_service = QQDisplayNameService(self)
         self.memory_tool_service = QQMemoryToolService(self)
         # 插件工具桥（只在开放平台启用）：把别的插件的能力按分级挂到 QQ 会话上。
@@ -221,6 +223,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self._group_digest_task: Optional[asyncio.Task] = None
         self._trust_migration_task: Optional[asyncio.Task] = None
         self._identity_scope_task: Optional[asyncio.Task] = None
+        self._deepchat_autonomy_task: Optional[asyncio.Task] = None
         # 只有在存量 trust 池成功推给 memory_server 之后才开始上报
         # speaker_tier / speaker_activity_events。纵深防御第一层，服务端的
         # legacy_barriers 是第二层。
@@ -902,6 +905,16 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         if followups is not None:
             followups.ensure_loop()
 
+        # DeepChat 自主调度：默认关闭，循环内部每轮先查开关；开启后
+        # 只在私聊过、关系达标、非静音时段且过了冷却的用户里挑一个。
+        deepchat = getattr(self, "deepchat_service", None)
+        if deepchat is not None:
+            task = getattr(self, "_deepchat_autonomy_task", None)
+            if task is None or task.done():
+                self._deepchat_autonomy_task = asyncio.create_task(
+                    deepchat.autonomy_loop()
+                )
+
     async def _autostart_on_launch(self) -> None:
         """开机自启：起监听 / 拉起 NapCat。
 
@@ -1056,6 +1069,11 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             and not self._identity_scope_task.done()
         ):
             self._identity_scope_task.cancel()
+        if (
+            getattr(self, "_deepchat_autonomy_task", None)
+            and not self._deepchat_autonomy_task.done()
+        ):
+            self._deepchat_autonomy_task.cancel()
         if self._group_digest_task and not self._group_digest_task.done():
             self._group_digest_task.cancel()
         if getattr(self, "_purge_task", None) and not self._purge_task.done():
@@ -1129,6 +1147,108 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     async def open_ui(self, **_):
         return await self.dashboard_service.open_ui()
 
+    # ── deepchat：情绪与关系状态 ───────────────────────────────
+    #
+    # 注意力决定"要不要接话"，记忆决定"记得什么"；这里补的是"她现在
+    # 是什么心情、和这个人多熟"。全部走本地 SQLite（标准库），不额外
+    # 调用模型，也不改写既有注意力/记忆链路。
+
+    @plugin_entry(
+        id="dc_view_state",
+        name=tr("entries.dc_view_state.name", default="深度聊天：查看状态"),
+        description="查看某个 QQ 用户的情绪状态与关系值（好感/信任/互动次数/里程碑）。",
+        input_schema={"type": "object", "properties": {
+            "user_id": {"type": "string", "description": "QQ 号"},
+        }, "required": ["user_id"], "additionalProperties": False},
+    )
+    async def dc_view_state(self, user_id: str = "", **kw):
+        if not str(user_id or "").strip():
+            return Err(SdkError("INVALID_INPUT: user_id 不能为空"))
+        return Ok(self.deepchat_service.view_state(user_id))
+
+    @plugin_entry(
+        id="dc_reset_user",
+        name=tr("entries.dc_reset_user.name", default="深度聊天：重置用户状态"),
+        description="清空某个 QQ 用户的情绪与关系记录。",
+        input_schema={"type": "object", "properties": {
+            "user_id": {"type": "string", "description": "QQ 号"},
+        }, "required": ["user_id"], "additionalProperties": False},
+    )
+    async def dc_reset_user(self, user_id: str = "", **kw):
+        if not str(user_id or "").strip():
+            return Err(SdkError("INVALID_INPUT: user_id 不能为空"))
+        return Ok(self.deepchat_service.reset_user(user_id))
+
+    @plugin_entry(
+        id="dc_set_mood",
+        name=tr("entries.dc_set_mood.name", default="深度聊天：设置情绪"),
+        description=(
+            "手动覆盖某个 QQ 用户的情绪状态（调试用）。mood 取 "
+            "neutral/happy/excited/sulking/embarrassed/bored/annoyed。"
+        ),
+        input_schema={"type": "object", "properties": {
+            "user_id": {"type": "string", "description": "QQ 号"},
+            "mood": {"type": "string", "enum": [
+                "neutral", "happy", "excited", "sulking",
+                "embarrassed", "bored", "annoyed",
+            ]},
+        }, "required": ["user_id", "mood"], "additionalProperties": False},
+    )
+    async def dc_set_mood(self, user_id: str = "", mood: str = "", **kw):
+        if not str(user_id or "").strip():
+            return Err(SdkError("INVALID_INPUT: user_id 不能为空"))
+        try:
+            return Ok(self.deepchat_service.set_mood(user_id, mood))
+        except ValueError as exc:
+            return Err(SdkError(f"INVALID_INPUT: {exc}"))
+
+    @plugin_entry(
+        id="dc_tune",
+        name=tr("entries.dc_tune.name", default="深度聊天：调参"),
+        description=(
+            "调整深度聊天参数并持久化。param 取 deepchat_enabled / "
+            "deepchat_fragments_enabled / deepchat_guard_enabled / "
+            "deepchat_reflection_enabled / deepchat_mood_decay_rate / "
+            "deepchat_relationship_decay_rate / deepchat_generation_mode（host|direct）/ "
+            "deepchat_autonomy_enabled / deepchat_autonomy_min_affinity / "
+            "deepchat_autonomy_min_idle_hours / deepchat_autonomy_max_idle_hours / "
+            "deepchat_autonomy_interval_seconds / deepchat_autonomy_max_per_tick。"
+        ),
+        input_schema={"type": "object", "properties": {
+            "param": {"type": "string"},
+            "value": {"type": "string"},
+        }, "required": ["param", "value"], "additionalProperties": False},
+    )
+    async def dc_tune(self, param: str = "", value: str = "", **kw):
+        try:
+            return Ok(await self.deepchat_service.tune(param, value))
+        except (TypeError, ValueError) as exc:
+            return Err(SdkError(f"INVALID_INPUT: {exc}"))
+
+    @plugin_entry(
+        id="dc_recall",
+        name=tr("entries.dc_recall.name", default="深度聊天：召回记忆"),
+        description=(
+            "调试用：按群/成员范围召回长期记忆。scope=global 时走主人语料，"
+            "否则按 group_id/user_id 组装 subject。"
+        ),
+        input_schema={"type": "object", "properties": {
+            "query": {"type": "string"},
+            "scope": {"type": "string"},
+            "group_id": {"type": "string"},
+            "user_id": {"type": "string"},
+            "her_name": {"type": "string"},
+            "limit": {"type": "integer"},
+        }, "required": ["query"], "additionalProperties": False},
+    )
+    async def dc_recall(self, query: str = "", scope: str = "", group_id: str = "",
+                        user_id: str = "", her_name: str = "", limit: int = 5, **kw):
+        if not str(query or "").strip():
+            return Err(SdkError("INVALID_INPUT: query 不能为空"))
+        return Ok(await self.deepchat_service.recall(
+            query=query, scope=scope, group_id=group_id, user_id=user_id,
+            her_name=her_name, limit=int(limit or 5),
+        ))
 
     # ── trust：名单与身份 ───────────────────────────────────────
     #

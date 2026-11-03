@@ -23,6 +23,10 @@ class QQReplyModelNode:
                 ],
             )
 
+        deepchat = getattr(self.plugin, "deepchat_service", None)
+        if deepchat is not None and deepchat.generation_mode == "direct":
+            return await self._run_direct_primary(context)
+
         primary_result = await self._run_primary(context)
         if not primary_result.allow_fallback:
             return primary_result
@@ -50,6 +54,33 @@ class QQReplyModelNode:
                 traces=primary_result.traces,
             )
         return QQModelResult(reply_text=None, source="none", used_fallback=True, traces=primary_result.traces)
+
+    async def _run_direct_primary(self, context: QQReplyContext) -> QQModelResult:
+        """Deep-chat direct mode: per-turn prompt, no host-session freeze.
+
+        The host session freezes its instructions for the session's lifetime,
+        so mood/relationship fragments injected into `system_prompt` only
+        reach the model when a new session is created. Direct mode uses the
+        existing raw-LLM path, which reads `context.system_prompt` every turn,
+        at the cost of losing host-session tools/memory plumbing.
+        """
+        fallback_reply = await self._run_fallback(context)
+        trace = QQPipelineStageTrace(
+            stage="model_direct",
+            status="success" if fallback_reply else "empty",
+            metadata={"reply_length": len(fallback_reply or "")},
+        )
+        if fallback_reply:
+            await self.plugin.reply_generation_service.run_fallback_memory_hooks(
+                context, fallback_reply,
+            )
+            return QQModelResult(
+                reply_text=fallback_reply,
+                source="deepchat_direct",
+                used_fallback=True,
+                traces=[trace],
+            )
+        return QQModelResult(reply_text=None, source="none", used_fallback=True, traces=[trace])
 
     def _should_generate(self, context: QQReplyContext) -> bool:
         # 开放平台：全部生成（不限制权限）
