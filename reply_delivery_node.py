@@ -317,7 +317,23 @@ class QQReplyDeliveryNode:
                 guarded_text += "\n" + " / ".join(part.strip() for part in str(keyboard).split("|") if part.strip())
             if not self._outbound_allowed(plan.target_type, plan.target_id, guarded_text):
                 return False
-            if keyboard and self._supports_keyboard():
+            if block is not None and (block.reply_to or block.at_user):
+                # 修饰明确作为 OneBot 消息段发送，不能塞进 text 段冒充引用或 @。
+                import re
+
+                segments = []
+                offset = 0
+                for match in re.finditer(r"\[CQ:(reply,id|at,qq|face,id)=([^\],]+)\]", text):
+                    if match.start() > offset:
+                        segments.append({"type": "text", "data": {"text": text[offset:match.start()]}})
+                    kind, key = match.group(1).split(",")
+                    segments.append({"type": kind, "data": {key: match.group(2)}})
+                    offset = match.end()
+                if offset < len(text):
+                    segments.append({"type": "text", "data": {"text": text[offset:]}})
+                kwargs = {"keyboard": keyboard} if keyboard and self._supports_keyboard() else {}
+                result = await self.plugin.qq_client.send_group_message_segments(plan.target_id, segments, **kwargs)
+            elif keyboard and self._supports_keyboard():
                 # keyboard 只有开放平台的 segments 接口承载：带按钮的文本
                 # 块走它。NapCat 不支持按钮，走普通文本（内容照发，按钮
                 # 能力缺失是协议限制，不是静默丢弃逻辑）。

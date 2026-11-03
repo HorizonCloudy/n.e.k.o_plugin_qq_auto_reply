@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
+import uuid
 from pathlib import Path
 from typing import Any, Callable
 
@@ -9,12 +11,7 @@ from . import napcat_integrity, napcat_onebot_config, napcat_platform
 
 
 def bundled_napcat_dir() -> Path:
-    """插件自带 NapCat 的默认位置：``<插件包目录>/NapCat.Shell``。
-
-    一键部署下载来的 NapCat 装在这里，打包链路（``prepare_nuitka_plugins``）也按这个
-    位置把它搬进分发包 —— 两边约定同一个路径，所以部署完不需要用户再填
-    ``napcat_directory``。
-    """
+    """旧版/分发包携带的 NapCat 位置，仅用于兼容和迁移。"""
     return Path(__file__).parent / "NapCat.Shell"
 
 
@@ -51,6 +48,7 @@ class QQNapcatService:
         get_settings: Callable[[], dict] | None = None,
         get_qq_client: Callable[[], Any] | None = None,
         config_dir: str | Path | None = None,
+        data_dir: str | Path | None = None,
         logger: Any = None,
         emit_log: Any = None,
     ):
@@ -60,6 +58,7 @@ class QQNapcatService:
         # 静态资源在它下面的 static/。这里曾经多带一层 "static"，会让二维码落到
         # <包>/static/static/cache/ 而前端读 <包>/static/cache/ 读不到。
         self._config_dir = Path(config_dir) if config_dir else Path(__file__).parent
+        self._data_dir = Path(data_dir) if data_dir else None
         self.logger = logger
         self._emit_log = emit_log or (lambda level, msg: None)
         # Process / error state owned by the transport layer.
@@ -109,6 +108,44 @@ class QQNapcatService:
         err = self.get_startup_error()
         return bool(err) and err not in self._transient_timeout_errors()
 
+    def default_napcat_directory(self) -> Path:
+        """运行数据放在宿主持久化目录；无注入时兼容独立服务调用方。"""
+        return self._data_dir / "NapCat.Shell" if self._data_dir is not None else bundled_napcat_dir()
+
+    def _legacy_napcat_path(self, raw: str) -> bool:
+        path = Path(raw).resolve()
+        roots = {(self._config_dir / "NapCat.Shell").resolve(), bundled_napcat_dir().resolve()}
+        return any(path == root or path.parent == root for root in roots)
+
+    async def migrate_napcat_storage(self) -> None:
+        """复制旧内置安装到持久化目录；成功前不切换，已有目标不覆盖。"""
+        if self._data_dir is None:
+            return
+        target = self.default_napcat_directory()
+        if target.exists():
+            return
+        raw = str((self._get_settings() or {}).get("napcat_directory") or "").strip()
+        if raw and raw not in (".", "./", ".\\") and not self._legacy_napcat_path(raw):
+            return  # 外部自定义安装继续使用用户指定的位置。
+        source = self._config_dir / "NapCat.Shell"
+        if not source.is_dir():
+            source = bundled_napcat_dir()
+        if not source.is_dir() or source.resolve() == target.resolve():
+            return
+
+        def copy_installation():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            staging = target.with_name(f"{target.name}.migration-{uuid.uuid4().hex}")
+            try:
+                shutil.copytree(source, staging)
+                os.replace(staging, target)
+            finally:
+                if staging.exists():
+                    shutil.rmtree(staging)
+
+        await asyncio.to_thread(copy_installation)
+        self._emit_log("INFO", f"NapCat 已迁移至持久化目录: {target}；原安装保留在 {source}")
+
     def get_configured_napcat_path(self) -> str:
         """用户显式配置的 NapCat 目录；未配置返回空串。
 
@@ -120,6 +157,11 @@ class QQNapcatService:
         raw = str((self._get_settings() or {}).get("napcat_directory") or "").strip()
         if raw in (".", "./", ".\\"):
             return ""
+        if raw and self._data_dir is not None and self._legacy_napcat_path(raw):
+            target = self.default_napcat_directory()
+            if target.is_dir():
+                # 兼容历史设置直接指向启动器文件。
+                return str(target / Path(raw).name if Path(raw).suffix.lower() in (".bat", ".sh", ".mjs") else target)
         return raw
 
     def get_napcat_directory(self) -> Path:
@@ -133,7 +175,7 @@ class QQNapcatService:
         # 只在**确实存在启动器**时才认：否则维持"未配置"语义，让
         # ensure_napcat_started 保持"用户可能自己开着 NapCat"的宽容行为 ——
         # 返回一个空目录会让它报一个其实没发生的硬错误。
-        bundled = bundled_napcat_dir()
+        bundled = self.default_napcat_directory()
         if napcat_platform.find_launcher(bundled) is not None:
             return bundled
         return Path()
@@ -329,6 +371,7 @@ class QQNapcatService:
         return True
 
     async def ensure_napcat_started(self) -> None:
+        await self.migrate_napcat_storage()
         # After a hard failure (missing dir / launcher / process won't start) don't
         # retry: retrying is pointless and only repeats the error + relaunch attempt,
         # and the frontend gets no clear failure reason.

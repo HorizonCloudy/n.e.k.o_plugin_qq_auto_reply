@@ -34,7 +34,6 @@ def _svc(tmp_path) -> QQDeployService:
 def _stub_install(monkeypatch, tmp_path, *, extract_progress) -> None:
     """替换下载/解包。解包**在工作线程里**触发进度，与真实实现一致。"""
     monkeypatch.setattr(ds.napcat_platform, "node_available", lambda: (True, "v24.13.1"))
-    monkeypatch.setattr(ds, "bundled_napcat_dir", lambda: tmp_path / "NapCat.Shell")
     monkeypatch.setattr(ds.napcat_install, "asset_name", lambda: "NapCat.Shell.zip")
 
     async def fake_download(asset, downloads, progress=None, on_attempt=None):

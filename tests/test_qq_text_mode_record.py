@@ -14,6 +14,7 @@ def test_text_mode_converts_model_record_to_text(target, text, expected):
     synth = AsyncMock()
     client = SimpleNamespace(
         send_group_message=AsyncMock(return_value="mid"),
+        send_group_message_segments=AsyncMock(return_value="mid"),
         send_message=AsyncMock(return_value="mid"),
         send_group_record=AsyncMock(), send_private_record=AsyncMock(),
     )
@@ -28,8 +29,14 @@ def test_text_mode_converts_model_record_to_text(target, text, expected):
                           fallback_to_text_on_voice_failure=False)
     result = asyncio.run(QQReplyDeliveryNode(plugin).deliver(plan))
     assert result.delivered
-    sender = client.send_group_message if target == "group" else client.send_message
-    sender.assert_awaited_once_with("789", "[CQ:reply,id=123][CQ:at,qq=456]" + expected)
+    if target == "group":
+        client.send_group_message_segments.assert_awaited_once_with("789", [
+            {"type": "reply", "data": {"id": "123"}},
+            {"type": "at", "data": {"qq": "456"}},
+            {"type": "text", "data": {"text": expected}},
+        ])
+    else:
+        client.send_message.assert_awaited_once_with("789", "[CQ:reply,id=123][CQ:at,qq=456]" + expected)
     synth.assert_not_called()
     client.send_group_record.assert_not_called()
     client.send_private_record.assert_not_called()

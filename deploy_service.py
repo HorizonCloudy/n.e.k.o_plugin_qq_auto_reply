@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import napcat_install, napcat_integrity, napcat_onebot_config, napcat_platform
-from .napcat_service import bundled_napcat_dir
 
 #: 步骤名 → 界面展示用的标签
 #:
@@ -131,6 +130,7 @@ class QQDeployService:
         self._progress_last.clear()
 
         svc = self.plugin.napcat_service
+        await svc.migrate_napcat_storage()
         steps: list[dict] = []
 
         def step(key: str, msg: str, **ex: Any) -> None:
@@ -150,7 +150,7 @@ class QQDeployService:
             napcat_dir = svc.get_napcat_directory()
             launcher = napcat_platform.find_launcher(napcat_dir) if napcat_dir else None
         if not configured and launcher is None:
-            napcat_dir = bundled_napcat_dir()
+            napcat_dir = svc.default_napcat_directory()
         if napcat_dir.is_dir() and not force:
             step("locate", f"正在检查已安装 NapCat 的完整性: {napcat_dir}")
             ok, detail = await asyncio.to_thread(napcat_integrity.check_installation, napcat_dir, launcher=launcher)
@@ -239,7 +239,7 @@ class QQDeployService:
         """下载并解包；自动修复使用原安装目录，避免丢失自定义路径的数据。"""
         self._check_node(step)
 
-        target = Path(repair_target) if repair_target is not None else bundled_napcat_dir()
+        target = Path(repair_target) if repair_target is not None else self.plugin.data_path("NapCat.Shell")
         asset = napcat_install.asset_name()
         downloads = self.plugin.data_path("downloads")
 

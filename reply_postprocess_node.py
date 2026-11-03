@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
+from dataclasses import replace
 from typing import Any
 
 from .pipeline_models import QQDeliveryPlan, QQMessageBlock, QQModelResult, QQReplyContext, QQReplyOutcome
@@ -547,6 +548,7 @@ class QQReplyPostprocessNode:
         # 如果没有 blocks（旧格式回退），用 reply_text 构造一个块
         blocks = outcome.blocks if outcome.blocks else [QQMessageBlock(text=outcome.reply_text or "")]
         if request.is_group:
+            blocks = self._address_group_blocks(request, blocks)
             return QQDeliveryPlan(
                 target_type="group",
                 target_id=str(request.group_id or ""),
@@ -559,3 +561,41 @@ class QQReplyPostprocessNode:
             blocks=blocks,
             fallback_to_text_on_voice_failure=request.fallback_to_text_on_voice_failure,
         )
+
+    @staticmethod
+    def _address_group_blocks(request: Any, blocks: list[QQMessageBlock]) -> list[QQMessageBlock]:
+        """用当前轮明确的身份补齐修饰，不猜同名成员，不给合成轮挂错误引用。"""
+        import re
+
+        labels = dict(getattr(request, "member_labels", {}) or {})
+        sender = str(getattr(request, "sender_id", "") or "")
+        nickname = str(getattr(request, "user_nickname", "") or "").strip()
+        if sender and nickname:
+            labels.setdefault(sender, nickname)
+        names: dict[str, set[str]] = {}
+        for uid, label in labels.items():
+            uid = str(uid)
+            if not uid.isascii() or not uid.isdigit():
+                continue
+            for name in (str(label).strip(), uid):
+                if name:
+                    names.setdefault(name, set()).add(uid)
+        result = [replace(block) for block in blocks]
+        for block in result:
+            if block.at_user or not block.text:
+                continue
+            for name in sorted(names, key=len, reverse=True):
+                match = re.match(r"^\s*@" + re.escape(name) + r"(?=$|[\s，,:：!！?？。])", block.text)
+                if match:
+                    if len(names[name]) == 1:
+                        block.at_user = next(iter(names[name]))
+                        block.text = block.text[match.end():].lstrip()
+                    break
+        message_id = str(getattr(request, "current_message_id", "") or "").strip()
+        if (getattr(request, "source_kind", "incoming") == "incoming" and message_id
+                and not any(block.reply_to or "[CQ:reply," in block.text for block in result)):
+            for block in result:
+                if block.text or block.emoji:
+                    block.reply_to = message_id
+                    break
+        return result

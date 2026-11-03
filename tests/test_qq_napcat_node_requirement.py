@@ -24,7 +24,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from plugin.plugins.qq_auto_reply import deploy_service as ds
 from plugin.plugins.qq_auto_reply import napcat_install as ni
 from plugin.plugins.qq_auto_reply import napcat_platform as np
 from plugin.plugins.qq_auto_reply.deploy_service import QQDeployService
@@ -92,7 +91,6 @@ def _step_of(svc: QQDeployService, rec: _Recorder, emit):
 def _stub(monkeypatch, tmp_path, *, node_available, requirement, downloads: list) -> None:
     monkeypatch.setattr(np, "node_available", lambda: node_available)
     monkeypatch.setattr(np, "node_requirement", lambda **kw: requirement)
-    monkeypatch.setattr(ds, "bundled_napcat_dir", lambda: tmp_path / "NapCat.Shell")
     monkeypatch.setattr(ni, "asset_name", lambda: ASSET)
 
     async def fake_download(asset, downloads_dir, progress=None, on_attempt=None):

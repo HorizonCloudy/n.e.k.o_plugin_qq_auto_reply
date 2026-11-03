@@ -173,6 +173,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             get_settings=lambda: self._qq_settings,
             get_qq_client=lambda: self.qq_client,
             config_dir=self.config_dir,
+            data_dir=self.data_path(),
             logger=self.logger,
             emit_log=self._emit_log,
         )
@@ -784,6 +785,10 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         settings = await self._ensure_business_config_initialized()
         self.settings_service.rebuild_permission_managers(settings)
         self.settings_service.apply_runtime_settings(settings)
+        await self.napcat_service.migrate_napcat_storage()
+        migrated_path = self.napcat_service.get_configured_napcat_path()
+        if migrated_path and migrated_path != str(settings.get("napcat_directory") or "").strip():
+            await self.settings_service.save_settings(napcat_directory=migrated_path)
         await self.attention_service.load_cached_state()
         self.reply_buffer_service = QQReplyBufferService(self)
         # 群友复读 → 跟着复读一次（判定要按人去重、跨消息累积，所以单独一个服务；
