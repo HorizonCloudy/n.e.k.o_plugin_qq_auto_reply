@@ -15,7 +15,7 @@ class DeepChatStateTestCase(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.store = DeepChatStore(Path(self._tmp.name) / "state.sqlite3")
         self.mood = MoodStateMachine(self.store, decay_rate=0.05)
-        self.relationship = RelationshipGraph(self.store, decay_rate=0.01)
+        self.relationship = RelationshipGraph(self.store)
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
