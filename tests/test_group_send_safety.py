@@ -9,7 +9,7 @@ from plugin.plugins.qq_auto_reply.reply_delivery_node import QQReplyDeliveryNode
 
 def setup(monkeypatch):
     clock = [100.0]
-    monkeypatch.setattr(module.time, "time", lambda: clock[0])
+    monkeypatch.setattr(module, "time", SimpleNamespace(time=lambda: clock[0]))
     client = SimpleNamespace(
         is_group_muted=lambda gid: False,
         get_login_info=AsyncMock(return_value={"user_id": 123}),
