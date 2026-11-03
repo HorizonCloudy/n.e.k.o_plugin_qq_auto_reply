@@ -96,6 +96,14 @@ class DialoguePartnerTracker:
         partner = bucket.get(uid)
         return bool(partner and partner.in_dialogue(self._now(now), self.window_seconds))
 
+    def is_latest_reply_to(self, group_id: str, user_id: str, *, now: float | None = None) -> bool:
+        """Only the most recently answered partner can claim an implicit follow-up."""
+        if not self.is_in_dialogue(group_id, user_id, now=now):
+            return False
+        bucket = self._partners.get(str(group_id).strip(), {})
+        partner = bucket.get(str(user_id).strip())
+        return bool(partner and partner.replied_at == max(p.replied_at for p in bucket.values()))
+
     def dialogue_partners(self, group_id: str, *, now: float | None = None) -> list[str]:
         """当前正在和她对话的人（按最近互动时间从新到旧）；供日志与排查。"""
         key = str(group_id or "").strip()

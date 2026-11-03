@@ -404,7 +404,12 @@ class QQReplyContextNode:
         # 引用上下文仅注入 LLM prompt，不污染会话历史
         prompt_text = message
         if reply_context:
-            prompt_text = reply_context + "\n" + prompt_text
+            if is_group:
+                from .group_dialogue_guidance import group_message_with_context
+
+                prompt_text = group_message_with_context(message, reply_context)
+            else:
+                prompt_text = reply_context + "\n" + prompt_text
         prompt_message = self.plugin._build_prompt_message(
             is_group=is_group,
             group_facing=effective_group_facing,

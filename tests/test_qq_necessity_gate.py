@@ -113,6 +113,47 @@ def _gate(plugin) -> QQAttentionGateService:
     return QQAttentionGateService(plugin)
 
 
+def _followup_gate():
+    plugin = _plugin(settings={"reply_necessity_threshold": 999})
+    plugin.attention_service.is_first_reply_after_own_speech = lambda gid: True
+    gate = _gate(plugin)
+    gate._dialogue.note_address(GROUP, "u1", now=970)
+    gate._dialogue.note_reply(GROUP, "u1", now=987)
+    return plugin, gate
+
+
+def test_price_followup_after_site_search_reaches_model_without_at():
+    plugin, gate = _followup_gate()
+    decision = _evaluate(plugin, gate, message_text="1rmb＝1刀乐的收费嘛")
+    assert decision.action == "reply"
+    assert decision.reason == "dialogue_followup"
+    assert not decision.force_reply  # The model still resolves the actual topic.
+
+
+def test_different_speaker_cannot_claim_followup():
+    plugin, gate = _followup_gate()
+    decision = _evaluate(plugin, gate, sender_id="u2", message_text="多少钱")
+    assert decision.action == "ignore"
+
+
+def test_former_partner_cannot_claim_reply_to_someone_else():
+    plugin, gate = _followup_gate()
+    gate._dialogue.note_reply(GROUP, "u2", now=995)
+    assert _evaluate(plugin, gate).action == "ignore"
+
+
+def test_explicit_quote_to_other_is_not_followup():
+    plugin, gate = _followup_gate()
+    decision = _evaluate(plugin, gate, quoted_message_id="other-msg", quoted_sender_id="u2")
+    assert decision.reason != "dialogue_followup"
+
+
+def test_outside_first_reply_window_is_not_followup():
+    plugin, gate = _followup_gate()
+    plugin.attention_service.is_first_reply_after_own_speech = lambda gid: False
+    assert _evaluate(plugin, gate).action == "ignore"
+
+
 def test_trusted_group_stays_quiet_when_she_hogs_the_conversation():
     """她一个人刷屏（窗口里八成都是她说的）→ 普通闲聊让一让。这是 40 档的主力机制。
 

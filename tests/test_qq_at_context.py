@@ -39,22 +39,21 @@ def _at_other() -> addressing.AddresseeVerdict:
     )
 
 
-# ── 回归网：没有名字时一个字节都不许变 ──────────────────────────
+# ── 回归网：没有名字时也保留发言人与当前消息 ──────────────────
 
 def test_no_labels_keeps_speaker_and_message_with_context_guidance():
     out = _turn(
         current_message_id="m1",
         group_scene_mode="directed_user",
     )
-    assert out == (
+    assert out.startswith(
         "当前消息ID: m1\n"
         "发言人: 小明（QQ: 111）\n"
         "群号: 888\n"
         "【这条消息是冲你来的】对方直接@了你，在对你说话。你应该回复。\n"
-        "接话时先分清谁对谁说：称呼、身份和经历归原发言人，别把别人的‘你’或称号认成自己。"
-        "承接已经说出的具体内容；对方答过的问题不要换个问法继续追问，也别把新话题硬拉回口头禅。\n"
-        "消息:\n在吗"
     )
+    assert out.endswith("消息:\n在吗")
+    assert "第一人称经历归各句原发言人" in out
 
 
 def test_empty_labels_dict_is_treated_as_no_labels():

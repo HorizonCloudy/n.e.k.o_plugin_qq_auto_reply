@@ -790,7 +790,9 @@ class _Session:
 
 
 def _generation_service(plugin):
-    from plugin.plugins.qq_auto_reply.reply_generation_service import QQReplyGenerationService
+    from plugin.plugins.qq_auto_reply.reply_generation_service import (
+        QQReplyGenerationService,
+    )
 
     service = QQReplyGenerationService(plugin)
     # recall 那条路单独测过；这里把它的"该不该挂"照着真实判据钉一下：
@@ -818,6 +820,22 @@ def _configured_plugin(**kw):
     )
     asyncio.run(_refresh(plugin.plugin_tool_service))
     return plugin
+
+
+def test_real_generation_session_key_reaches_bridge_without_context_key():
+    from unittest.mock import Mock
+
+    plugin = _configured_plugin(tiers={"web_search": "all"})
+    service = _generation_service(plugin)
+    context = _context()
+    del context.session_key  # QQReplyContext does not carry this runtime key.
+    original = plugin.plugin_tool_service.build_handler
+    plugin.plugin_tool_service.build_handler = Mock(wraps=original)
+    asyncio.run(service._arm_turn_tools(
+        context=context, user_session=_Session(), consent_before={},
+        session_key="group:985066274",
+    ))
+    assert plugin.plugin_tool_service.build_handler.call_args.kwargs["session_key"] == "group:985066274"
 
 
 def test_without_configuration_the_old_path_runs_verbatim():
@@ -884,7 +902,9 @@ def test_no_channel_object_means_no_bridge():
 
 def test_an_unknown_transport_is_not_a_plugin_tool_channel():
     """判据是传输族，不是"有连接就开"：认不出来的传输族一律不挂。"""
-    from plugin.plugins.qq_auto_reply.plugin_tool_service import channel_allows_plugin_tools
+    from plugin.plugins.qq_auto_reply.plugin_tool_service import (
+        channel_allows_plugin_tools,
+    )
 
     assert channel_allows_plugin_tools(None) is False
     for channel, mode in (("open", ""), ("onebot", "napcat"), ("", "napcat_forward"), ("", "open_platform")):

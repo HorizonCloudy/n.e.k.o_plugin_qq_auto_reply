@@ -237,6 +237,8 @@ class QQAutoReplyPromptingMixin:
 
     @staticmethod
     def _build_group_turn_message(*, group_scene_mode: str, user_title: str, sender_id: str, group_id: str | None, message: str, current_message_id: str = "", is_reply_to_bot: bool = False, quoted_message_id: str = "", mentions_other_user: bool = False, mentions_all: bool = False, first_reply_after_own_speech: bool = False, addressee: "addressing.AddresseeVerdict | None" = None, member_labels: dict[str, str] | None = None) -> str:
+        from .group_dialogue_guidance import GROUP_DIALOGUE_GUIDANCE
+
         msg_id_line = f"当前消息ID: {current_message_id}\n" if current_message_id else ""
         is_at_bot = (str(group_scene_mode or "").strip() == "directed_user")
         # 本轮涉及的人 → 可读名字。空 dict 时下面每一处都退化成改动前的样子。
@@ -285,8 +287,7 @@ class QQAutoReplyPromptingMixin:
             f"群号: {str(group_id or '').strip()}\n"
             f"{hint}\n"
             f"{_render_people_block(labels=labels, sender_id=sender_id, aim_target=aim_target)}"
-            "接话时先分清谁对谁说：称呼、身份和经历归原发言人，别把别人的‘你’或称号认成自己。"
-            "承接已经说出的具体内容；对方答过的问题不要换个问法继续追问，也别把新话题硬拉回口头禅。\n"
+            f"{GROUP_DIALOGUE_GUIDANCE}"
             f"消息:\n{message}"
         )
 

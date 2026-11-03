@@ -25,6 +25,7 @@ async def test_missing_notice_is_recovered_and_old_drafts_never_resume(monkeypat
     assert await safety.blocked("1", created_at=90, force=True)
     clock[0] = 210
     plugin.qq_client.get_group_member_info.return_value = {"shut_up_timestamp": 0}
+    assert not await safety.blocked("1", created_at=209, force=True)
     assert await safety.blocked("1", created_at=150, force=True)
     clock[0] = 211
     assert not await safety.blocked("1", created_at=211, force=True)
@@ -38,6 +39,79 @@ async def test_refresh_failure_does_not_clear_known_mute(monkeypatch):
     clock[0] = 110
     plugin.qq_client.get_group_member_info.side_effect = RuntimeError("offline")
     assert await safety.blocked("1", force=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("refresh_fails", [False, True])
+async def test_known_expiry_does_not_extend_through_cache_or_failed_refresh(monkeypatch, refresh_fails):
+    clock, plugin, safety = setup(monkeypatch)
+    clock[0] = 198
+    assert await safety.blocked("1", force=True)
+    clock[0] = 201
+    if refresh_fails:
+        plugin.qq_client.get_group_member_info.side_effect = RuntimeError("offline")
+    assert not await safety.blocked("1", created_at=201, force=refresh_fails)
+    assert await safety.blocked("1", created_at=199)
+
+
+@pytest.mark.asyncio
+async def test_notice_expiry_is_captured_before_client_removes_it(monkeypatch):
+    clock, plugin, safety = setup(monkeypatch)
+    plugin.qq_client._group_muted = {"1": 200}
+
+    def check(gid):
+        until = plugin.qq_client._group_muted.get(gid, 0)
+        if until > clock[0]:
+            return True
+        plugin.qq_client._group_muted.pop(gid, None)
+        return False
+
+    plugin.qq_client.is_group_muted = check
+    plugin.qq_client.get_group_member_info.return_value = {"shut_up_timestamp": 0}
+    assert await safety.blocked("1")
+    clock[0] = 210
+    assert not await safety.blocked("1", created_at=209)
+    assert await safety.blocked("1", created_at=199)
+
+
+@pytest.mark.asyncio
+async def test_manual_unmute_keeps_old_drafts_blocked(monkeypatch):
+    clock, plugin, safety = setup(monkeypatch)
+    assert await safety.blocked("1")
+    clock[0] = 150
+    plugin.qq_client.get_group_member_info.return_value = {"shut_up_timestamp": 0}
+    assert await safety.blocked("1", created_at=140, force=True)
+    clock[0] = 151
+    assert not await safety.blocked("1", created_at=151)
+
+
+@pytest.mark.asyncio
+async def test_generation_preflight_skips_both_models_without_consuming_quota(monkeypatch):
+    from plugin.plugins.qq_auto_reply.pipeline_models import QQModelResult
+    from plugin.plugins.qq_auto_reply.reply_generation_service import (
+        QQReplyGenerationService,
+    )
+
+    clock, plugin, safety = setup(monkeypatch)
+    service = QQReplyGenerationService(plugin)
+    service.run_primary_session_call = AsyncMock(return_value=QQModelResult(reply_text="ok", source="test"))
+    service.generate_fallback_from_context = AsyncMock()
+    context = SimpleNamespace(is_group=True, group_id="1", permission_level="trusted")
+    for _ in range(5):
+        assert (await service.generate_from_context(context)).reply_text == "ok"
+    assert safety.recent["1"] == []
+    assert all(safety.admit("1") for _ in range(3))
+    service.run_primary_session_call.reset_mock()
+    result = await service.generate_from_context(context)
+    assert result.reply_text is None and not result.allow_fallback
+    assert result.traces[0].detail == "group_rate_limit"
+    service.run_primary_session_call.assert_not_awaited()
+    service.generate_fallback_from_context.assert_not_awaited()
+    context.is_group = False
+    assert (await service.generate_from_context(context)).reply_text == "ok"
+    context.is_group = True
+    clock[0] += 60
+    assert (await service.generate_from_context(context)).reply_text == "ok"
 
 
 def test_burst_is_dropped_not_queued_and_groups_are_independent(monkeypatch):
@@ -94,7 +168,10 @@ async def test_mute_between_blocks_stops_remaining_text(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_muted_buffer_is_detached_and_settled_without_delivery(monkeypatch):
-    from plugin.plugins.qq_auto_reply.reply_buffer_service import PendingReply, QQReplyBufferService
+    from plugin.plugins.qq_auto_reply.reply_buffer_service import (
+        PendingReply,
+        QQReplyBufferService,
+    )
 
     _, plugin, _ = setup(monkeypatch)
     plugin._user_sessions = {"group:1": {}}

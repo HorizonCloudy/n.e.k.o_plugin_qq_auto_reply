@@ -323,6 +323,7 @@ class QQReplyGenerationService:
             # 生成中途，运行时记录要能被生成结束的撤销比对看到。
             armed_recall_tool, armed_bridge_tools = await self._arm_turn_tools(
                 context=context,
+                session_key=session_key,
                 user_session=user_session,
                 consent_before=consent_before,
                 on_tool_round_start=_capture_tool_round_start,
@@ -520,6 +521,7 @@ class QQReplyGenerationService:
         context: Any,
         user_session: Any,
         consent_before: dict,
+        session_key: str = "",
         on_tool_round_start: Callable[[], Awaitable[None]] | None = None,
     ) -> tuple[bool, bool]:
         """本轮挂到会话上的工具。返回 ``(挂了任何工具, 挂了插件工具)``。
@@ -532,6 +534,7 @@ class QQReplyGenerationService:
         等这边跑顺了再谈。
         """
         user_session._qq_tool_audit = {"started": 0, "returned": 0, "names": []}
+        session_key = session_key or str(getattr(context, "session_key", "") or "")
         bridge = getattr(self.plugin, "plugin_tool_service", None)
         bridge_tools: list[Any] = []
         mounted: list[tuple[dict[str, Any], str]] = []
@@ -569,7 +572,7 @@ class QQReplyGenerationService:
         definitions.extend(bridge_tools)
         bridge_handler = bridge.build_handler(
             mounted,
-            session_key=str(getattr(context, "session_key", "") or ""),
+            session_key=session_key,
             conversation=self._bridge_conversation(context),
         )
 
@@ -580,7 +583,7 @@ class QQReplyGenerationService:
             audit = user_session._qq_tool_audit
             audit["started"] += 1
             audit["names"].append(name)
-            emit_bridge_log(self.plugin, "INFO", f"[PluginTool] 调用开始 session={getattr(context, 'session_key', '')} tool={name}")
+            emit_bridge_log(self.plugin, "INFO", f"[PluginTool] 调用开始 session={session_key} tool={name}")
             try:
                 result = await bridge_handler(tool_call)
             except Exception:
@@ -630,7 +633,10 @@ class QQReplyGenerationService:
     async def _build_bridge_tools(self, context: Any) -> tuple[list[tuple[dict[str, Any], str]], list[Any]]:
         """把「白名单 ∧ 已启动 ∧ 这个人有权用」的插件变成工具定义。"""
         from .pipeline_models import KIND_PLUGIN_TOOL_RESULT
-        from .plugin_tool_service import QQPluginToolService, channel_allows_plugin_tools
+        from .plugin_tool_service import (
+            QQPluginToolService,
+            channel_allows_plugin_tools,
+        )
 
         if str(getattr(context, "source_kind", "") or "") == KIND_PLUGIN_TOOL_RESULT:
             # 结果回投那一轮**不再挂插件工具**：这一轮的任务是把已经到手的结果说出去，
@@ -1299,6 +1305,15 @@ class QQReplyGenerationService:
     async def generate_from_context(self, context: QQReplyContext) -> QQModelResult:
         if not context.is_group and context.permission_level not in ["admin", "trusted"]:
             return QQModelResult(reply_text=None, source="none")
+
+        if context.is_group and context.group_id:
+            from .group_send_safety import group_send_safety
+
+            if not group_send_safety(self.plugin).has_capacity(context.group_id):
+                emit_bridge_log(self.plugin, "INFO", f"[Pace] 群{context.group_id}发送额度已满，跳过本轮生成，不补发")
+                return QQModelResult(reply_text=None, source="none", traces=[
+                    QQPipelineStageTrace(stage="model_primary", status="skipped", detail="group_rate_limit"),
+                ])
 
         primary_result = await self.run_primary_session_call(context)
         if not primary_result.allow_fallback:
