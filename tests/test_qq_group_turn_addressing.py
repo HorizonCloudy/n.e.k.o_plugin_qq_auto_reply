@@ -15,7 +15,7 @@
 这种最该接的情况被自己的标注劝退。
 
 现在补了第二层判据：**她刚说完话，而这一条是之后的第一条发言** →
-标注成「很可能是在接你的话，该接就接，别晾着对方」。
+标注成「可能在接你的话，需结合上下文确认，该接就接，别晾着对方」。
 
 判据复用接话反馈闭环的 `msgs_after_reply`（`note_proactive_speech` / `update_on_reply`
 清零，别人每说一条 +1；门控在建提示词之前已经为当前这条 +1 过，所以 `== 1` 恰好是
@@ -54,23 +54,23 @@ def _turn(**over) -> str:
 
 def test_at_bot_still_wins():
     out = _turn(group_scene_mode="directed_user", first_reply_after_own_speech=True)
-    assert "是冲你来的" in out and "很可能是在接你的话" not in out
+    assert "是冲你来的" in out and "可能在接你的话，需结合上下文确认" not in out
 
 
 def test_reply_to_bot_still_wins():
     out = _turn(is_reply_to_bot=True, first_reply_after_own_speech=True)
-    assert "回复了你的某条消息" in out and "很可能是在接你的话" not in out
+    assert "回复了你的某条消息" in out and "可能在接你的话，需结合上下文确认" not in out
 
 
 def test_quoting_someone_else_still_means_not_for_you():
     """对方在回复**别人** —— 即使她刚说过话，这条也算不到她头上。"""
     out = _turn(quoted_message_id="999", first_reply_after_own_speech=True)
-    assert "不是冲你来的" in out and "很可能是在接你的话" not in out
+    assert "不是冲你来的" in out and "可能在接你的话，需结合上下文确认" not in out
 
 
 def test_mentioning_someone_else_still_means_not_for_you():
     out = _turn(mentions_other_user=True, first_reply_after_own_speech=True)
-    assert "不是冲你来的" in out and "很可能是在接你的话" not in out
+    assert "不是冲你来的" in out and "可能在接你的话，需结合上下文确认" not in out
 
 
 def test_mention_all_is_unchanged():
@@ -82,14 +82,14 @@ def test_mention_all_is_unchanged():
 
 def test_a_plain_message_right_after_she_spoke_is_flagged_as_hers():
     out = _turn(first_reply_after_own_speech=True)
-    assert "很可能是在接你的话" in out, "她刚说完、第一条回应仍然被标成'不是冲你来的'"
+    assert "可能在接你的话，需结合上下文确认" in out, "她刚说完、第一条回应仍然被标成'不是冲你来的'"
     assert "不是冲你来的" not in out
 
 
 def test_without_the_flag_the_default_wording_is_unchanged():
     out = _turn()
     assert "不是冲你来的" in out and "不要每条都接" in out
-    assert "很可能是在接你的话" not in out
+    assert "可能在接你的话，需结合上下文确认" not in out
 
 
 # ── 三、判据：复用 msgs_after_reply ────────────────────────────────
@@ -183,7 +183,7 @@ def test_prompt_builder_passes_the_flag_down():
         user_title="宅久", sender_id="820040531", group_id=GROUP, message="是吗",
     )
     assert attention.calls == [GROUP], "没有去问「她刚说完之后的第一条吗」"
-    assert "很可能是在接你的话" in out
+    assert "可能在接你的话，需结合上下文确认" in out
 
 
 def test_prompt_builder_falls_back_when_attention_is_missing():
@@ -227,4 +227,4 @@ def test_the_real_attention_service_integrates():
         is_group=True, group_facing=False, group_scene_mode="group_collective",
         user_title="宅久", sender_id="820040531", group_id=GROUP, message="是吗",
     )
-    assert "很可能是在接你的话" in out
+    assert "可能在接你的话，需结合上下文确认" in out

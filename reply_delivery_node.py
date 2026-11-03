@@ -7,6 +7,7 @@ from dataclasses import replace
 from typing import Any
 
 from . import media_seam
+from .group_send_safety import group_send_safety
 from .pipeline_models import (
     QQDeliveryPlan,
     QQDeliveryResult,
@@ -29,6 +30,13 @@ class QQReplyDeliveryNode:
         闸只放在发送前，后面几块照样会在 opt-out 之后发出去。"""
         if not plan or not plan.blocks:
             return None
+
+        if plan.target_type == "group":
+            safety = group_send_safety(self.plugin)
+            if (await safety.blocked(plan.target_id, created_at=plan.created_at, force=True)
+                    or not safety.admit(plan.target_id)):
+                self.plugin.logger.warning("[Mute/Pace] 群 %s 禁言、旧回复或发送过密，丢弃本轮，不补发", plan.target_id)
+                return QQDeliveryResult(False, plan.target_type, plan.target_id, None)
 
         blocks = plan.blocks
         if self.plugin._get_reply_mode() == "text":
@@ -56,6 +64,14 @@ class QQReplyDeliveryNode:
                 )
                 content_attempted = True
                 content_sent = False
+                break
+
+            if plan.target_type == "group" and await safety.blocked(
+                plan.target_id, created_at=plan.created_at, force=i > 0,
+            ):
+                content_attempted = True
+                content_sent = False
+                self.plugin.logger.warning("[Mute] 群 %s 禁言状态变化，丢弃剩余消息块", plan.target_id)
                 break
 
             if block.poke:
@@ -165,6 +181,7 @@ class QQReplyDeliveryNode:
                 self.plugin.logger.info(
                     f"[Send] {plan.target_type} {plan.target_id} 已发送"
                     f"（{self._describe_blocks(blocks)}, blocks={len(blocks)}"
+                    f", reply={sum(bool(b.reply_to) for b in blocks)}, at={sum(bool(b.at_user) for b in blocks)}"
                     f"{', 问句结尾' if self._ends_with_question(blocks) else ''}）"
                 )
             except Exception:  # noqa: BLE001 —— 日志失败不该影响投递结论
@@ -604,6 +621,10 @@ class QQReplyDeliveryNode:
             return False
         try:
             file_uri, _ = await self.plugin.voice_reply_service.synthesize_reply_voice_file(block.record)
+            if plan.target_type == "group" and await group_send_safety(self.plugin).blocked(
+                plan.target_id, created_at=plan.created_at, force=True,
+            ):
+                return False
             if plan.target_type == "group":
                 result = await self.plugin.qq_client.send_group_record(plan.target_id, file_uri)
             else:
@@ -617,6 +638,8 @@ class QQReplyDeliveryNode:
                 # 未确认（开放平台吞异常返回 None）与异常同等对待：按请求
                 # 回退文本，而不是直接判未投递。
                 if plan.target_type == "group":
+                    if await group_send_safety(self.plugin).blocked(plan.target_id, created_at=plan.created_at, force=True):
+                        return False
                     fb = await self.plugin.qq_client.send_group_message(plan.target_id, block.record)
                 else:
                     fb = await self.plugin.qq_client.send_message(plan.target_id, block.record)
@@ -633,6 +656,8 @@ class QQReplyDeliveryNode:
             if plan.fallback_to_text_on_voice_failure and block.record:
                 text = block.record
                 if plan.target_type == "group":
+                    if await group_send_safety(self.plugin).blocked(plan.target_id, created_at=plan.created_at, force=True):
+                        return False
                     result = await self.plugin.qq_client.send_group_message(plan.target_id, text)
                 else:
                     result = await self.plugin.qq_client.send_message(plan.target_id, text)

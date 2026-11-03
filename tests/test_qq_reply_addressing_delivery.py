@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
 from plugin.plugins.qq_auto_reply.pipeline_models import QQMessageBlock, QQReplyOutcome, QQReplyRequest
 from plugin.plugins.qq_auto_reply.reply_delivery_node import QQReplyDeliveryNode
 from plugin.plugins.qq_auto_reply.reply_postprocess_node import QQReplyPostprocessNode
@@ -13,8 +14,9 @@ def plan(text, **kwargs):
     return QQReplyPostprocessNode(None).build_delivery_plan(request, outcome)
 
 
-async def test_plain_mention_and_missing_quote_become_native_segments():
-    delivery = plan("@小明 你好", member_labels={"12345": "小明"})
+@pytest.mark.parametrize("source_kind", ["incoming", "incoming_group"])
+async def test_plain_mention_and_missing_quote_become_native_segments(source_kind):
+    delivery = plan("@小明 你好", member_labels={"12345": "小明"}, source_kind=source_kind)
     block = delivery.blocks[0]
     assert block.text == "你好"
     assert block.at_user == "12345"
@@ -38,8 +40,9 @@ def test_ambiguous_unknown_or_partial_names_are_not_guessed():
         assert delivery.blocks[0].text == text
 
 
-def test_synthetic_turn_does_not_invent_quote():
-    assert not plan("总结", source_kind="summary").blocks[0].reply_to
+@pytest.mark.parametrize("source_kind", ["summary", "rapid_fire_flush", "proactive_group", "retroactive_review", "group_join_notice"])
+def test_synthetic_turn_does_not_invent_quote(source_kind):
+    assert not plan("总结", source_kind=source_kind).blocks[0].reply_to
 
 
 def test_explicit_quote_preserved_without_mutating_draft():

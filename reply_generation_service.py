@@ -16,6 +16,11 @@ from .pipeline_models import (
     is_synthetic_source,
 )
 from .plugin_tool_service import emit_bridge_log
+from .plugin_tool_turn_guard import (
+    TOOL_TURN_INSTRUCTION,
+    UNEXECUTED_SEARCH_REPLY,
+    unexecuted_search_promise,
+)
 
 
 class QQReplyGenerationService:
@@ -286,6 +291,7 @@ class QQReplyGenerationService:
 
             async def _capture_tool_round_start() -> None:
                 nonlocal tool_round_epoch, raw_pre_tool_text
+                emit_bridge_log(self.plugin, "INFO", f"[PluginTool] 模型进入工具轮 session={session_key}")
                 current_epoch = int(
                     reply_attempt_state.get("discard_epoch", 0) or 0
                 )
@@ -340,12 +346,18 @@ class QQReplyGenerationService:
                     from .plugin_tool_service import CALL_TIMEOUT_SECONDS
 
                     turn_timeout += CALL_TIMEOUT_SECONDS
+                turn_message = context.prompt_message
+                if armed_bridge_tools:
+                    turn_message += TOOL_TURN_INSTRUCTION
+                    self._log_tool_transport_state(user_session, session_key)
                 await asyncio.wait_for(
-                    user_session.stream_text(context.prompt_message),
+                    user_session.stream_text(turn_message),
                     timeout=turn_timeout,
                 )
 
                 completed = await self.plugin._wait_session_response_complete(user_session)
+                if armed_bridge_tools:
+                    self._finish_tool_audit(user_session, session_key, reply_chunks, history_before)
                 if self._consent_dependency_revoked(context, consent_before):
                     # 生成期间授权被撤销：这条回复的 prompt 里带着已撤销的
                     # 内容，不能送出——清空出站文本只挡住了发送，stream_text
@@ -446,6 +458,48 @@ class QQReplyGenerationService:
 
             return "".join(reply_chunks)
 
+    def _log_tool_transport_state(self, session: Any, session_key: str) -> None:
+        # This is the host's prepared payload, not proof of a wire request.
+        payload = getattr(session, "_openai_tools_payload", None)
+        count: Any = "unknown"
+        if callable(payload):
+            try:
+                count = len(payload() or [])
+            except Exception:
+                count = "error"
+        emit_bridge_log(
+            self.plugin, "INFO",
+            f"[PluginTool] 请求前诊断 session={session_key} "
+            f"client={type(session).__name__} prepared_openai_tools={count} "
+            f"unsupported={getattr(session, '_openai_tools_unsupported', False)} "
+            f"unsupported_with_images={getattr(session, '_openai_tools_unsupported_with_images', False)}",
+        )
+
+    def _finish_tool_audit(self, session: Any, session_key: str, chunks: list,
+                           history_before: int) -> None:
+        audit = getattr(session, "_qq_tool_audit", {})
+        started = audit.get("started", 0)
+        history = getattr(session, "_conversation_history", [])
+        recorded_calls = sum(
+            len(row.get("tool_calls") or []) for row in history[history_before:]
+            if isinstance(row, dict) and row.get("role") == "assistant"
+        )
+        emit_bridge_log(self.plugin, "INFO", f"[PluginTool] 本轮结束 session={session_key} "
+                        f"calls_started={started} calls_returned={audit.get('returned', 0)} "
+                        f"history_tool_calls={recorded_calls}")
+        if started or not unexecuted_search_promise("".join(chunks)):
+            return
+        chunks[:] = [UNEXECUTED_SEARCH_REPLY]
+        # Keep history aligned with what is actually sent; do not leave the
+        # false promise for subsequent turns or memory extraction to reuse.
+        for row in history[history_before:]:
+            if getattr(row, "type", "") == "ai" and unexecuted_search_promise(row.content):
+                row.content = UNEXECUTED_SEARCH_REPLY
+            elif isinstance(row, dict) and row.get("role") == "assistant" and not row.get("tool_calls"):
+                if unexecuted_search_promise(row.get("content", "")):
+                    row["content"] = UNEXECUTED_SEARCH_REPLY
+        emit_bridge_log(self.plugin, "WARN", f"[PluginTool] 拦截未执行的搜索承诺 session={session_key}")
+
     @staticmethod
     def _stamp_nonconsent_boundary(user_data: dict, user_session: Any) -> None:
         """未授权边界在生成轮 finally 记（调用点在 run_primary_session_call）。
@@ -477,6 +531,7 @@ class QQReplyGenerationService:
         NapCat 那边是"群里什么样的人都有"的通道，多给一层工具面就多一层风险；
         等这边跑顺了再谈。
         """
+        user_session._qq_tool_audit = {"started": 0, "returned": 0, "names": []}
         bridge = getattr(self.plugin, "plugin_tool_service", None)
         bridge_tools: list[Any] = []
         mounted: list[tuple[dict[str, Any], str]] = []
@@ -522,7 +577,17 @@ class QQReplyGenerationService:
             name = str(getattr(tool_call, "name", "") or "")
             if recall_handler is not None and name == RECALL_TOOL_NAME:
                 return await recall_handler(tool_call)
-            return await bridge_handler(tool_call)
+            audit = user_session._qq_tool_audit
+            audit["started"] += 1
+            audit["names"].append(name)
+            emit_bridge_log(self.plugin, "INFO", f"[PluginTool] 调用开始 session={getattr(context, 'session_key', '')} tool={name}")
+            try:
+                result = await bridge_handler(tool_call)
+            except Exception:
+                emit_bridge_log(self.plugin, "WARN", f"[PluginTool] 处理器异常 tool={name}")
+                raise
+            audit["returned"] += 1
+            return result
 
         try:
             set_tools(definitions)

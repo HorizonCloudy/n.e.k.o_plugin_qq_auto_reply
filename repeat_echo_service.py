@@ -188,6 +188,12 @@ class QQRepeatEchoService:
 
         key = (group, normalized)
         episode = self._episodes.get(key)
+        from .group_send_safety import group_send_safety
+        cutoff = group_send_safety(self.plugin).cutoff.get(group, 0)
+        if episode is not None and float(episode["last_at"]) <= cutoff:
+            self._episodes.pop(key, None)
+            self._reservations.pop(key, None)
+            episode = None
         if episode is None or now - float(episode["last_at"]) > self.window_seconds:
             # 新的一轮（或群安静太久）：人头重数，但**冷却保留** —— 否则同一句
             # 复读每隔几分钟就能再骗她跟一次。
@@ -284,6 +290,8 @@ class QQRepeatEchoService:
         return clean if sent else None
 
     async def _send(self, *, group_id: str, text: str) -> bool:
+        from .group_send_safety import group_send_safety
+
         plugin = self.plugin
         plugin._ensure_qq_client_connected()
         group = plugin._validate_group_id(group_id)
@@ -301,7 +309,23 @@ class QQRepeatEchoService:
                 )
                 plugin._emit_log("WARN", f"[Repeat] 复读内容被拦截（{verdict.reason}）")
                 return False
+        safety = group_send_safety(plugin)
+        if await safety.blocked(
+            group, created_at=float((self._episodes.get(episode_key) or {}).get("last_at", 0)), force=True,
+        ):
+            for key in list(self._episodes):
+                if key[0] == group:
+                    self._episodes.pop(key, None)
+                    self._reservations.pop(key, None)
+            plugin.logger.info("[Repeat] 群 %s 禁言中，丢弃复读计数，不补发", group)
+            return False
+        if not safety.admit(group):
+            plugin.logger.info("[Repeat] 群 %s 发送过密，跳过复读，不排队", group)
+            return False
         mid = await plugin.qq_client.send_group_message(group, message)
+        if not mid:
+            plugin.logger.warning("[Repeat] 群 %s 复读未确认送达，不写入历史", group)
+            return False
         self._append_history_row(group, message)
         await self._bookkeep_reply(group)
         plugin.logger.info(

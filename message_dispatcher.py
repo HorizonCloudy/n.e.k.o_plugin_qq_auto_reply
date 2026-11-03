@@ -1079,8 +1079,12 @@ class QQMessageDispatcher:
                 self.plugin._user_sessions[session_key]["last_activity_at"] = __import__("time").time()
             fwd_count = int(message.get("_forward_sub_count", 0) or 0) if isinstance(message, dict) else 0
             # ── 禁言检查：bot 在该群被禁言 → 只记录不入 pipeline ──
-            if self.plugin.qq_client and self.plugin.qq_client.is_group_muted(group_id):
-                self.plugin._emit_log("INFO", f"[Mute] 群{group_id} 禁言中，跳过消息处理")
+            from .group_send_safety import group_send_safety
+            if await group_send_safety(self.plugin).blocked(group_id, created_at=message_timestamp):
+                self.plugin._emit_log("INFO", f"[Mute] 群{group_id} 禁言中或解禁前旧消息，跳过消息处理")
+                buffer = getattr(self.plugin, "reply_buffer_service", None)
+                if buffer is not None:
+                    buffer.cancel_pending(session_key, self.plugin._user_sessions.get(session_key))
                 return
             await self.handle_group_message(
                 group_id,

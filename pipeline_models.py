@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -194,6 +195,7 @@ class QQReplyRequest:
     # 私聊权限的接收边界快照。权限编辑可能发生在 handler 排队期间；记忆
     # 域必须仍按消息到达时的 admin/participant 身份选择。
     private_permission_level_at_receipt: str | None = None
+    created_at: float = field(default_factory=time.time)
 
 
 @dataclass(slots=True)
@@ -355,6 +357,7 @@ class QQDeliveryPlan:
     target_id: str
     blocks: list[QQMessageBlock] = field(default_factory=list)
     fallback_to_text_on_voice_failure: bool = True
+    created_at: float = field(default_factory=time.time)
 
 
 @dataclass(slots=True)

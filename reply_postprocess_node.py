@@ -4,7 +4,15 @@ import xml.etree.ElementTree as ET
 from dataclasses import replace
 from typing import Any
 
-from .pipeline_models import QQDeliveryPlan, QQMessageBlock, QQModelResult, QQReplyContext, QQReplyOutcome
+from .pipeline_models import (
+    KIND_INCOMING,
+    KIND_INCOMING_GROUP,
+    QQDeliveryPlan,
+    QQMessageBlock,
+    QQModelResult,
+    QQReplyContext,
+    QQReplyOutcome,
+)
 
 
 class QQReplyPostprocessNode:
@@ -552,6 +560,7 @@ class QQReplyPostprocessNode:
             return QQDeliveryPlan(
                 target_type="group",
                 target_id=str(request.group_id or ""),
+                created_at=getattr(request, "created_at", 0),
                 blocks=blocks,
                 fallback_to_text_on_voice_failure=request.fallback_to_text_on_voice_failure,
             )
@@ -592,7 +601,7 @@ class QQReplyPostprocessNode:
                         block.text = block.text[match.end():].lstrip()
                     break
         message_id = str(getattr(request, "current_message_id", "") or "").strip()
-        if (getattr(request, "source_kind", "incoming") == "incoming" and message_id
+        if (getattr(request, "source_kind", KIND_INCOMING) in {KIND_INCOMING, KIND_INCOMING_GROUP} and message_id
                 and not any(block.reply_to or "[CQ:reply," in block.text for block in result)):
             for block in result:
                 if block.text or block.emoji:

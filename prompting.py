@@ -276,7 +276,7 @@ class QQAutoReplyPromptingMixin:
         elif mentions_all:
             hint = "【这条消息是@全体成员】对方对全群广播。内容与你或群里讨论的话题相关时可以回复。"
         elif first_reply_after_own_speech:
-            hint = "【这条消息很可能是在接你的话】你刚刚才在群里说过话，而这是之后的第一条发言 —— 大概率是在回应你。该接就接，别晾着对方；确实与你无关再忽略。"
+            hint = "【这条消息可能在接你的话，需结合上下文确认】发言时间接近只是线索，不代表在回应你；先核对发言人、引用对象和前文。确实接你的话就自然回应，别把别人的对话接到自己身上。"
         else:
             hint = "【这条消息不是冲你来的】群里的人在和其他人聊天，不是跟你说话。只有当你真的有话想说、能贡献独特见解时再回复，不要每条都接。"
         return (
@@ -285,6 +285,8 @@ class QQAutoReplyPromptingMixin:
             f"群号: {str(group_id or '').strip()}\n"
             f"{hint}\n"
             f"{_render_people_block(labels=labels, sender_id=sender_id, aim_target=aim_target)}"
+            "接话时先分清谁对谁说：称呼、身份和经历归原发言人，别把别人的‘你’或称号认成自己。"
+            "承接已经说出的具体内容；对方答过的问题不要换个问法继续追问，也别把新话题硬拉回口头禅。\n"
             f"消息:\n{message}"
         )
 
