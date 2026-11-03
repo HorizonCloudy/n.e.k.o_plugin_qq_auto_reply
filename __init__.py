@@ -47,6 +47,7 @@ from .backlog_models import QQBacklogMessage as QQBacklogMessage
 from .backlog_service import QQBacklogService
 from .config_store import QQAutoReplyConfigStore
 from .dashboard_service import QQDashboardService
+from .deepchat import TUNING_KEYS as DEEPCHAT_TUNING_KEYS
 from .deepchat import DeepChatService
 from .deploy_service import QQDeployService
 from .display_name_service import QQDisplayNameService
@@ -1206,13 +1207,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         id="dc_tune",
         name=tr("entries.dc_tune.name", default="深度聊天：调参"),
         description=(
-            "调整深度聊天参数并持久化。param 取 deepchat_enabled / "
-            "deepchat_fragments_enabled / deepchat_guard_enabled / "
-            "deepchat_reflection_enabled / deepchat_mood_decay_rate / "
-            "deepchat_relationship_decay_rate / deepchat_generation_mode（host|direct）/ "
-            "deepchat_autonomy_enabled / deepchat_autonomy_min_affinity / "
-            "deepchat_autonomy_min_idle_hours / deepchat_autonomy_max_idle_hours / "
-            "deepchat_autonomy_interval_seconds / deepchat_autonomy_max_per_tick。"
+            "调整深度聊天参数并持久化。param 取 "
+            + ", ".join(DEEPCHAT_TUNING_KEYS)
+            + "；deepchat_generation_mode 只接受 host 或 direct。"
         ),
         input_schema={"type": "object", "properties": {
             "param": {"type": "string"},

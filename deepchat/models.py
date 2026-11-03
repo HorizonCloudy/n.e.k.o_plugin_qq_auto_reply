@@ -31,6 +31,8 @@ class RelationshipEdge:
     interactions: int = 0
     milestones: list[str] = field(default_factory=list)
     updated_at: float = field(default_factory=time.time)
+    #: 休眠标记：关系淡到阈值以内后停在这里，不再继续衰减，等互动解冻。
+    frozen: bool = False
 
 
 @dataclass(slots=True)

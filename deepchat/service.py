@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from pathlib import Path
 from typing import Any
 
 from .autonomy import AutonomyScheduler
+from .expression import ExpressionStore, extract_expressions
 from .fragments import append_fragments
-from .guard import sanitize_fragment
+from .guard import is_safe_text, sanitize_text
 from .models import Mood
 from .mood import MoodStateMachine
 from .relationship import RelationshipGraph
@@ -15,6 +17,10 @@ from .store import DeepChatStore
 
 POSITIVE_SIGNALS = frozenset({"praise", "thank", "funny"})
 NEGATIVE_SIGNALS = frozenset({"insult"})
+
+#: 学习路径的硬预算：``writeback`` 跑在回复主链路上，历史再长也不能阻塞。
+LEARNING_PER_MESSAGE = 300
+LEARNING_BUDGET = 8000
 
 #: Cheap keyword routing. Order matters: insults win over everything else,
 #: then boredom, then positive signals.
@@ -43,6 +49,8 @@ def _as_bool(value: Any) -> bool:
 
 def _as_float(value: Any) -> float:
     number = float(value)
+    if not math.isfinite(number):
+        raise ValueError("数值必须是有限值")
     if number < 0:
         raise ValueError("数值不能为负")
     return number
@@ -55,11 +63,30 @@ def _as_int(value: Any) -> int:
     return number
 
 
+def _as_positive_int(value: Any) -> int:
+    """用于"取 0 会造成数据丢失"的键：0 不是降级，而是清库。"""
+    number = int(value)
+    if number <= 0:
+        raise ValueError("数值必须大于 0")
+    return number
+
+
 def _as_mode(value: Any) -> str:
     mode = str(value or "").strip().lower()
     if mode not in {"host", "direct"}:
         raise ValueError("generation_mode 只能取 host 或 direct")
     return mode
+
+
+def _mask_id(value: Any) -> str:
+    """日志里只留前 3 位：账号 ID 不进日志。"""
+    text = str(value or "").strip()
+    return f"{text[:3]}***" if len(text) > 3 else "***"
+
+
+def _error_kind(exc: BaseException) -> str:
+    """只记异常类型：异常原文可能夹带用户内容。"""
+    return type(exc).__name__
 
 
 TUNING_KEYS: dict[str, Any] = {
@@ -68,7 +95,9 @@ TUNING_KEYS: dict[str, Any] = {
     "deepchat_guard_enabled": _as_bool,
     "deepchat_reflection_enabled": _as_bool,
     "deepchat_mood_decay_rate": _as_float,
-    "deepchat_relationship_decay_rate": _as_float,
+    "deepchat_relationship_half_life_days": _as_float,
+    "deepchat_relationship_freeze_threshold": _as_float,
+    "deepchat_relationship_revive_threshold": _as_float,
     "deepchat_generation_mode": _as_mode,
     "deepchat_autonomy_enabled": _as_bool,
     "deepchat_autonomy_min_affinity": _as_float,
@@ -76,6 +105,11 @@ TUNING_KEYS: dict[str, Any] = {
     "deepchat_autonomy_max_idle_hours": _as_float,
     "deepchat_autonomy_interval_seconds": _as_float,
     "deepchat_autonomy_max_per_tick": _as_int,
+    "deepchat_expression_learning_enabled": _as_bool,
+    "deepchat_expression_min_messages": _as_int,
+    "deepchat_expression_min_interval_seconds": _as_float,
+    "deepchat_expression_max_entries": _as_positive_int,
+    "deepchat_expression_max_selected": _as_int,
 }
 
 
@@ -98,9 +132,15 @@ class DeepChatService:
         )
         self.relationship = RelationshipGraph(
             self.store,
-            decay_rate=self._float_setting("deepchat_relationship_decay_rate", 0.01),
+            half_life_days=self._float_setting("deepchat_relationship_half_life_days", 14.0),
+            freeze_threshold=self._float_setting("deepchat_relationship_freeze_threshold", 0.10),
+            revive_threshold=self._float_setting("deepchat_relationship_revive_threshold", 0.15),
         )
         self.autonomy = AutonomyScheduler(self)
+        self.expressions = ExpressionStore(
+            self.store,
+            max_entries=self._int_setting("deepchat_expression_max_entries", 200),
+        )
 
     def _setting(self, key: str, default: Any) -> Any:
         return (getattr(self.plugin, "_qq_settings", {}) or {}).get(key, default)
@@ -143,6 +183,11 @@ class DeepChatService:
         mode = str(self._setting("deepchat_generation_mode", "host") or "").strip().lower()
         return mode if mode in {"host", "direct"} else "host"
 
+    @property
+    def expression_learning_enabled(self) -> bool:
+        """Off by default: learning someone's phrasing is opt-in."""
+        return _as_bool(self._setting("deepchat_expression_learning_enabled", False))
+
     @staticmethod
     def _mood_key(sender_id: str) -> str:
         return f"user:{str(sender_id or '').strip()}"
@@ -163,20 +208,35 @@ class DeepChatService:
             return system_prompt
         state = self.mood.get(self._mood_key(sender_id))
         edge = self.relationship.get(sender_id)
-        fragments: list[str] = []
-        for fragment in (
+        candidates: list[str] = [
             self.mood.fragment(state),
             self.relationship.fragment(edge, sender_name or sender_id),
-        ):
-            if self.guard_enabled:
-                safe = sanitize_fragment(fragment)
-                if safe is None:
-                    self._warn("[DeepChat] 片段未通过人格守卫，已跳过")
-                    continue
-                fragments.append(safe)
-            else:
-                fragments.append(fragment)
+        ]
+        # 私聊学到的短语只回私聊：群聊里注入等于把 A 的私聊原话放到 B 群面前。
+        if self.expression_learning_enabled and not is_group:
+            candidates.append(self._expression_fragment(sender_id))
+        fragments: list[str] = []
+        for fragment in candidates:
+            # 去控制字符 + 长度上限无条件执行：关守卫也不能把用户原话原样送 prompt。
+            cleaned = sanitize_text(fragment)
+            if not cleaned:
+                continue
+            if self.guard_enabled and not is_safe_text(cleaned):
+                self._warn("[DeepChat] 片段未通过人格守卫，已跳过")
+                continue
+            fragments.append(cleaned)
         return append_fragments(system_prompt, *fragments)
+
+    def _expression_fragment(self, sender_id: str) -> str:
+        """Learned phrasing as a prompt fragment; errors degrade to nothing."""
+        try:
+            return self.expressions.fragment(
+                sender_id,
+                limit=self._int_setting("deepchat_expression_max_selected", 5),
+            )
+        except Exception as exc:  # noqa: BLE001 —— 装饰性片段失败不影响回复
+            self._warn(f"[DeepChat] 表达片段读取失败: {_error_kind(exc)}")
+            return ""
 
     def writeback(
         self,
@@ -201,6 +261,7 @@ class DeepChatService:
             # Only private contact is a consent signal for proactive DMs.
             self.autonomy.record_private_interaction(sender_id, now=now)
         reflected = self.reflect_if_due(sender_id, edge=edge, now=now)
+        learned = self.learn_expressions_if_due(sender_id, edge=edge, now=now)
         result = {
             "signal": signal,
             "mood": state.current.value,
@@ -209,6 +270,8 @@ class DeepChatService:
         }
         if reflected:
             result["reflection"] = reflected
+        if learned:
+            result["expressions_learned"] = learned
         return result
 
     def reflect_if_due(
@@ -224,6 +287,9 @@ class DeepChatService:
         session-memory digest: it only adds a short, human-readable "what we
         talked about" line to the relationship edge. No LLM call, no new memory
         store.
+
+        **只读私聊会话**（``is_group=False``）：群聊里的发言既不进里程碑，也不参与
+        表达学习 —— 群聊是多人语境，用它去做"这个人的关系记忆"会张冠李戴。
         """
         if not bool(self._setting("deepchat_reflection_enabled", True)):
             return None
@@ -239,30 +305,99 @@ class DeepChatService:
         self.relationship.add_milestone(user_id, milestone, now=now)
         return milestone
 
-    def _recent_summary(self, user_id: str) -> str:
+    def learn_expressions_if_due(
+        self,
+        user_id: str,
+        *,
+        edge: Any | None = None,
+        now: float | None = None,
+    ) -> int:
+        """Every N interactions, learn the short phrases this user reuses.
+
+        Three gates: the feature switch (off by default), the interaction
+        cadence, and a minimum interval between rounds. Never raises — a failed
+        learn round must not touch the reply path.
+        """
+        if not self.expression_learning_enabled:
+            return 0
+        uid = str(user_id or "").strip()
+        if not uid:
+            return 0
+        min_messages = max(1, self._int_setting("deepchat_expression_min_messages", 10))
+        edge = edge or self.relationship.get(uid, now=now)
+        if edge.interactions <= 0 or edge.interactions % min_messages != 0:
+            return 0
+        stamp = time.time() if now is None else float(now)
+        interval = self._float_setting("deepchat_expression_min_interval_seconds", 30.0)
+        last = self.expressions.last_learn_at(uid)
+        if last > 0.0 and stamp - last < interval:
+            return 0
+        try:
+            messages = self._recent_user_messages(uid, limit=30)
+            if not messages:
+                return 0
+            learned = extract_expressions(messages)
+            written = self.expressions.upsert(uid, learned, now=stamp) if learned else 0
+            # Mark even on a dry round, otherwise every further interaction at
+            # the same cadence would re-scan history.
+            self.expressions.mark_learned(uid, now=stamp)
+            return written
+        except Exception as exc:  # noqa: BLE001 —— 学习失败不得影响回复主链路
+            self._warn(f"[DeepChat] 表达学习失败 {_mask_id(uid)}: {_error_kind(exc)}")
+            return 0
+
+    def _recent_user_messages(
+        self,
+        user_id: str,
+        limit: int = 30,
+        *,
+        per_message: int = LEARNING_PER_MESSAGE,
+        budget: int = LEARNING_BUDGET,
+    ) -> list[str]:
+        """Last ``limit`` non-empty user lines, clipped per line and in total.
+
+        **仅取私聊会话**（``_build_session_key(..., is_group=False)``）：群聊用户
+        不学习、不反思，因此这里永远不读群会话历史。
+
+        Clipping lives in the reader, not at the call sites: every consumer
+        (milestone summary, expression learning) feeds a model, and
+        ``extract_expressions`` is roughly linear in input size — an oversized
+        history would let one chatty user stall ``writeback`` on the reply path.
+        """
         sessions = getattr(self.plugin, "_user_sessions", {}) or {}
         build_key = getattr(self.plugin, "_build_session_key", None)
         if not callable(build_key):
-            return ""
+            return []
         try:
             session_key = build_key(sender_id=user_id, is_group=False)
         except Exception:  # noqa: BLE001 —— 测试/轻量宿主可能没有完整会话键
-            return ""
+            return []
         user_data = sessions.get(session_key) or {}
         session = user_data.get("session")
         history = getattr(session, "_conversation_history", []) or []
         texts: list[str] = []
+        used = 0
         for item in reversed(history):
             role = item.get("role") if isinstance(item, dict) else getattr(item, "role", "")
             content = item.get("content") if isinstance(item, dict) else getattr(item, "content", "")
             if str(role) != "user":
                 continue
             text = str(content or "").strip()
-            if text:
-                texts.append(text)
-            if len(texts) >= 3:
+            if not text:
+                continue
+            remaining = budget - used
+            if remaining <= 0:
+                break
+            piece = text[: min(per_message, remaining)]
+            texts.append(piece)
+            used += len(piece)
+            if len(texts) >= max(1, int(limit)):
                 break
         texts.reverse()
+        return texts
+
+    def _recent_summary(self, user_id: str) -> str:
+        texts = self._recent_user_messages(user_id, limit=3)
         if not texts:
             return ""
         return "；".join(texts)[:160]
@@ -296,11 +431,14 @@ class DeepChatService:
                             message=candidate.reason,
                         )
                     except Exception as exc:  # noqa: BLE001
-                        self._warn(f"[DeepChat] 主动联系失败 {candidate.user_id}: {exc}")
+                        self._warn(
+                            f"[DeepChat] 主动联系失败 {_mask_id(candidate.user_id)}: "
+                            f"{_error_kind(exc)}"
+                        )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 —— 单轮失败不得终止循环
-                self._warn(f"[DeepChat] 自主调度轮次异常: {exc}")
+                self._warn(f"[DeepChat] 自主调度轮次异常: {_error_kind(exc)}")
 
     def view_state(self, user_id: str) -> dict[str, Any]:
         sender_id = str(user_id or "").strip()
@@ -320,9 +458,11 @@ class DeepChatService:
                 "trust": round(edge.trust, 4),
                 "interactions": edge.interactions,
                 "milestones": list(edge.milestones),
+                "frozen": bool(edge.frozen),
                 "updated_at": edge.updated_at,
             },
             "autonomy": self.autonomy.snapshot(sender_id),
+            "expressions": self.expressions.count(sender_id),
         }
 
     def reset_user(self, user_id: str) -> dict[str, Any]:
@@ -340,11 +480,13 @@ class DeepChatService:
                 "DELETE FROM deepchat_autonomy WHERE user_id = ?",
                 (sender_id,),
             ).rowcount
+        expressions_deleted = self.expressions.clear(sender_id)
         return {
             "user_id": sender_id,
             "mood_deleted": mood_deleted,
             "relationship_deleted": relationship_deleted,
             "autonomy_deleted": autonomy_deleted,
+            "expressions_deleted": expressions_deleted,
         }
 
     def set_mood(self, user_id: str, mood: str) -> dict[str, Any]:
@@ -370,11 +512,28 @@ class DeepChatService:
         settings = getattr(self.plugin, "_qq_settings", None)
         if settings is None:
             raise ValueError("插件配置不可用")
-        settings[key] = parsed
+        # 先落盘、再改内存：save 抛错时不会留下"内存已改但对象没重建"的中间态。
+        candidate = {**settings, key: parsed}
         save = getattr(getattr(self.plugin, "config_store", None), "save", None)
         if callable(save):
-            await save(settings)
+            await save(candidate)
+        settings[key] = parsed
+        # 配置在构造时读取，重建这两个无状态对象才能让改动立即生效。
+        self._rebuild_config_bound()
         return {"param": key, "value": parsed}
+
+    def _rebuild_config_bound(self) -> None:
+        """Re-create the cheap, stateless objects that cache constructor settings."""
+        self.relationship = RelationshipGraph(
+            self.store,
+            half_life_days=self._float_setting("deepchat_relationship_half_life_days", 14.0),
+            freeze_threshold=self._float_setting("deepchat_relationship_freeze_threshold", 0.10),
+            revive_threshold=self._float_setting("deepchat_relationship_revive_threshold", 0.15),
+        )
+        self.expressions = ExpressionStore(
+            self.store,
+            max_entries=self._int_setting("deepchat_expression_max_entries", 200),
+        )
 
     async def recall(
         self,

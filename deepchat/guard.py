@@ -47,7 +47,11 @@ def is_safe_text(text: object) -> bool:
 
 
 def sanitize_fragment(text: object, *, max_len: int = DEFAULT_MAX_LEN) -> str | None:
-    """Return a safe fragment, or None when it should not reach the prompt."""
+    """Return a safe fragment, or None when it should not reach the prompt.
+
+    不要在**拼接后的词表**上使用本函数：邻接模式会被 ``；`` 等分隔符打断而失配
+    （见 ``expression.fragment`` 的逐条过滤）。词表请逐条 ``is_safe_text``。
+    """
     value = sanitize_text(text, max_len=max_len)
     if not value or not is_safe_text(value):
         return None

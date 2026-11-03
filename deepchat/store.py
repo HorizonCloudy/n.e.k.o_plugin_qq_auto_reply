@@ -29,6 +29,11 @@ class DeepChatStore:
         finally:
             conn.close()
 
+    #: DDL 不能参数化，所以迁移只允许执行这张白名单里的 (表, 列, 定义)。
+    _MIGRATIONS: dict[str, dict[str, str]] = {
+        "deepchat_relationship": {"frozen": "INTEGER NOT NULL DEFAULT 0"},
+    }
+
     def _init_schema(self) -> None:
         with self.connection() as conn:
             conn.executescript(
@@ -46,7 +51,27 @@ class DeepChatStore:
                     trust REAL NOT NULL DEFAULT 0.5,
                     interactions INTEGER NOT NULL DEFAULT 0,
                     milestones TEXT NOT NULL DEFAULT '[]',
-                    updated_at REAL NOT NULL
+                    updated_at REAL NOT NULL,
+                    frozen INTEGER NOT NULL DEFAULT 0
                 );
                 """
             )
+            # 旧库没有 frozen 列：加法式迁移，保留既有行。
+            self._ensure_column(conn, "deepchat_relationship", "frozen", "INTEGER NOT NULL DEFAULT 0")
+
+    @staticmethod
+    def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
+        return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
+
+    def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+        """Add one whitelisted column if missing; tolerant of concurrent starts."""
+        if self._MIGRATIONS.get(table, {}).get(column) != ddl:
+            raise ValueError(f"未登记的迁移列：{table}.{column}")
+        if column in self._columns(conn, table):
+            return
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+        except sqlite3.OperationalError:
+            # 另一个进程可能刚好补上了同一列；列确实存在才算无害。
+            if column not in self._columns(conn, table):
+                raise
