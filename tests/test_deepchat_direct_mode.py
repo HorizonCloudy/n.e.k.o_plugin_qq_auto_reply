@@ -397,6 +397,12 @@ class EnrichLoopBlockingTests(unittest.TestCase):
         return holder
 
     def test_enrich_does_not_block_event_loop(self) -> None:
+        """enrich 必须在线程里跑，否则会阻塞整个事件循环。
+
+        ⚠️ **本用例必须 `await` enrich**：它已是 async 外壳，只调用不 await 只会创建
+        coroutine 而从不执行（连 DB 都不碰），ticker 当然不被阻塞 —— 那会变成伪绿。
+        云雨在 3C 实现时独立指出过这一点，这里留档防复发。
+        """
         holder = self._hold_write_lock()
         gaps: list[float] = []
         stop = {"flag": False}

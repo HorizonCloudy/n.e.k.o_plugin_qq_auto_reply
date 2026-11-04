@@ -147,7 +147,9 @@ class DeepChatServiceTests(unittest.TestCase):
         self.service.reset_user("u1")
         state = self.service.view_state("u1")
         self.assertEqual(state["relationship"]["interactions"], 0)
-        self.assertEqual(state["mood"]["current"], "neutral")
+        # 3D 起 `Mood.NEUTRAL` 的取值别名到 "calm"（共享词表只有 calm 这一个零点），
+        # 所以对外序列化值也随之是 "calm"；这里钉的是**对外可见值**，不是枚举成员名。
+        self.assertEqual(state["mood"]["current"], "calm")
 
     def test_set_mood(self) -> None:
         result = self.service.set_mood("u1", "happy")

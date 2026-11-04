@@ -174,5 +174,84 @@ class EmotionVocabularyTests(unittest.TestCase):
         )
 
 
+class EmotionDecayOrderMirrorTests(unittest.TestCase):
+    """`_EMOTION_DECAY_ORDER` 的本地镜像护栏（pytest 那套在本机跑不了）。
+
+    `tests/test_qq_emotion_vocabulary.py` 是 pytest 风格且需宿主包路径，本机没有 pytest，
+    所以 3D 改动（`neutral → calm` 别名 + 新增 happy/excited）一旦把降温阶梯改坏，
+    **在 CI 之前无人可见**。这三条是那套里最容易被改坏、且改坏后表现为"情绪标记没反应"
+    的约束（表外情绪会被 `_decay_emotion` 当未知标签直接归零）。
+
+    合成一条用例：阶梯覆盖全部情绪 + 严格单调递减 + 单一零点（calm）。
+    """
+
+    @staticmethod
+    def _num(node: ast.AST) -> float:
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return float(node.value)
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+            return -EmotionDecayOrderMirrorTests._num(node.operand)
+        raise AssertionError(f"无法解析数值节点 {type(node).__name__}")
+
+    @classmethod
+    def _tables(cls) -> tuple[dict[str, float], list[str]]:
+        source = (_REPO_ROOT / "attention_service.py").read_text(encoding="utf-8")
+        multipliers: dict[str, float] | None = None
+        order: list[str] | None = None
+        for node in ast.walk(ast.parse(source)):
+            if (
+                isinstance(node, ast.AnnAssign)
+                and isinstance(node.target, ast.Name)
+                and node.target.id == "_EMOTION_MULTIPLIER"
+                and isinstance(node.value, ast.Dict)
+            ):
+                multipliers = {
+                    key.value: cls._num(value)
+                    for key, value in zip(node.value.keys, node.value.values)
+                }
+            elif (
+                isinstance(node, ast.Assign)
+                and any(
+                    isinstance(target, ast.Name) and target.id == "_EMOTION_DECAY_ORDER"
+                    for target in node.targets
+                )
+                and isinstance(node.value, ast.List)
+            ):
+                order = [element.value for element in node.value.elts]
+        assert multipliers is not None, "解析不到 _EMOTION_MULTIPLIER"
+        assert order is not None, "解析不到 _EMOTION_DECAY_ORDER"
+        return multipliers, order
+
+    def test_decay_order_stays_consistent_with_the_multiplier_table(self) -> None:
+        multipliers, order = self._tables()
+
+        # ① 覆盖：漏掉的情绪会被 _decay_emotion 当表外标签直接归零（表现为"情绪标记没反应"）
+        self.assertEqual(
+            set(order),
+            set(multipliers),
+            f"降温阶梯与倍率表的情绪集合不一致：order-only={sorted(set(order) - set(multipliers))} "
+            f"mult-only={sorted(set(multipliers) - set(order))}",
+        )
+        self.assertEqual(len(order), len(set(order)), "降温阶梯有重复项")
+
+        # ② 严格单调递减：`_decay_emotion` 靠"往 calm 走一格"降温，乱序会让 idx±1 走反
+        values = [multipliers[name] for name in order]
+        self.assertTrue(
+            all(values[i] > values[i + 1] for i in range(len(values) - 1)),
+            f"降温阶梯未严格递减：{list(zip(order, values))}",
+        )
+
+        # ③ 单零点：calm 必须正好切开正负两侧（`neutral` 别名到 calm 就是为了避免第二个 0）
+        zeros = [name for name in order if multipliers[name] == 0]
+        self.assertEqual(zeros, ["calm"], f"零点必须唯一且是 calm，实际 {zeros}")
+        calm_index = order.index("calm")
+        for index, name in enumerate(order):
+            value = multipliers[name]
+            if index < calm_index:
+                self.assertGreater(value, 0, f"{name} 在 calm 之前却是非正倍率")
+            elif index > calm_index:
+                self.assertLess(value, 0, f"{name} 在 calm 之后却是非负倍率")
+
+
 if __name__ == "__main__":
     unittest.main()
