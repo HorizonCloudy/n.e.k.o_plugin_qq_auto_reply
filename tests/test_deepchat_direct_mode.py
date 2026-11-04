@@ -352,10 +352,12 @@ class MasterSwitchRoutingTests(unittest.TestCase):
         self.plugin._qq_settings["deepchat_enabled"] = False
 
         self.assertFalse(self.service.enabled)
-        self.assertEqual(
-            self.service.generation_mode,
-            "host",
-            "主开关关掉后必须回到 host 路径，否则会绕过宿主会话",
+        # `generation_mode` 是**配置值**（`dc_view_state` 需要如实展示），不随总开关变；
+        # 真正决定路由的是 `direct_mode_active`。
+        self.assertEqual(self.service.generation_mode, "direct", "配置值不该被主开关改写")
+        self.assertFalse(
+            self.service.direct_mode_active,
+            "主开关关掉后不得再走 direct（否则会绕过宿主会话）",
         )
 
         result = asyncio.run(QQReplyModelNode(self.plugin).generate(_context()))
