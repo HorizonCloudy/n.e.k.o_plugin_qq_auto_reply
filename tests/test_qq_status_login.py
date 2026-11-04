@@ -11,6 +11,7 @@ def test_login_display_and_qrcode_refresh():
     if not node:
         pytest.skip("Node.js is needed to execute frontend behavior tests")
     html = (Path(__file__).resolve().parents[1] / "static/status.html").read_text(encoding="utf-8")
+    backend = (Path(__file__).resolve().parents[1] / "static/onebot-backend.js").read_text(encoding="utf-8")
     script = html.split("let dashboardLoad = null;", 1)[1].split("/* ── 开放平台扫码绑定", 1)[0]
     harness = r"""
 const assert = require('node:assert/strict');
@@ -62,6 +63,18 @@ let dashboardLoad = null;
   assert.match(document.getElementById('napcat-login-title').textContent, /无法获取/);
   assert.equal(document.getElementById('qr').style.display, 'none');
   queryFailure = syncFailure = false;
+  payload.settings.onebot_backend = 'snowluma';
+  payload.runtime.login_method = 'native_qq';
+  payload.runtime.backend_webui_url = 'http://127.0.0.1:5099/';
+  calls = [];
+  await load();
+  assert.deepEqual(calls, ['dashboard']);
+  assert.equal(document.getElementById('qr').style.display, 'none');
+  assert.equal(document.getElementById('btn-qr').style.display, 'none');
+  assert.match(document.getElementById('qr-empty').textContent, /本机 QQ/);
+  assert.equal(document.getElementById('backend-webui').href, 'http://127.0.0.1:5099/');
+  payload.settings.onebot_backend = 'napcat';
+  payload.runtime.login_method = 'qrcode';
   payload.settings.qq_connection_mode = 'open_platform';
   calls = [];
   await load();
@@ -79,6 +92,6 @@ let dashboardLoad = null;
   assert.equal(document.getElementById('napcat-reply-state').textContent, '自动回复：未启动');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """
-    result = subprocess.run([node, "-"], input=harness + script + checks,
+    result = subprocess.run([node, "-"], input="globalThis.window = globalThis;\n" + backend + harness + script + checks,
                             capture_output=True, text=True, encoding="utf-8", timeout=20)
     assert result.returncode == 0, result.stderr

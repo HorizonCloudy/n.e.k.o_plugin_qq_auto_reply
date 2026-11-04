@@ -321,6 +321,12 @@ OUTBOUND = (
 #: 其余全部键。``saveable`` 决定是否进白名单/参数页；``handler`` 决定是否走通用路径。
 MISC = (
     # ── 连接 ──
+    SettingSpec("onebot_backend", "str", "napcat", saveable=True,
+                enum=("napcat", "snowluma"), description="save：OneBot 部署后端"),
+    SettingSpec("snowluma_directory", "str", "", saveable=True,
+                description="save：SnowLuma 安装目录"),
+    SettingSpec("show_snowluma_window", "bool", False, saveable=True,
+                description="save：启动 SnowLuma 时显示控制台窗口"),
     SettingSpec("qq_connection_mode", "str", "napcat", saveable=True,
                 enum=("napcat", "napcat_forward", "open_platform"),
                 description="save：连接方式", handler="qq_connection_mode"),

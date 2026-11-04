@@ -70,7 +70,9 @@ class QQDashboardService:
                 # 解析结果，未配置时会得到 `str(Path())` == "."，于是被当作用户
                 # 显式填的目录存下来 —— 一键部署随即认定"目录里没有启动器"而拒绝
                 # 安装，且每开一次配置页保存一次就固化一次。
-                "napcat_directory": self.plugin.napcat_service.get_configured_napcat_path(),
+                "napcat_directory": (self.plugin.napcat_service.get_configured_napcat_path()
+                                     if settings.get("onebot_backend") != "snowluma" else settings.get("napcat_directory", "")),
+                "backend_directory": self.plugin.napcat_service.get_configured_napcat_path(),
                 # 是否存在仍按**解析后**的位置判断（那才是 NapCat 实际在哪）。
                 "napcat_directory_exists": napcat_dir.exists(),
                 "napcat_directory_resolved": str(napcat_dir),
@@ -156,6 +158,9 @@ class QQDashboardService:
         onebot_url: Optional[str] = None,
         token: Optional[str] = None,
         napcat_directory: Optional[str] = None,
+        onebot_backend: Optional[str] = None,
+        snowluma_directory: Optional[str] = None,
+        show_snowluma_window: Optional[bool] = None,
         show_napcat_window: Optional[bool] = None,
         reply_mode: Optional[str] = None,
         show_onboarding: Optional[bool] = None,
@@ -239,6 +244,9 @@ class QQDashboardService:
                 onebot_url=onebot_url,
                 token=token,
                 napcat_directory=napcat_directory,
+                onebot_backend=onebot_backend,
+                snowluma_directory=snowluma_directory,
+                show_snowluma_window=show_snowluma_window,
                 show_napcat_window=show_napcat_window,
                 reply_mode=reply_mode,
                 show_onboarding=show_onboarding,

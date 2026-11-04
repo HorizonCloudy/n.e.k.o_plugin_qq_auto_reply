@@ -11,7 +11,17 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from plugin.plugins.qq_auto_reply.backlog_store import QQBacklogStore
-from plugin.sdk.plugin import Err, NekoPluginBase, Ok, SdkError, lifecycle, neko_plugin, plugin_entry, tr, ui
+from plugin.sdk.plugin import (
+    Err,
+    NekoPluginBase,
+    Ok,
+    SdkError,
+    lifecycle,
+    neko_plugin,
+    plugin_entry,
+    tr,
+    ui,
+)
 
 # OneBotConnector 仅作类型注解使用（from __future__ import annotations 下为惰性求值），
 # 运行时无需导入 —— 连接由 connector_seam 在方法内惰性解析并构建，见 _make_qq_connection。
@@ -19,7 +29,9 @@ if TYPE_CHECKING:
     from .connector_seam import OneBotConnector
 
 try:
-    from utils.tts.native_voice_registry import get_active_realtime_native_provider_for_ui
+    from utils.tts.native_voice_registry import (
+        get_active_realtime_native_provider_for_ui,
+    )
 except (ImportError, ModuleNotFoundError):
     get_active_realtime_native_provider_for_ui = None
 try:
@@ -56,7 +68,7 @@ from .handler_runtime_service import QQHandlerRuntimeService
 from .memory_bridge import QQMemoryBridge
 from .memory_tool_service import QQMemoryToolService
 from .message_dispatcher import QQMessageDispatcher
-from .napcat_service import QQNapcatService
+from .onebot_backend import OneBotBackendService
 from .outbound_guard_service import QQOutboundGuardService
 from .permission import PermissionManager
 from .plugin_tool_followup_service import QQPluginToolFollowupService
@@ -169,7 +181,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self.settings_service = QQSettingsService(self)
         self.runtime_service = QQRuntimeService(self)
         self.dashboard_service = QQDashboardService(self)
-        self.napcat_service = QQNapcatService(
+        self.napcat_service = OneBotBackendService(
             get_settings=lambda: self._qq_settings,
             get_qq_client=lambda: self.qq_client,
             config_dir=self.config_dir,
@@ -787,7 +799,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self.settings_service.apply_runtime_settings(settings)
         await self.napcat_service.migrate_napcat_storage()
         migrated_path = self.napcat_service.get_configured_napcat_path()
-        if migrated_path and migrated_path != str(settings.get("napcat_directory") or "").strip():
+        if settings.get("onebot_backend") != "snowluma" and migrated_path and migrated_path != str(settings.get("napcat_directory") or "").strip():
             await self.settings_service.save_settings(napcat_directory=migrated_path)
         await self.attention_service.load_cached_state()
         self.reply_buffer_service = QQReplyBufferService(self)
@@ -2062,6 +2074,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         return Ok({"status": "napcat_started", "onebot_ready": False})
 
     async def _deploy_one_click(self, kw: dict[str, Any]):
+        if getattr(self, "_onebot_deploy_in_progress", False):
+            return Err(SdkError("DEPLOY_BUSY: 部署正在进行，请等待完成"))
+        self._onebot_deploy_in_progress = True
         uin = str(kw.get("uin") or "").strip()
         force = bool(kw.get("force", False))
         auto_start = bool(kw.get("auto_start", True))
@@ -2082,6 +2097,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         except Exception as e:
             self.logger.error(f"一键部署失败: {e}")
             return Err(SdkError(f"DEPLOY_FAILED: {e}"))
+        finally:
+            self._onebot_deploy_in_progress = False
         return Ok({**result})   # 收尾字段由 deploy 一并带回
 
     async def _deploy_apply_onebot(self, kw: dict[str, Any]):
@@ -2722,6 +2739,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
 
     async def _runtime_set_mode(self, kw: dict[str, Any]):
         """切换连接方式。运行中则停掉重连，否则只存设置。"""
+        if getattr(self, "_onebot_deploy_in_progress", False):
+            return Err(SdkError("DEPLOY_BUSY: 部署正在进行，请完成后再切换连接方式"))
         mode = str(kw.get("mode") or "").strip()
         restart = bool(kw.get("restart", True))
         if mode not in CONNECTION_MODES:
