@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 
 @dataclass(slots=True)
@@ -21,6 +21,10 @@ class QQMemoryQueryResult:
 class QQMemoryBridge:
     def __init__(self, plugin: Any):
         self.plugin = plugin
+        #: 写前登记回调：`(subject: dict) -> None`，在**发 HTTP 之前**调用。
+        #: 抛异常即视为登记失败 → 调用方 fail-closed（不发 HTTP）。
+        #: ⚠️ 只在**写入**路径触发；`post_scoped_forget` 绝不触发（遗忘不该登记坐标）。
+        self.on_subject_write: Callable[[dict[str, Any]], None] | None = None
 
     @staticmethod
     def _client():
@@ -134,6 +138,13 @@ class QQMemoryBridge:
         response.raise_for_status()
         return response.text.strip()
 
+    def _register_write(self, subject: dict[str, Any] | None) -> None:
+        """写前登记（索引坐标）。hook 抛异常时原样上抛 —— 调用点据此 fail-closed。"""
+        hook = self.on_subject_write
+        if hook is None or not isinstance(subject, dict):
+            return
+        hook(subject)
+
     async def post_scoped_mentions(
         self,
         her_name: str,
@@ -144,6 +155,9 @@ class QQMemoryBridge:
     ) -> None:
         if not subjects or not response_text:
             return
+        # 写前登记：登记失败即 fail-closed（不发表），避免"发出去但没人知道"。
+        for subject in subjects:
+            self._register_write(subject)
         client = self._client()
         response = await client.post(
             f"{self._base_url()}/internal/memory/{her_name}/scoped_mentions",
@@ -322,6 +336,8 @@ class QQMemoryBridge:
         # 不再持有 trust 池、不再演化、不再接收回传。display_name 是 subject
         # 的人类可读名（群名/昵称），服务端中和后刷进 persona section 元数据，
         # 渲染标题用；纯装饰性，缺省即退化裸 id。
+        # 写前登记（单段）：失败即 fail-closed。
+        self._register_write(subject)
         payload: dict[str, Any] = {
             "input_history": json.dumps(messages, ensure_ascii=False),
             "subject": subject,
@@ -511,6 +527,10 @@ class QQMemoryBridge:
         后按段分派，响应体按请求顺序逐段报 ok/failed，调用方只 pop 成功段
         的 bucket。display_name 是该段 subject 的显示名（昵称），只用于
         persona 标题，可缺省。"""
+        # 写前登记（逐段）：任一段登记失败即整批 fail-closed ——
+        # 宁可不发，也不要发出去却漏登记（漏登记 = 将来遗忘时枚举不到）。
+        for segment in segments:
+            self._register_write(segment.get("subject"))
         payload_segments: list[dict[str, Any]] = []
         for segment in segments:
             wire: dict[str, Any] = {

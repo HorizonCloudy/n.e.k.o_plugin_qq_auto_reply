@@ -185,6 +185,10 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self.attention_service = QQAttentionService(self)
         self.prompt_builder = QQPromptBuilder(self)
         self.memory_bridge = QQMemoryBridge(self)
+        # 宿主记忆的**写前登记**：把「谁 × 哪个域」写进本地社交坐标索引，
+        # 否则遗忘时枚举不到要清哪些 subject（宿主没有"列出某人的所有 subject"端点）。
+        # 只在写入路径触发；遗忘路径绝不触发（见 memory_bridge._register_write）。
+        self.memory_bridge.on_subject_write = self._on_subject_write
         self.deepchat_service = DeepChatService(self)
         self.display_name_service = QQDisplayNameService(self)
         self.memory_tool_service = QQMemoryToolService(self)
@@ -1188,7 +1192,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         return Ok(self.deepchat_service.reset_user(user_id))
 
     #: 遗忘覆盖不到的部分。写进描述与返回体：宁可说清边界，也不给人"已经清干净"的错觉。
-    FORGET_NOT_COVERED: tuple[str, ...] = ("group_participant",)
+    #: 覆盖不到的部分：P0b 起群成员域已能在**写前登记过**的前提下擦除；
+    #: P0b 之前写下的群成员历史没有坐标，枚举不到 —— 这条必须显式说出来。
+    FORGET_NOT_COVERED: tuple[str, ...] = ("group_participant:history_before_P0b",)
 
     @plugin_entry(
         id="dc_forget_user",
@@ -1196,8 +1202,10 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         description=(
             "完整遗忘某个 QQ 用户：清本地情绪/关系/自主/表达学习，并清宿主的 "
             "participant 记忆（私聊个人域）。"
-            "\n\n**覆盖边界**：只覆盖私聊 participant 域；群里的 group_participant 记忆"
-            "按群分桶，本次**不清** —— 返回体同样给出 not_covered: [\"group_participant\"]。"
+            "\n\n**覆盖边界**：覆盖私聊 participant 域 + **写入时登记过**的群成员域"
+            "（group_participant，按群逐个清）；P0b 之前写下的群成员历史没有坐标、"
+            "枚举不到 —— 返回体同样给出 "
+            "not_covered: [\"group_participant:history_before_P0b\"]。"
             "\n**身份元数据**：trust/profile 由宿主账本维护，本插件没有擦除端点，"
             "故 identity_meta.supported=false（不计入 partial）。"
             "\n**与 dc_reset_user 的差别**：dc_reset_user 只清本地 sqlite、不碰宿主记忆。"
@@ -1211,6 +1219,22 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         if not sender_id:
             return Err(SdkError("INVALID_INPUT: user_id 不能为空"))
         return Ok(await self._forget_user(sender_id))
+
+    def _on_subject_write(self, subject: dict[str, Any]) -> None:
+        """写前登记回调：把 subject 坐标记进本地索引。
+
+        **fail-closed**：登记失败就抛出去，调用方（bridge 的写入方法）会因此不发 HTTP
+        —— 宁可少写一条记忆，也不要"发出去但没人知道它写在哪个 subject 上"（那样遗忘
+        时永远枚举不到，等于漏删）。
+
+        `group_chat` 这类"群本体"不是"谁写过"，`upsert_subject` 解析不了会返回 False，
+        这里不算失败（它是设计上不登记的对象）。
+        """
+        deepchat = getattr(self, "deepchat_service", None)
+        index = getattr(deepchat, "subject_index", None)
+        if index is None:
+            raise RuntimeError("subject_index_unavailable")
+        index.upsert_subject(subject)
 
     def _private_memory_mode_of(self, user_id: str) -> str:
         """该用户私聊记忆模式（`legacy` / `participant` / 空串=没有会话记录）。"""
@@ -1243,12 +1267,13 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             warnings.append("local_failed")
             partial = True
 
-        # ── 腿 2：宿主 participant 记忆 ──
+        # ── 腿 2：宿主记忆（participant + 索引枚举出的 group_participant）──
         subjects_forgotten: list[str] = []
         subjects_skipped: list[str] = []
         detail: Any = None
         bridge = getattr(self, "memory_bridge", None)
         mode = self._private_memory_mode_of(user_id)
+        index = getattr(getattr(self, "deepchat_service", None), "subject_index", None)
 
         if mode and mode != "participant":
             subjects_skipped.append("participant")
@@ -1271,20 +1296,51 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 _, her_name, *_ = get_config_manager().get_character_data()
             except Exception:  # noqa: BLE001 —— 独立运行/测试环境没有宿主配置
                 her_name = str(getattr(self, "_her_name", "") or "neko")
-            try:
-                detail = await bridge.post_scoped_forget(
-                    her_name,
-                    subject=bridge.participant_subject(user_id),
-                )
-                subjects_forgotten.append("participant")
-                self._emit_log("INFO", f"[Forget] {masked} 的 participant 记忆已清除")
-            except Exception as exc:  # noqa: BLE001
-                subjects_skipped.append("participant")
-                warnings.append("participant_forget_failed")
-                partial = True
+            # 待遗忘的 subject：私聊 participant + 索引里登记过的群成员域。
+            # 群成员域（group_participant）在 P0b 之前没有登记，那些历史坐标枚举不到，
+            # 因此返回体仍保留 not_covered 说明（见 FORGET_NOT_COVERED）。
+            targets: list[tuple[str, dict[str, str]]] = [
+                ("participant", bridge.participant_subject(user_id)),
+            ]
+            group_ids: list[str] = []
+            if index is not None:
+                for row in index.rows_for_user(user_id):
+                    if str(row.get("subject_kind")) != "group_participant":
+                        continue
+                    gid = str(row.get("group_id") or "").strip()
+                    if not gid or gid in group_ids:
+                        continue
+                    group_ids.append(gid)
+                    targets.append(
+                        ("group_participant", bridge.group_participant_subject(gid, user_id)),
+                    )
+
+            failures: list[str] = []
+            for kind, subject in targets:
+                try:
+                    detail = await bridge.post_scoped_forget(her_name, subject=subject)
+                    subjects_forgotten.append(kind)
+                    self._emit_log("INFO", f"[Forget] {masked} 的 {kind} 记忆已清除")
+                except Exception as exc:  # noqa: BLE001
+                    failures.append(kind)
+                    subjects_skipped.append(kind)
+                    warnings.append(f"{kind}_forget_failed")
+                    self._emit_log(
+                        "ERROR", f"[Forget] {masked} 的 {kind} 记忆清除失败: {type(exc).__name__}"
+                    )
+
+            # HTTP **全部成功之后**才删索引行：删早了就再也枚举不到，重试也没机会。
+            # 有失败则保留（下次重试还能枚举到），并用 partial 说明没清干净。
+            if index is not None and not failures:
+                deleted_rows = index.delete_user(user_id)
+                self._emit_log("INFO", f"[Forget] {masked} 的社交坐标索引已清（{deleted_rows} 行）")
+            elif index is not None and failures:
                 self._emit_log(
-                    "ERROR", f"[Forget] {masked} 的 participant 记忆清除失败: {type(exc).__name__}"
+                    "WARNING",
+                    f"[Forget] {masked} 有 {len(failures)} 个域未清成功，索引行保留以便重试",
                 )
+            if failures:
+                partial = True
 
         return {
             "user_id": user_id,
@@ -1293,7 +1349,13 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             "subjects_skipped": subjects_skipped,
             "not_covered": list(self.FORGET_NOT_COVERED),
             # 能力声明，不是清除结果：不参与 partial。
-            "identity_meta": {"supported": False, "reason": "no_endpoint"},
+            # trust / profile 由宿主账本维护，本插件既没有端点也不持有副本：
+            # 显式声明，避免"已彻底遗忘"的错觉（不参与 partial）。
+            "identity_meta": {
+                "supported": False,
+                "reason": "no_endpoint",
+                "trust_profile": "maintained_by_host",
+            },
             "partial": partial,
             "warnings": warnings,
             "detail": detail,
@@ -1974,8 +2036,22 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 her_name,
                 subject=self.memory_bridge.group_subject(normalized_group_id),
             )
-            self._emit_log("INFO", f"群 {normalized_group_id} 记忆已清除: {result}")
-            return Ok({"group_id": normalized_group_id, "forgotten": True, "detail": result})
+            # HTTP 成功后再删群轴索引行（P0b）：删早了就枚举不到，重试也没机会。
+            index = getattr(getattr(self, "deepchat_service", None), "subject_index", None)
+            deleted_rows = index.delete_group(normalized_group_id) if index is not None else 0
+            self._emit_log(
+                "INFO",
+                f"群 {normalized_group_id} 记忆已清除: {result}（群轴索引 {deleted_rows} 行）",
+            )
+            return Ok({
+                "group_id": normalized_group_id,
+                "forgotten": True,
+                "subject_index_deleted": deleted_rows,
+                # 群轴只清「群本体 + 群成员坐标」；成员内容按 subject 独立擦除，
+                # 由 dc_forget_user 逐人负责。
+                "not_covered": ["group_participant:content_via_forget_user"],
+                "detail": result,
+            })
         except Exception as exc:
             self._emit_log("ERROR", f"清除群 {normalized_group_id} 记忆失败: {exc}")
             return Err(SdkError(f"FORGET_FAILED: {exc}"))

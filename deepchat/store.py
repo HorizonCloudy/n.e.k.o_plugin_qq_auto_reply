@@ -67,6 +67,20 @@ class DeepChatStore:
                     updated_at REAL NOT NULL,
                     frozen INTEGER NOT NULL DEFAULT 0
                 );
+                -- 宿主记忆的**社交坐标索引**：只存坐标（谁 × 哪个域），不存内容。
+                -- 作用：遗忘时能沿"用户轴 / 群轴"枚举出该清哪些 subject。
+                -- ⚠️ 本表含社交关系坐标，属于隐私数据：**禁止明文备份/导出**。
+                CREATE TABLE IF NOT EXISTS deepchat_subject_index (
+                    subject_kind TEXT NOT NULL,
+                    group_id TEXT NOT NULL DEFAULT '',
+                    user_id TEXT NOT NULL,
+                    last_written_at REAL NOT NULL,
+                    PRIMARY KEY (subject_kind, group_id, user_id)
+                );
+                CREATE INDEX IF NOT EXISTS ix_subject_index_user
+                    ON deepchat_subject_index(user_id);
+                CREATE INDEX IF NOT EXISTS ix_subject_index_group
+                    ON deepchat_subject_index(group_id);
                 """
             )
             # 旧库没有 frozen 列：加法式迁移，保留既有行。

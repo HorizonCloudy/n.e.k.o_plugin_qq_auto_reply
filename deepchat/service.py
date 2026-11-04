@@ -15,6 +15,7 @@ from .models import LEGACY_MOOD_ALIASES, Mood, coerce_mood
 from .mood import MoodStateMachine
 from .relationship import RelationshipGraph
 from .store import DeepChatStore
+from .subject_index import SubjectIndex
 
 POSITIVE_SIGNALS = frozenset({"praise", "thank", "funny"})
 NEGATIVE_SIGNALS = frozenset({"insult"})
@@ -145,6 +146,7 @@ class DeepChatService:
     def __init__(self, plugin: Any):
         self.plugin = plugin
         self.store = DeepChatStore(Path(plugin.data_path()) / "deepchat.sqlite3")
+        #: 宿主记忆的社交坐标索引（只存坐标，不存内容）——遗忘时按双轴枚举用。
         self.mood = MoodStateMachine(
             self.store,
             decay_rate=self._float_setting("deepchat_mood_decay_rate", 0.05),
@@ -156,6 +158,7 @@ class DeepChatService:
             revive_threshold=self._float_setting("deepchat_relationship_revive_threshold", 0.15),
         )
         self.autonomy = AutonomyScheduler(self)
+        self.subject_index = SubjectIndex(self.store)
         # 写回是跨多张表/多个连接的读-改-写；并发调用会交错覆盖（实测 16 并发送回丢 5 次）
         # 且静默无异常。这里用**整条链**的互斥串行化——⚠️ 不要改成"给 connection() 加锁":
         # 那是单连接粒度，RMW 照样交错，实测比不修更差；
