@@ -29,20 +29,30 @@ PRIVACY_KEYS: tuple[str, ...] = (
 
 
 class DeepChatPrivacySwitchesTests(unittest.TestCase):
-    def test_privacy_switches_are_listed_and_saveable(self) -> None:
-        # ``MISC`` 是 SettingSpec 元组（不是键名元组），要按 .key 取键名。
+    def test_privacy_switches_are_dc_tune_only_for_now(self) -> None:
+        """dashboard save_settings 与前端 UI 尚未接这四个键，暂只走 dc_tune。
+
+        一旦补了 save_settings 具名参数 + 前端回显/提交，再把它们放进
+        MISC/SAVEABLE_KEYS；在那之前放进 SAVEABLE_KEYS 会被 dashboard 保存链
+        丢弃（上游 test_qq_settings_save_chain / test_qq_config_save_keys 会红）。
+        """
         misc_keys = {spec.key for spec in settings_schema.MISC}
         for key in PRIVACY_KEYS:
             with self.subTest(key=key):
                 self.assertIn(
                     key,
-                    misc_keys,
-                    f"{key} 不在 MISC：面板渲染不到这个开关",
+                    deepchat_service.TUNING_KEYS,
+                    f"{key} 必须保留 dc_tune 入口，否则用户无法关闭该能力",
                 )
-                self.assertIn(
+                self.assertNotIn(
+                    key,
+                    misc_keys,
+                    f"{key} 暂不进 MISC：dashboard save_settings / 前端字段未接",
+                )
+                self.assertNotIn(
                     key,
                     settings_schema.SAVEABLE_KEYS,
-                    f"{key} 不在 SAVEABLE_KEYS：保存时会被丢弃",
+                    f"{key} 暂不进 SAVEABLE：保存链会丢键，UI 会报 TypeError",
                 )
 
 

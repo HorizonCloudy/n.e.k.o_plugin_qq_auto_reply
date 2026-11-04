@@ -182,7 +182,7 @@
   <h2>6. 验证结果</h2>
   <div class="card">
     <ul>
-      <li><span class="ok">127 / 127</span> 单测通过：<code>PYTHONPATH=. python -m unittest discover -s tests -p "test_deepchat_*.py" -v</code>（state/service/guard/manifest/autonomy 45 + 烂梗守卫 15 + 表达学习 28 + 关系生命周期 20 + 安全回归 14 + direct 回写 3 + 设置面 2；含负向冻结/解冻、亚日粒度、跨天零头累计、烂梗分句过滤、群聊不注入私聊里程碑与情绪句、direct 回写与 synthetic 排除、autonomy 双开关 AND、隐私开关可保存、里程碑停写与逐条 guard）</li>
+      <li><span class="ok">127 / 127</span> 单测通过：<code>PYTHONPATH=. python -m unittest discover -s tests -p "test_deepchat_*.py" -v</code>（state/service/guard/manifest/autonomy 45 + 烂梗守卫 15 + 表达学习 28 + 关系生命周期 20 + 安全回归 14 + direct 回写 3 + 设置面 2；含负向冻结/解冻、亚日粒度、跨天零头累计、烂梗分句过滤、群聊不注入私聊里程碑与情绪句、direct 回写与 synthetic 排除、autonomy 双开关 AND、隐私开关暂走 dc_tune（UI 保存链 follow-up）、里程碑停写与逐条 guard）</li>
       <li><span class="ok">E2E</span> 桩 SDK 联调通过：<code>PYTHONPATH=. python tests/e2e_deepchat_stub.py</code>（真实插件包加载/实例化、注入、写回、host/direct 两条生成路径）</li>
       <li><span class="ok">真实 Steam 宿主</span> 已部署并注册 v0.14.4；启动后共 12 个入口，含 <code>dc_view_state</code> / <code>dc_reset_user</code> / <code>dc_set_mood</code> / <code>dc_tune</code> / <code>dc_recall</code>；状态目录已生成 <code>deepchat.sqlite3</code>（<code>deepchat_mood</code> / <code>deepchat_relationship</code>）。</li>
       <li><span class="ok">ruff</span> 全过：<code>ruff check deepchat tests/test_deepchat_*.py __init__.py reply_context_node.py reply_generation_service.py reply_model_node.py</code></li>
@@ -334,17 +334,19 @@
       静默清空；④ 没有后置断言就无法证明清理真的发生。按下面八条执行：</p>
     <ol>
       <li><b>自查先跑（三支 UNION，互不接触）</b>：会被应用静默清空/会让查询报错的行有三类——
-        <b>① NULL 单元格</b>（<code>json_valid(NULL)</code> 返回 <b>NULL 而不是 0</b>，
-        所以 <code>=0</code> 抓不到它）<b>② 非法 JSON</b>（<code>json_each</code> 直接
-        <code>malformed JSON</code>）<b>③ 合法但不是数组</b>（能过 <code>json_valid</code>，
-        但 <code>_load_milestones</code> 的判据是 <code>isinstance(parsed, list)</code>，
-        写回时被重置为 <code>[]</code>）。
+        <b>① 表结构被改过</b>（schema 是 <code>TEXT NOT NULL DEFAULT '[]'</code>，正常不可能出现
+        NULL 单元格；出现即说明表被外部改过，先查来源再处理）<b>② 非法 JSON</b>
+        （<code>json_each</code> 直接 <code>malformed JSON</code>）<b>③ 合法但不是数组</b>（能过
+        <code>json_valid</code>，但 <code>_load_milestones</code> 的判据是
+        <code>isinstance(parsed, list)</code>，写回时被重置为 <code>[]</code>）。
         ⚠️ 三者<b>不能合成一条</b> <code>WHERE json_valid=0 OR json_type&lt;&gt;'array'</code>：
         <code>json_type</code> 对 malformed JSON 同样抛错，能跑只是靠短路——
         违反本 runbook"不依赖优化器/求值顺序"的原则。非数组那支必须先子查询过滤
         <code>json_valid=1</code> 再算 <code>json_type</code>。
         <b>先跑这一步再看别的</b>，否则第一步就是 ERROR，很容易退回
-        <code>LIKE '%…%'</code> 那条误伤路径。</li>
+        <code>LIKE '%…%'</code> 那条误伤路径。
+        <b>判定口径</b>：自查 0 命中才是干净；非 0 = 表被<b>当前代码之外的写入</b>改过
+        （当前代码只写合法 JSON 数组），先查来源，不要直接跑 scope 查询。</li>
       <li><b>默认 dry-run</b>：先只跑 <code>SELECT</code>，不要直接 <code>DELETE</code>／不要直接改。</li>
       <li><b>作用域＝逐条目前缀匹配</b>：<code>json_each(milestones)</code> + <code>LIKE '最近聊到：%'</code>。
         不要对整串 LIKE（前缀 0 命中＝假干净；子串 <code>%最近聊到：%</code> 会把"手写条目里
@@ -442,7 +444,14 @@ SELECT COUNT(*) AS remaining
       所以清理只能改 <code>milestones</code> 字段，<b>不要删整行</b>——删行会连关系数值一起丢。
     </p>
     <p>
-      <b>“清理完成”的定义</b>：只等于 A（array 行命中元素）归零；不得据此宣称“库里已无原话”。
+      <b>apply 前后必须比对整行六列</b>：<code>affinity</code> / <code>trust</code> /
+      <code>interactions</code> / <code>milestones</code> / <code>updated_at</code> /
+      <code>frozen</code>。应用层的 <code>_save</code> 会重写全部六列；只比
+      <code>milestones</code> 会漏掉 <code>frozen: 1→0</code>（frozen 值被新对象硬编码为
+      False 的坑）。
+    </p>
+    <p>
+      <b>“清理完成”的定义</b>：只等于 A（array 行命中元素）归零。
       审计必须显式记录 B（NULL/非法/非数组）行数；B 类行<b>只有在后续被读取或交互时</b>才会被应用重置为
       <code>[]</code>，<b>frozen 行与不再被读到的行会保留</b>——这是显式接受的残留，不得据此宣称“库里已无原话”。
       <b>不要做取证导出</b>——导出物就是原话副本，与禁止明文备份同源。
