@@ -57,6 +57,17 @@ class _AutonomyFixture(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
+    def _require_live_autonomy(self) -> None:
+        """前置断言：3B 解闸后（共享账本落地）这些用例才有意义。
+
+        没有它，硬闸下所有「断言 should_reach_out is None」的用例都会空转绿，
+        3B 解闸后又突然变红而没人记得原因。
+        """
+        self.assertTrue(
+            self.service.autonomy.enabled,
+            "前置未满足：autonomy 仍处于 3A 硬闸（3B 共享账本落地后本用例才有效）",
+        )
+
     def _seed(
         self,
         user_id: str = "u1",
@@ -71,7 +82,6 @@ class _AutonomyFixture(unittest.TestCase):
         self.service.relationship.reinforce(user_id, affinity, now=at)
 
 class AutonomyTests(_AutonomyFixture):
-    @unittest.skip("3A hard gate: shared budget lands in 3B")
     def test_due_private_user_is_candidate(self) -> None:
         self._seed()
         candidate = self.service.autonomy.should_reach_out("u1", now=self.now)
@@ -79,35 +89,34 @@ class AutonomyTests(_AutonomyFixture):
         self.assertGreater(candidate.affinity, 0.35)
         self.assertAlmostEqual(candidate.idle_hours, 7.0, places=1)
 
-    @unittest.skip("3A hard gate: shared budget lands in 3B")
     def test_quiet_hours_block(self) -> None:
+        self._require_live_autonomy()
         quiet_now = datetime(2026, 11, 3, 23, 30, 0).timestamp()
         self._seed(at=quiet_now - 7 * 3600)
         self.assertIsNone(self.service.autonomy.should_reach_out("u1", now=quiet_now))
 
-    @unittest.skip("3A hard gate: shared budget lands in 3B")
     def test_low_affinity_blocks(self) -> None:
+        self._require_live_autonomy()
         self._seed(affinity=0.1)
         self.assertIsNone(self.service.autonomy.should_reach_out("u1", now=self.now))
 
-    @unittest.skip("3A hard gate: shared budget lands in 3B")
     def test_group_only_user_blocks(self) -> None:
+        self._require_live_autonomy()
         self._seed(private=False)
         self.assertIsNone(self.service.autonomy.should_reach_out("u1", now=self.now))
 
-    @unittest.skip("3A hard gate: shared budget lands in 3B")
     def test_cooldown_blocks_after_send(self) -> None:
+        self._require_live_autonomy()
         self._seed()
         self.service.autonomy.mark_reached_out("u1", now=self.now)
         self.assertIsNone(self.service.autonomy.should_reach_out("u1", now=self.now + 60))
 
-    @unittest.skip("3A hard gate: shared budget lands in 3B")
     def test_daily_cap_blocks(self) -> None:
+        self._require_live_autonomy()
         self._seed()
         self.service.autonomy.mark_reached_out("u1", now=self.now)
         self.assertIsNone(self.service.autonomy.should_reach_out("u1", now=self.now + 2 * 3600))
 
-    @unittest.skip("3A hard gate: shared budget lands in 3B")
     def test_tick_returns_one(self) -> None:
         self._seed("u1")
         self._seed("u2")
@@ -131,12 +140,12 @@ class AutonomyTests(_AutonomyFixture):
             "两个开关任一关闭都不得主动私聊",
         )
 
-    @unittest.skip("3A hard gate: shared budget lands in 3B")
     def test_daily_budget_from_proactive_service_gates_outreach(self) -> None:
         """Phase 0：当日额度由 proactive 服务统一记账，用尽即不得再开口。
 
         契约：``proactive_initiative_service.remaining_today(*, now=None) -> int``（同步）。
         """
+        self._require_live_autonomy()
         self.plugin._qq_settings["proactive_initiative_enabled"] = True
         self._seed()
 
@@ -192,7 +201,6 @@ class SharedBudgetTests(_AutonomyFixture):
             last_sent_at=self.ledger.last_sent_at,
         )
 
-    @unittest.skip("3A hard gate: shared budget lands in 3B（3B: remove this skip）")
     def test_deepchat_send_decrements_shared_budget(self) -> None:
         self._seed()
         self.ledger.record("proactive", self.now - 2 * 3600)  # 今天已由原服务发出 1
@@ -207,24 +215,31 @@ class SharedBudgetTests(_AutonomyFixture):
             f"DeepChat 的发送没有记进共享账本（账本：{self.ledger.sent}）",
         )
 
-    @unittest.skip("3A hard gate: shared budget lands in 3B（3B: remove this skip）")
     def test_interleaved_sends_never_exceed_max_per_day(self) -> None:
+        """账本跨来源共享的最小自检：initiative 发 1 后，autonomy 只能再发 1，总额不超 max=2。"""
         self._seed()
+        # 1) 原服务今天已发 1 条（max=2）→ 共享账本只剩 1 次
         self.ledger.record("proactive", self.now - 2 * 3600)
-        self.service.autonomy.mark_reached_out("u1", now=self.now)  # DeepChat 发第 2 次
+        self.assertEqual(self.ledger.remaining_today(), 1, "前置：共享账本应只剩 1 次")
 
+        # 2) autonomy 发 1 条后账本必须封顶
+        self.assertIsNotNone(
+            self.service.autonomy.should_reach_out("u1", now=self.now),
+            "还有 1 次额度时应允许开口",
+        )
+        self.service.autonomy.mark_reached_out("u1", now=self.now)
         self.assertEqual(
             self.ledger.remaining_today(),
             0,
-            f"两来源交错后总额度未被共享限制（账本：{self.ledger.sent}）",
-        )
-        self.assertIsNone(
-            self.service.autonomy.should_reach_out("u1", now=self.now + 10),
-            "额度已满时 DeepChat 不得再开口",
+            f"autonomy 的发送没有记进共享账本（账本：{self.ledger.sent}）",
         )
 
-    @unittest.skip("3A hard gate: shared budget lands in 3B（3B: remove this skip）")
+        # 3) 封顶后任一路都不得再开口
+        self.assertIsNone(self.service.autonomy.should_reach_out("u1", now=self.now + 10))
+        self.assertEqual(self.ledger.remaining_today(), 0, "封顶后额度不得被重新放出来")
+
     def test_min_gap_is_shared_across_both_sources(self) -> None:
+        self._require_live_autonomy()
         self._seed()
         self.ledger.record("proactive", self.now - 60)  # 60s 前原服务刚发过（gap=3600）
         self.assertIsNone(
