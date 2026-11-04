@@ -9,10 +9,13 @@ direct 模式走 raw-LLM 路径（`generate_fallback_from_context`），不经�
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import importlib.util
+import sqlite3
 import sys
 import tempfile
+import time
 import types
 import unittest
 from pathlib import Path
@@ -193,13 +196,12 @@ class DirectModeWritebackTests(unittest.TestCase):
         )
 
 
-    def test_writeback_does_not_block_event_loop(self) -> None:
-        """回写若在事件循环里同步执行，同一 loop 上的心跳/定时任务会被一起拖住。
+    def test_node_awaits_writeback_without_blocking_loop(self) -> None:
+        """本用例**替换**服务层实现，因此不覆盖 `writeback_deepchat` 的内部写法。
 
-        做法：让替身的 writeback 阻塞 0.5s（模拟慢 SQLite / 慢磁盘），同时跑一个
-        20ms ticker。同步执行会让 ticker 停 0.5s（测出来的间隔 ≈ 阻塞时长）；
-        被 ``asyncio.to_thread`` 挪出 loop 后，间隔应远小于阻塞时长。
-        阈值取 0.25s（阻塞时长的一半），对 CI 抖动留了余量，但仍能拦住"退回同步调用"。
+        它守的是节点侧纪律：必须 await 回写（不能 fire-and-forget），且 await 期间
+        同一 loop 上的心跳/定时任务还能跑。服务层是否走 `to_thread` 由
+        `test_writeback_is_offloaded_to_a_thread`（AST 契约）负责。
         """
         import time as _time
 
@@ -246,28 +248,86 @@ class DirectModeWritebackTests(unittest.TestCase):
         )
 
 
+    def test_writeback_fails_fast_under_lock_contention(self) -> None:
+        """锁争用时必须快速失败（`timeout=0.5`），而不是等默认 5s。
+
+        另一连接持 `BEGIN IMMEDIATE` 制造写锁争用。阈值 1.5s 落在"0.5s 量级"与
+        "默认 5s"之间，余量很大，不会因 CI 抖动假红。
+        """
+        db_path = Path(self._tmp.name) / "deepchat.sqlite3"
+        holder = sqlite3.connect(str(db_path), isolation_level=None)
+        try:
+            holder.execute("BEGIN IMMEDIATE")
+            started = time.perf_counter()
+            with self.assertRaises(sqlite3.OperationalError):
+                self.service.writeback(sender_id="u1", text="谢谢")
+            elapsed = time.perf_counter() - started
+        finally:
+            holder.execute("ROLLBACK")
+            holder.close()
+
+        self.assertLess(
+            elapsed,
+            1.5,
+            f"锁等待应在 0.5s 量级返回，实际 {elapsed:.2f}s（是不是退回默认 5s 了？）",
+        )
+
 class WritebackThreadContractTests(unittest.TestCase):
     """``reply_generation_service`` 载不进单测（宿主依赖），所以对它做源码级契约。"""
 
-    def _method_block(self) -> str:
-        source = (_REPO_ROOT / "reply_generation_service.py").read_text(encoding="utf-8")
-        start = source.find("async def writeback_deepchat")
-        self.assertGreater(start, -1, "writeback_deepchat 必须是 async def（否则调用点无法 await）")
-        end = source.find("async def run_primary_session_call", start)
-        return source[start : end if end > start else start + 2000]
-
     def test_writeback_is_offloaded_to_a_thread(self) -> None:
-        block = self._method_block()
-        self.assertIn(
-            "asyncio.to_thread(",
-            block,
-            "同步 SQLite 写回必须走 to_thread，否则会阻塞事件循环",
+        """AST 契约：真实实现必须把 `deepchat.writeback` 交给 to_thread，且不得有同步调用。
+
+        刻意不用缩进敏感的字面量断言（`assertNotIn("            deepchat.writeback(", ...)`）：
+        有人把调用挪进 if/try 多一层、或统一格式化之后，那条断言会在**保护已消失**的
+        情况下继续绿。AST 判定对"退回同步调用"和"只改缩进"都有效。
+        """
+        source = (_REPO_ROOT / "reply_generation_service.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+
+        parents: dict[ast.AST, ast.AST] = {}
+        for node in ast.walk(tree):
+            for child in ast.iter_child_nodes(node):
+                parents[child] = node
+
+        def _callee(node: ast.AST) -> str:
+            if isinstance(node, ast.Attribute):
+                return node.attr
+            return getattr(node, "id", "")
+
+        offloaded = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and _callee(node.func) == "to_thread":
+                args = list(node.args) + [kw.value for kw in node.keywords]
+                if any(
+                    isinstance(arg, ast.Attribute) and arg.attr == "writeback"
+                    for arg in args
+                ):
+                    offloaded = True
+
+        sync_calls: list[int] = []
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and _callee(node.func) == "writeback"):
+                continue
+            ancestor = parents.get(node)
+            wrapped = False
+            while ancestor is not None:
+                if isinstance(ancestor, ast.Call) and _callee(ancestor.func) == "to_thread":
+                    wrapped = True
+                    break
+                ancestor = parents.get(ancestor)
+            if not wrapped:
+                sync_calls.append(node.lineno)
+
+        self.assertTrue(
+            offloaded, "必须把 deepchat.writeback 作为参数交给 asyncio.to_thread"
         )
-        self.assertNotIn(
-            "            deepchat.writeback(",
-            block,
-            "不要直接在 loop 里同步调用 deepchat.writeback（用 to_thread 包一层）",
+        self.assertEqual(
+            sync_calls,
+            [],
+            f"不得在事件循环里同步调用 deepchat.writeback（违规行号 {sync_calls}）",
         )
+
 
 
 if __name__ == "__main__":

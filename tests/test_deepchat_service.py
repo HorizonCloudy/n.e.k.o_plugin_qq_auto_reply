@@ -225,5 +225,61 @@ class DeepChatServiceTests(unittest.TestCase):
         self.assertEqual(classify_signal("讨厌你"), "insult")
 
 
+class ConcurrentWritebackTests(unittest.TestCase):
+    """并发写回必须不丢更新。
+
+    `writeback` 是跨多张表、多个连接的读-改-写（`mood.update`、`relationship.reinforce`
+    → `_save`）。它在事件循环里同步跑时，**loop 的串行性就是隐式互斥**；一旦被
+    `asyncio.to_thread` 挪进线程池，多条写回就会并发交错，后写覆盖前写，而且
+    **没有任何异常**——只能靠计数发现。
+
+    并发不丢更新的主用例在 `test_deepchat_direct_mode.py::DirectModeWritebackTests`（走 direct 真实路径、并检查异常）；这里只留「并发之后状态仍自洽」一条，避免重复。
+
+    实测（修之前）：16 条并发送回只落 11 条、32 条只落 2 条，锁失败数为 0。
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.plugin = FakePlugin(self._tmp.name)
+        self.service = DeepChatService(self.plugin)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _interactions(self, user_id: str = "u1") -> int:
+        return self.service.relationship.get(user_id).interactions
+
+    def test_concurrent_writebacks_do_not_lose_updates(self) -> None:
+        """同一用户并发写回不丢更新（`interactions` 必须正好 n），且之后状态自洽。
+
+        `writeback` 是跨多张表、多个连接的读-改-写。它在事件循环里同步跑时，
+        **loop 的串行性就是隐式互斥**；被 `asyncio.to_thread` 挪进线程池后，多条
+        写回会并发交错，后写覆盖前写且**不抛任何异常**——只能靠计数发现。
+        修前实测：16 并发只落 11 条、32 并发只落 2 条，锁失败数为 0。
+        """
+        n = 16
+
+        async def scenario() -> None:
+            await asyncio.gather(
+                *(
+                    asyncio.to_thread(
+                        self.service.writeback, sender_id="u1", text="谢谢"
+                    )
+                    for _ in range(n)
+                )
+            )
+
+        asyncio.run(scenario())
+
+        state = self.service.view_state("u1")
+        self.assertEqual(
+            state["relationship"]["interactions"],
+            n,
+            f"并发写回丢了更新：{state['relationship']['interactions']}/{n}"
+            "（读-改-写交错，且不会抛异常——只能靠计数发现）",
+        )
+        self.assertLessEqual(len(state["relationship"]["milestones"]), 20)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -150,6 +151,11 @@ class DeepChatService:
             revive_threshold=self._float_setting("deepchat_relationship_revive_threshold", 0.15),
         )
         self.autonomy = AutonomyScheduler(self)
+        # 写回是跨多张表/多个连接的读-改-写；并发调用会交错覆盖（实测 16 并发送回丢 5 次）
+        # 且静默无异常。这里用**整条链**的互斥串行化——⚠️ 不要改成"给 connection() 加锁":
+        # 那是单连接粒度，RMW 照样交错，实测比不修更差（16 并发只落 1~2 次）。
+        # 这是止血；长期治因是把 reinforce/weaken 改成单语句原子 UPDATE。
+        self._writeback_lock = threading.Lock()
         self.expressions = ExpressionStore(
             self.store,
             max_entries=self._int_setting("deepchat_expression_max_entries", 200),
@@ -272,6 +278,20 @@ class DeepChatService:
         sender_id = str(sender_id or "").strip()
         if not self.enabled or not sender_id:
             return {}
+        with self._writeback_lock:
+            return self._writeback_locked(
+                sender_id=sender_id, text=text, is_group=is_group, group_id=group_id,
+            )
+
+    def _writeback_locked(
+        self,
+        *,
+        sender_id: str,
+        text: str,
+        is_group: bool,
+        group_id: str | None,
+    ) -> dict[str, Any]:
+        """``writeback`` 的本体：调用方必须已持有 ``_writeback_lock``。"""
         now = time.time()
         signal = classify_signal(text)
         state = self.mood.update(self._mood_key(sender_id), signal, now=now)

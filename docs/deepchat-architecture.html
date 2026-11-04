@@ -182,7 +182,7 @@
   <h2>6. 验证结果</h2>
   <div class="card">
     <ul>
-      <li><span class="ok">129 / 129</span> 单测通过：<code>PYTHONPATH=. python -m unittest discover -s tests -p "test_deepchat_*.py" -v</code>（state/service/guard/manifest/autonomy 45 + 烂梗守卫 15 + 表达学习 28 + 关系生命周期 20 + 安全回归 14 + direct 回写 3 + 设置面 2；含负向冻结/解冻、亚日粒度、跨天零头累计、烂梗分句过滤、群聊不注入私聊里程碑与情绪句、direct 回写与 synthetic 排除、autonomy 双开关 AND、隐私开关暂走 dc_tune（UI 保存链 follow-up）、里程碑停写与逐条 guard）</li>
+      <li><span class="ok">131 / 131</span> 单测通过：<code>PYTHONPATH=. python -m unittest discover -s tests -p "test_deepchat_*.py" -v</code>（state/service/guard/manifest/autonomy 46 + 烂梗守卫 15 + 表达学习 28 + 关系生命周期 20 + 安全回归 14 + direct 回写 6 + 设置面 2；含负向冻结/解冻、亚日粒度、跨天零头累计、烂梗分句过滤、群聊不注入私聊里程碑与情绪句、direct 回写与 synthetic 排除、autonomy 双开关 AND、隐私开关暂走 dc_tune（UI 保存链 follow-up）、里程碑停写与逐条 guard、写回线程化契约（to_thread 不阻塞事件循环 / 0.5s 锁等待上限 / 并发写回不丢更新））</li>
       <li><span class="ok">E2E</span> 桩 SDK 联调通过：<code>PYTHONPATH=. python tests/e2e_deepchat_stub.py</code>（真实插件包加载/实例化、注入、写回、host/direct 两条生成路径）</li>
       <li><span class="ok">真实 Steam 宿主</span> 已部署并注册 v0.14.4；启动后共 12 个入口，含 <code>dc_view_state</code> / <code>dc_reset_user</code> / <code>dc_set_mood</code> / <code>dc_tune</code> / <code>dc_recall</code>；状态目录已生成 <code>deepchat.sqlite3</code>（<code>deepchat_mood</code> / <code>deepchat_relationship</code>）。</li>
       <li><span class="ok">ruff</span> 全过：<code>ruff check deepchat tests/test_deepchat_*.py __init__.py reply_context_node.py reply_generation_service.py reply_model_node.py</code></li>
