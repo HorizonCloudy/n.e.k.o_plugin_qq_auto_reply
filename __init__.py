@@ -2706,12 +2706,14 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     @plugin_entry(
         id="runtime",
         name=tr("entries.runtime.name", default="运行时控制"),
-        description=tr("entries.runtime.description", default="启停自动回复、切换连接方式。action 取 start / stop / set_mode。"),
+        description=tr("entries.runtime.description", default="启停自动回复、切换连接方式、启停本地 OneBot 后端。action 取 start / stop / set_mode / backend_start / backend_stop。"),
         input_schema={"type": "object", "properties": {
-            "action": {"type": "string", "enum": ["start", "stop", "set_mode"],
-                       "description": "start=启动自动回复；stop=停止；set_mode=切换连接方式（另需 mode）"},
+            "action": {"type": "string", "enum": ["start", "stop", "set_mode", "backend_start", "backend_stop"],
+                       "description": "start/stop=启停自动回复；set_mode=切换连接方式；backend_start/backend_stop=启停本地后端（另需 backend）"},
             "mode": {"type": "string", "enum": list(CONNECTION_MODES),
                      "description": "仅 set_mode 用：napcat / napcat_forward / open_platform"},
+            "backend": {"type": "string", "enum": ["napcat", "snowluma"],
+                        "description": "backend_start/backend_stop 必填：当前已保存的后端"},
             "restart": {"type": "boolean", "default": True,
                         "description": "仅 set_mode 用：正在运行时是否按新模式重连；关掉则只存设置"},
         }, "required": ["action"], "additionalProperties": False},
@@ -2727,8 +2729,12 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return await self._runtime_stop(kw)
         if action == "set_mode":
             return await self._runtime_set_mode(kw)
+        if action in ("backend_start", "backend_stop"):
+            return await self.runtime_ops_service.control_backend(
+                start=action == "backend_start", backend=str(kw.get("backend") or ""),
+            )
         return Err(SdkError(
-            f"BAD_ACTION: runtime 不支持 {action!r}（可选 start/stop/set_mode）"))
+            f"BAD_ACTION: runtime 不支持 {action!r}（可选 start/stop/set_mode/backend_start/backend_stop）"))
 
     async def _runtime_start(self, kw: dict[str, Any]):
         """开始监听 QQ 消息，并按当前配置自动回复或转发。"""

@@ -29,18 +29,51 @@ def test_config_merges_and_reuses_endpoints_without_losing_other_consumers(tmp_p
     }})
     write_json(tmp_path / "config/runtime.json", {"webuiPort": 6000, "custom": True})
     for token in ("first", "second"):
-        apply(tmp_path, "123", reverse_url="ws://127.0.0.1:6199", forward_host="127.0.0.1", forward_port=3001, token=token)
+        apply(tmp_path, "123", reverse_url="ws://127.0.0.1:6199", forward_host="127.0.0.1", forward_port=3001,
+              token=token, mode="napcat_forward")
     config = read_object(path)
     assert config["custom"] == 42
     assert config["networks"]["wsClients"][0] == other
-    assert len(config["networks"]["wsClients"]) == 2
+    assert len(config["networks"]["wsClients"]) == 1
     assert len(config["networks"]["wsServers"]) == 1
     row = config["networks"]["wsServers"][0]
-    assert row["name"] == "existing" and row["accessToken"] == "second"
+    assert row["name"] == "neko-qq-wsServers" and row["accessToken"] == "second"
     assert row["role"] == "Universal" and row["enabled"] is True
     assert config["networks"]["httpServers"] == [{"name": "http"}]
     assert read_object(tmp_path / "config/runtime.json") == {"webuiPort": 6000, "custom": True, "hookAutoLoad": True, "webuiHost": "127.0.0.1"}
     assert not (tmp_path / "config/onebot11_123.json").exists()
+
+
+def test_stock_cleanup_across_accounts_and_direction_switch(tmp_path):
+    stock = {"name": "ws-default", "host": "127.0.0.1", "port": 3001}
+    custom = {"name": "custom", "host": "127.0.0.1", "port": 3010}
+    changed_default = {"name": "ws-default", "host": "127.0.0.1", "port": 3011}
+    for uin in ("123", "456"):
+        write_json(tmp_path / f"config/onebot_{uin}.json", {"custom": True, "networks": {
+            "wsServers": [stock, custom, changed_default],
+            "httpServers": [{"name": "http-default", "host": "127.0.0.1", "port": 3000}],
+        }})
+    kwargs = dict(reverse_url="ws://127.0.0.1:6199/ws", forward_host="127.0.0.1", forward_port=3001, token="x")
+    apply(tmp_path, "123", **kwargs)
+    for uin in ("123", "456"):
+        d = read_object(tmp_path / f"config/onebot_{uin}.json")
+        assert d["custom"] is True
+        assert d["networks"]["wsServers"] == [custom, changed_default]
+        assert d["networks"]["httpServers"] == []
+        assert list((tmp_path / "config").glob(f"onebot_{uin}.json.neko-backup-*"))
+    assert read_object(tmp_path / "config/onebot.json")["networks"]["wsServers"] == []
+    apply(tmp_path, "123", mode="napcat_forward", **kwargs)
+    networks = read_object(tmp_path / "config/onebot_123.json")["networks"]
+    assert networks["wsClients"][0]["enabled"] is False
+    assert networks["wsServers"][-1]["port"] == 3001
+    assert networks["wsServers"][-1]["enabled"] is True
+    apply(tmp_path, "123", **kwargs)
+    networks = read_object(tmp_path / "config/onebot_123.json")["networks"]
+    assert networks["wsClients"][0]["enabled"] is True
+    assert networks["wsServers"][-1]["enabled"] is False
+    backups = list((tmp_path / "config").glob("*.neko-backup-*"))
+    apply(tmp_path, "123", **kwargs)
+    assert list((tmp_path / "config").glob("*.neko-backup-*")) == backups
 
 
 def test_invalid_json_is_not_overwritten(tmp_path):

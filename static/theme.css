@@ -207,3 +207,11 @@ body {
 .backend-console-slot .backend-console-link { width:100%; padding:9px 8px; gap:6px; white-space:nowrap; }
 
 .backend-console-link[aria-disabled="true"] { opacity:.6; cursor:not-allowed; box-shadow:none; }
+
+.snowluma-steps { list-style:none; counter-reset:sl-step; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin:0 0 14px; padding:0; }
+.snowluma-steps li { counter-increment:sl-step; padding:14px; border:1px solid var(--border); border-radius:var(--radius-md); background:var(--primary-tint-soft); font-size:13px; line-height:1.7; }
+.snowluma-steps li::before { content:counter(sl-step); display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; margin-right:8px; border-radius:50%; color:var(--primary-on-tint); background:var(--primary-tint); font-weight:700; }
+.snowluma-steps p { margin:8px 0 0; color:var(--text-secondary); }
+.snowluma-note { font-size:12px; line-height:1.8; color:var(--text-secondary); margin-bottom:12px; }
+
+@media (max-width:700px) { .snowluma-steps { grid-template-columns:1fr; } }

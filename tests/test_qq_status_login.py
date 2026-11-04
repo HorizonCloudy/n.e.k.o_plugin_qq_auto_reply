@@ -34,6 +34,7 @@ async function call(entry, args) {
 }
 function applyMode(mode) { return mode === 'open_platform'; }
 function renderLists() {}
+function renderBackendControls() {}
 function showErr() {}
 let dashboardLoad = null;
 """

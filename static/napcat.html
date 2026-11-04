@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>QQ 控制台 - NapCat</title>
-<link rel="stylesheet" href="theme.css?v=7">
+<link rel="stylesheet" href="theme.css?v=8">
 <style>
 :root{--sidebar-w:180px;--topbar-h:44px;}
 *{margin:0;padding:0;box-sizing:border-box}
@@ -79,29 +79,30 @@ body{display:flex;height:100vh;overflow:hidden}
 .drop-zone.drag-over{border-color:var(--primary);background:var(--primary-tint-soft);color:var(--primary-on-tint)}
 .qr-img{max-width:200px;border-radius:8px}
 </style>
+<link rel="stylesheet" href="layout.css?v=2">
 </head>
-<body>
+<body class="console-layout">
 <aside id="sidebar">
     <div class="logo"><img src="assets/neko-logo.png?v=1" alt="" draggable="false" onerror="this.style.display='none'"><span data-i18n="ui.shared.sidebar.logo">QQ 控制台</span></div>
-    <nav>
+    <nav aria-label="控制台导航">
+        <div class="nav-section" data-i18n="ui.layout.connection">连接与运行</div>
         <div class="nav-item active" data-page="status"><span class="dot" id="status-dot" style="background:var(--success)"></span><span data-i18n="ui.shared.sidebar.status">状态</span></div>
         <div class="nav-item" data-page="guide"><span data-i18n="ui.shared.sidebar.guide">引导</span></div>
         <div class="nav-item" data-page="config"><span data-i18n="ui.shared.sidebar.config">配置</span></div>
+        <div class="nav-section" data-i18n="ui.layout.chat">聊天配置</div>
         <div class="nav-item" data-page="sticker"><span data-i18n="ui.shared.sidebar.sticker">表情包</span></div>
 <div class="nav-item" data-page="plugintools"><span data-i18n="ui.shared.sidebar.plugintools">插件</span></div>
         <div class="nav-item" data-page="review"><span data-i18n="ui.napcat.sidebar.review">审阅</span></div>
         <div class="nav-item" data-page="prompts"><span data-i18n="ui.napcat.sidebar.prompts">提示词</span></div>
+        <div class="nav-section" data-i18n="ui.layout.maintenance">排查与维护</div>
         <div class="nav-item" data-page="logs"><span data-i18n="ui.shared.sidebar.logs">日志</span></div>
+        <a class="nav-item setup-nav" href="status.html" data-nav="status.html" data-i18n="ui.index.status.title">一键部署</a>
+        <a class="nav-item" href="open_platform.html" data-nav="open_platform.html">QQ 开放平台 ↗</a>
     </nav>
     <div class="backend-console-slot"><a id="backend-webui-link" class="backend-console-link" target="_blank" rel="noopener noreferrer" style="display:none">后端控制台</a></div>
-    <div style="padding:8px 12px"><select id="lang-select" style="width:100%;padding:6px 8px;border-radius:var(--radius);border:1px solid var(--border);background:var(--surface-strong);color:var(--text);font-size:12px;cursor:pointer" onchange="onLangChange(this.value)">
-        <option value="">跟随宿主</option>
-        <option value="zh-CN">中文简体</option>
-        <option value="en">English</option>
-    </select></div>
     <div class="actions">
-        <button class="btn-start" onclick="doStart()" data-i18n="ui.shared.sidebar.start">启动</button>
-        <button class="btn-stop" onclick="doStop()" data-i18n="ui.shared.sidebar.stop">停止</button>
+        <button class="btn-start" onclick="doStart()" title="启动自动回复">启动回复</button>
+        <button class="btn-stop" onclick="doStop()" title="停止自动回复">停止回复</button>
         <button class="btn-save" onclick="doSave()" data-i18n="ui.shared.sidebar.save_settings">保存设置</button>
     </div>
 </aside>
@@ -111,11 +112,11 @@ body{display:flex;height:100vh;overflow:hidden}
     <div id="topbar-tabs"></div>
     <div class="tb-spacer"></div>
     <a class="tb-switch" id="btn-back-index" href="index.html" data-nav="index.html" style="text-decoration:none;margin-right:8px" data-i18n="ui.shared.topbar.back_index" title="返回接入方式选择">← 返回首页</a>
-    <span class="tb-switch" data-nav="open_platform.html" data-i18n="ui.napcat.topbar.switch" title="切换到 QQ 开放平台">切换到 QQ 开放平台</span>
     <span class="tb-status" style="margin-left:10px"><span class="dot" id="conn-dot" style="background:var(--danger)"></span><span id="conn-text" data-i18n="ui.shared.topbar.disconnected">未连接</span></span>
 </div>
 <div id="content">
 <div class="page active" id="page-status-overview">
+    <div id="backend-process-controls" class="card backend-process-controls"></div>
     <!-- 快捷入口：状态页往往是排查的起点，看到问题要能一步跳到对应配置页。
          标签复用 topbar 的 i18n 键，保证按钮文案和它跳过去的标签页一致。 -->
     <div class="card"><div class="card-title" data-i18n="ui.napcat.status.shortcuts">快捷配置</div>
@@ -297,7 +298,9 @@ body{display:flex;height:100vh;overflow:hidden}
 </div>
 <div class="page" id="page-status-traces"><div class="card"><div class="card-title" data-i18n="ui.napcat.status.traces_title">最近 Pipeline 记录</div><div id="traces-list" style="color:var(--text-secondary);font-size:13px" data-i18n="ui.shared.topbar.no_data">暂无记录</div></div></div>
 <div class="page" id="page-config-connection">
+    <div id="config-backend-process-controls" class="card backend-process-controls"></div>
     <div class="card"><div class="card-title" data-i18n="ui.napcat.config.connection_title">NapCat 连接配置</div>
+        <div class="form-group"><label class="form-label" for="cfg-backend">OneBot 后端</label><select class="form-input" id="cfg-backend" onchange="onBackendChange(this.value)"><option value="napcat">NapCat</option><option value="snowluma">SnowLuma</option></select></div>
         <div class="form-group">
             <label class="form-label" data-i18n="ui.napcat.config.direction_label">连接方向</label>
             <div class="radio-cards" id="conn-direction-cards">
@@ -305,18 +308,19 @@ body{display:flex;height:100vh;overflow:hidden}
                 <div class="radio-card" data-direction="forward" onclick="onDirectionChange('forward')"><div style="font-weight:700" data-i18n="ui.napcat.config.direction_forward">正向连接</div><div style="font-size:11px;color:var(--text-secondary);font-weight:400;margin-top:4px" data-i18n="ui.napcat.config.direction_forward_desc">主动连接 NapCat 的 WS 服务器（如远端 NapCat）</div></div>
             </div>
         </div>
-        <div class="form-group"><label class="form-label" for="cfg-backend">OneBot 后端</label><select class="form-input" id="cfg-backend" onchange="onBackendChange(this.value)"><option value="napcat">NapCat</option><option value="snowluma">SnowLuma</option></select></div>
         <div class="form-group"><label class="form-label" id="cfg-url-label">通信地址 (URL)</label><input class="form-input" id="cfg-url" placeholder="ws://0.0.0.0:6199"></div>
-        <div class="form-group"><label class="form-label" data-i18n="ui.napcat.config.token_label">访问令牌 (TOKEN)</label><input class="form-input secret-text-input" id="cfg-token" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" inputmode="text" data-lpignore="true" data-1p-ignore="true" data-form-type="other" readonly onfocus="this.removeAttribute('readonly')" onblur="this.setAttribute('readonly','readonly')" placeholder="OneBot access_token"></div>
+        <div class="form-group"><label class="form-label" data-i18n="ui.napcat.config.token_label">访问令牌 (TOKEN)</label><input class="form-input secret-text-input" id="cfg-token" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" inputmode="text" data-lpignore="true" data-1p-ignore="true" data-form-type="other" readonly onfocus="this.removeAttribute('readonly')" onblur="this.setAttribute('readonly','readonly')" placeholder="OneBot access_token"><div id="onebot-token-hint" class="form-hint"></div></div>
         <div class="form-group"><label class="form-label" data-i18n="ui.napcat.config.path_label">NapCat 目录</label><input class="form-input" id="cfg-path" data-i18n-placeholder="ui.napcat.config.path_placeholder" placeholder="留空使用内置" style="flex:1"><div class="form-hint" data-i18n="ui.napcat.config.path_hint">输入绝对路径。留空则使用内置 NapCat.Shell。</div></div>
         <div class="form-group"><label class="form-check"><input type="checkbox" id="cfg-show-napcat"> <span data-i18n="ui.napcat.config.show_window">前台启动 NapCat 窗口</span></label></div>
     </div>
     <div class="card"><div class="card-title" data-i18n="ui.napcat.config.qrcode_title">登录二维码</div>
+        <div id="snowluma-setup" style="display:none"></div>
         <img id="qr-img" class="qr-img" src="" style="display:none" alt="QR"><p id="qr-empty" style="color:var(--text-secondary);font-size:13px" data-i18n="ui.napcat.config.qrcode_placeholder">NapCat 启动后自动获取</p>
         <button class="btn btn-sm btn-ghost" onclick="doSyncQrcode()" style="margin-top:8px" data-i18n="ui.napcat.config.refresh_qrcode">刷新二维码</button>
     </div>
 </div>
 <div class="page" id="page-config-params">
+    <div class="card" data-background-settings></div>
     <div class="card" id="memory-card"><div class="card-title" data-i18n="ui.memory.title">群记忆</div>
         <div class="form-group"><label class="form-check"><input type="checkbox" id="cfg-group-memory" onchange="syncGroupMemoryDeps()"> <span data-i18n="ui.memory.group_enabled">启用群聊长期记忆</span></label></div>
         <div class="form-group"><label class="form-check"><input type="checkbox" id="cfg-group-member-memory"> <span data-i18n="ui.memory.member_enabled">记录群成员长期记忆</span><span style="font-size:11px;color:var(--text-secondary)" data-i18n="ui.memory.member_depends">（依赖群记忆开关）</span></label></div>
@@ -472,9 +476,10 @@ body{display:flex;height:100vh;overflow:hidden}
     </div>
 </div>
 <div id="toast" style="position:fixed;top:16px;right:16px;padding:10px 18px;border-radius:var(--radius-md);color:#fff;font-size:13px;z-index:999;opacity:0;transform:translateY(-10px);transition:.25s;pointer-events:none"></div>
-<script src="i18n.js?v=2"></script>
+<script src="i18n.js?v=3"></script>
 <script src="nav.js?v=1"></script>
-<script src="onebot-backend.js?v=2"></script>
+<script src="onebot-backend.js?v=4"></script>
+<script src="backend-controls.js?v=1"></script>
 <script src="ui-confirm.js?v=1"></script>
 <script src="ui-sse.js?v=3"></script>
 <script>
@@ -497,8 +502,13 @@ function onBackendChange(key){
   applyBackendUI();
 }
 function applyBackendUI(){
+  renderBackendControls(document.getElementById('backend-process-controls'),state.settings,state.backendRuntime||{},state.backend,call,loadRuntimeStatus);
+  renderBackendControls(document.getElementById('config-backend-process-controls'),state.settings,state.backendRuntime||{},state.backend,call,loadRuntimeStatus);
   const backend=onebotBackend(state.backend),sl=state.backend==='snowluma';
+  renderSnowLumaSetup(document.getElementById('snowluma-setup'),sl);
+  document.getElementById('onebot-token-hint').textContent='仅用于插件与 '+backend.label+' 的 OneBot 通信，两端必须一致。一键部署会自动生成并写入；这里不填控制台管理密码或 QQ 密码。';
   const text={
+    'ui.napcat.config.token_label':'OneBot 通信令牌 (Token)',
     'ui.napcat.status.pid':backend.label+' PID',
     'ui.napcat.config.connection_title':backend.label+' 连接配置',
     'ui.napcat.config.direction_reverse_desc':backend.label+' 作为 WS 客户端连接到此服务器',
@@ -506,7 +516,7 @@ function applyBackendUI(){
     'ui.napcat.config.path_label':backend.label+' 目录',
     'ui.napcat.config.path_hint':backend.directoryHint,
     'ui.napcat.config.show_window':'前台启动 '+backend.label+' 窗口',
-    'ui.napcat.config.qrcode_title':sl?'QQ 登录':'登录二维码',
+    'ui.napcat.config.qrcode_title':sl?'SnowLuma 初始化与 QQ 接入':'登录二维码',
     'ui.napcat.config.qrcode_placeholder':backend.loginHint,
   };
   Object.entries(text).forEach(([key,value])=>document.querySelectorAll('[data-i18n="'+key+'"]').forEach(el=>el.textContent=value));
@@ -550,8 +560,8 @@ function switchSub(sub){currentSub=sub;document.getElementById('content').scroll
    读过它，所以闸一直不存在。
    整函数 return 是安全的：派生 UI（策略卡显隐、radio 选中态、记忆父子联动）各自有
    onchange/click 监听，不依赖本函数；而进入配置页时会清脏标记，首次填充照常发生。 */
-if(_settingsDirty)return;state.backend=s.onebot_backend||'napcat';document.getElementById('cfg-backend').value=state.backend;state.replyMode=['text','voice','both'].includes(s.reply_mode)?s.reply_mode:'text';document.getElementById('cfg-url').value=s.onebot_url||'';document.getElementById('cfg-token').value=s.token||'';document.getElementById('cfg-path').value=s[onebotBackend(state.backend).directoryKey]||'';document.getElementById('cfg-show-napcat').checked=!!s[onebotBackend(state.backend).windowKey];document.getElementById('cfg-normal-prob').value=s.normal_relay_probability??.1;document.querySelectorAll('#reply-mode-cards .radio-card').forEach(c=>c.classList.toggle('selected',c.dataset.mode===state.replyMode));document.getElementById('cfg-retro-max-msgs').value=s.retroactive_review_max_messages??30;document.getElementById('cfg-retro-max-reply').value=s.retroactive_review_max_reply??5;document.getElementById('cfg-retro-min-unreviewed').value=s.retroactive_review_min_unreviewed??5;document.getElementById('cfg-retro-cooldown').value=s.retroactive_review_cooldown_seconds??300;document.getElementById('cfg-att-focus-threshold').value=s.attention_focus_threshold??4;document.getElementById('cfg-att-focus-send').value=s.attention_focus_hold_threshold??2;document.getElementById('cfg-att-maintenance-interval').value=s.attention_maintenance_interval_seconds??60;document.getElementById('cfg-gm-digest-interval').value=s.group_memory_digest_interval_seconds??300;document.getElementById('cfg-dormancy-idle').value=s.dormancy_idle_seconds??1800;document.getElementById('cfg-dormancy-wake-score').value=s.dormancy_wake_score??2;document.getElementById('cfg-dormancy-on').checked=s.dormancy_enabled!==!1;document.getElementById('cfg-att-freq-target-gap').value=s.attention_frequency_target_gap??30;document.getElementById('cfg-att-freq-min-mult').value=s.attention_frequency_min_multiplier??0.15;document.getElementById('cfg-att-freq-max-mult').value=s.attention_frequency_max_multiplier??3;document.getElementById('cfg-att-lock-seconds').value=s.attention_lock_seconds??90;document.getElementById('cfg-att-emotion-multipliers').value=JSON.stringify(s.attention_emotion_multipliers??{},null,2);document.getElementById('cfg-local-stt-url').value=s.local_stt_url||'';var loc=s.locale||localStorage.getItem('qq_auto_reply_locale')||'';var sel=document.getElementById('lang-select');if(sel&&loc)sel.value=loc;document.getElementById('cfg-group-memory').checked=s.group_memory_enabled===!0;document.getElementById('cfg-group-member-memory').checked=s.group_member_memory_enabled===!0;document.getElementById('cfg-private-participant-memory').checked=!!s.private_participant_memory_enabled;document.getElementById('cfg-cross-group-context').checked=s.allow_cross_group_context===!0;state.mode=(s.qq_connection_mode==='napcat_forward')?'napcat_forward':'napcat';document.querySelectorAll('#conn-direction-cards .radio-card').forEach(c=>c.classList.toggle('selected',c.dataset.direction===(state.mode==='napcat_forward'?'forward':'reverse')));updateDirectionUI();document.getElementById('cfg-buffer-group').checked=s.group_buffer_enabled!==!1;document.getElementById('cfg-buffer-private').checked=s.private_buffer_enabled!==!1;document.getElementById('cfg-burst-window').value=s.reply_burst_window_seconds??60;document.getElementById('cfg-burst-max').value=s.reply_burst_max_replies??3;document.getElementById('cfg-buffer-mean').value=s.buffer_delay_mean_seconds??1;document.getElementById('cfg-buffer-mean-private').value=s.buffer_delay_private_seconds??0.6;document.getElementById('cfg-buffer-max-count').value=s.buffer_max_count??17;document.getElementById('cfg-buffer-collect').value=s.buffer_collect_window_seconds??3;document.getElementById('cfg-buffer-collect-private').value=s.buffer_collect_window_private_seconds??1;syncGroupMemoryDeps();applyAttentionHints();/* buffer UI hidden — 延迟改由 sample_wait_seconds() 正态取样，尚未接到这些输入框 */}
-function applyDashboard(d){let s=d.settings||{},rt=d.runtime||{},lg=d.login||{};state.settings=s;state.backendWebuiUrl=rt.backend_webui_url||'';state.loginOnline=lg.status==='online';state.running=rt.auto_reply_running||!1;state.onebotOk=rt.onebot_connected||!1;state.napcatPid=rt.napcat_pid||null;state.selfId=lg.self_id||'';state.nickname=lg.nickname||'';state.users=(d.permissions||{}).trusted_users||[];state.groups=(d.permissions||{}).trusted_groups||[];state.backlogItems=d.backlog_items||[];state.backlogLabels=Array.isArray(s.backlog_labels)?s.backlog_labels:[];applySettings(s);updateStatusBar();renderUsers();renderGroups();renderKeywords();let qr=rt.qrcode_url||'';document.getElementById('qr-img').src=qr?(qr+'?_ts='+Date.now()):'';document.getElementById('qr-img').style.display=qr?'':'none';document.getElementById('qr-empty').style.display=qr?'none':'';updateGuide();applyBackendUI();let traces=d.recent_pipeline_trace_summaries||[];if(traces.length)document.getElementById('traces-list').innerHTML=traces.map(t=>`<div style="padding:4px 0;border-bottom:1px solid var(--border-subtle)">[${escapeHtml(t.result_kind)||'?'}] ${escapeHtml(t.source)} -> ${escapeHtml(t.delivery_mode)}</div>`).join('')}
+if(_settingsDirty)return;state.backend=s.onebot_backend||'napcat';document.getElementById('cfg-backend').value=state.backend;state.replyMode=['text','voice','both'].includes(s.reply_mode)?s.reply_mode:'text';document.getElementById('cfg-url').value=s.onebot_url||'';document.getElementById('cfg-token').value=s.token||'';document.getElementById('cfg-path').value=s[onebotBackend(state.backend).directoryKey]||'';document.getElementById('cfg-show-napcat').checked=!!s[onebotBackend(state.backend).windowKey];document.getElementById('cfg-normal-prob').value=s.normal_relay_probability??.1;document.querySelectorAll('#reply-mode-cards .radio-card').forEach(c=>c.classList.toggle('selected',c.dataset.mode===state.replyMode));document.getElementById('cfg-retro-max-msgs').value=s.retroactive_review_max_messages??30;document.getElementById('cfg-retro-max-reply').value=s.retroactive_review_max_reply??5;document.getElementById('cfg-retro-min-unreviewed').value=s.retroactive_review_min_unreviewed??5;document.getElementById('cfg-retro-cooldown').value=s.retroactive_review_cooldown_seconds??300;document.getElementById('cfg-att-focus-threshold').value=s.attention_focus_threshold??4;document.getElementById('cfg-att-focus-send').value=s.attention_focus_hold_threshold??2;document.getElementById('cfg-att-maintenance-interval').value=s.attention_maintenance_interval_seconds??60;document.getElementById('cfg-gm-digest-interval').value=s.group_memory_digest_interval_seconds??300;document.getElementById('cfg-dormancy-idle').value=s.dormancy_idle_seconds??1800;document.getElementById('cfg-dormancy-wake-score').value=s.dormancy_wake_score??2;document.getElementById('cfg-dormancy-on').checked=s.dormancy_enabled!==!1;document.getElementById('cfg-att-freq-target-gap').value=s.attention_frequency_target_gap??30;document.getElementById('cfg-att-freq-min-mult').value=s.attention_frequency_min_multiplier??0.15;document.getElementById('cfg-att-freq-max-mult').value=s.attention_frequency_max_multiplier??3;document.getElementById('cfg-att-lock-seconds').value=s.attention_lock_seconds??90;document.getElementById('cfg-att-emotion-multipliers').value=JSON.stringify(s.attention_emotion_multipliers??{},null,2);document.getElementById('cfg-local-stt-url').value=s.local_stt_url||'';document.getElementById('cfg-group-memory').checked=s.group_memory_enabled===!0;document.getElementById('cfg-group-member-memory').checked=s.group_member_memory_enabled===!0;document.getElementById('cfg-private-participant-memory').checked=!!s.private_participant_memory_enabled;document.getElementById('cfg-cross-group-context').checked=s.allow_cross_group_context===!0;state.mode=(s.qq_connection_mode==='napcat_forward')?'napcat_forward':'napcat';document.querySelectorAll('#conn-direction-cards .radio-card').forEach(c=>c.classList.toggle('selected',c.dataset.direction===(state.mode==='napcat_forward'?'forward':'reverse')));updateDirectionUI();document.getElementById('cfg-buffer-group').checked=s.group_buffer_enabled!==!1;document.getElementById('cfg-buffer-private').checked=s.private_buffer_enabled!==!1;document.getElementById('cfg-burst-window').value=s.reply_burst_window_seconds??60;document.getElementById('cfg-burst-max').value=s.reply_burst_max_replies??3;document.getElementById('cfg-buffer-mean').value=s.buffer_delay_mean_seconds??1;document.getElementById('cfg-buffer-mean-private').value=s.buffer_delay_private_seconds??0.6;document.getElementById('cfg-buffer-max-count').value=s.buffer_max_count??17;document.getElementById('cfg-buffer-collect').value=s.buffer_collect_window_seconds??3;document.getElementById('cfg-buffer-collect-private').value=s.buffer_collect_window_private_seconds??1;syncGroupMemoryDeps();applyAttentionHints();/* buffer UI hidden — 延迟改由 sample_wait_seconds() 正态取样，尚未接到这些输入框 */}
+function applyDashboard(d){let s=d.settings||{},rt=d.runtime||{},lg=d.login||{};state.settings=s;state.backendWebuiUrl=rt.backend_webui_url||'';state.loginOnline=lg.status==='online';state.running=rt.auto_reply_running||!1;state.onebotOk=rt.onebot_connected||!1;state.napcatPid=rt.napcat_pid||null;state.backendRuntime=rt;state.selfId=lg.self_id||'';state.nickname=lg.nickname||'';state.users=(d.permissions||{}).trusted_users||[];state.groups=(d.permissions||{}).trusted_groups||[];state.backlogItems=d.backlog_items||[];state.backlogLabels=Array.isArray(s.backlog_labels)?s.backlog_labels:[];applySettings(s);updateStatusBar();renderUsers();renderGroups();renderKeywords();let qr=rt.qrcode_url||'';document.getElementById('qr-img').src=qr?(qr+'?_ts='+Date.now()):'';document.getElementById('qr-img').style.display=qr?'':'none';document.getElementById('qr-empty').style.display=qr?'none':'';updateGuide();applyBackendUI();let traces=d.recent_pipeline_trace_summaries||[];if(traces.length)document.getElementById('traces-list').innerHTML=traces.map(t=>`<div style="padding:4px 0;border-bottom:1px solid var(--border-subtle)">[${escapeHtml(t.result_kind)||'?'}] ${escapeHtml(t.source)} -> ${escapeHtml(t.delivery_mode)}</div>`).join('')}
 async function updateGuide(){
 var done=0,total=9,items=[];
 function add(id,label,ok,hint){items.push({id:id,label:label,ok:ok,hint:hint});if(ok)done++}
@@ -597,9 +607,8 @@ async function loadDashboard(){try{let d=await call('query', {action:'dashboard'
  function isMaskedTokenPlaceholder(v){return /^[*●•]{3,8}$/.test(String(v||'').trim())}
 async function doSave(){try{let tokenValue=document.getElementById('cfg-token').value;/* 情绪倍率表(JSON)必须在提交前解析并校验：以前是内联的 try/catch 返回 undefined，而 JSON.stringify 会整体省略 undefined 属性 → 后端收不到这个键 → 整键被静默丢弃，但下面照样弹「设置已保存」并回填旧值。用户打错一个逗号，改动没了却被告知成功。这里改成：不合法就报错并中止整次保存。 */let emoRaw=document.getElementById('cfg-att-emotion-multipliers'),emoParsed;if(emoRaw&&emoRaw.value.trim()!==''){try{emoParsed=JSON.parse(emoRaw.value)}catch(e){toast(t('ui.shared.toast.emotion_json_invalid','情绪倍率表不是合法 JSON，已中止保存：')+e.message);return}}let args={group_buffer_enabled:document.getElementById('cfg-buffer-group').checked,private_buffer_enabled:document.getElementById('cfg-buffer-private').checked,reply_burst_window_seconds:intVal('cfg-burst-window',60),reply_burst_max_replies:intVal('cfg-burst-max',3),buffer_delay_mean_seconds:floatVal('cfg-buffer-mean',1),buffer_delay_private_seconds:floatVal('cfg-buffer-mean-private',0.6),buffer_max_count:intVal('cfg-buffer-max-count',17),buffer_collect_window_seconds:floatVal('cfg-buffer-collect',3),buffer_collect_window_private_seconds:floatVal('cfg-buffer-collect-private',1),onebot_url:document.getElementById('cfg-url').value.trim(),onebot_backend:state.backend||'napcat',[onebotBackend(state.backend).directoryKey]:document.getElementById('cfg-path').value.trim(),[onebotBackend(state.backend).windowKey]:document.getElementById('cfg-show-napcat').checked,qq_connection_mode:currentMode(),reply_mode:state.replyMode,normal_relay_probability:floatVal('cfg-normal-prob',.1),retroactive_review_max_messages:intVal('cfg-retro-max-msgs',30),retroactive_review_max_reply:intVal('cfg-retro-max-reply',5),retroactive_review_min_unreviewed:intVal('cfg-retro-min-unreviewed',5),retroactive_review_cooldown_seconds:intVal('cfg-retro-cooldown',300),attention_focus_threshold:floatVal('cfg-att-focus-threshold',4),attention_focus_hold_threshold:floatVal('cfg-att-focus-send',2),attention_maintenance_interval_seconds:floatVal('cfg-att-maintenance-interval',60),group_memory_digest_interval_seconds:intVal('cfg-gm-digest-interval',300),dormancy_enabled:document.getElementById('cfg-dormancy-on').checked,dormancy_idle_seconds:intVal('cfg-dormancy-idle',1800),dormancy_wake_score:floatVal('cfg-dormancy-wake-score',2),attention_frequency_target_gap:floatVal('cfg-att-freq-target-gap',30),attention_frequency_min_multiplier:floatVal('cfg-att-freq-min-mult',0.15),attention_frequency_max_multiplier:floatVal('cfg-att-freq-max-mult',1.8),attention_lock_seconds:intVal('cfg-att-lock-seconds',90),attention_emotion_multipliers:emoParsed,local_stt_url:document.getElementById('cfg-local-stt-url').value.trim(),group_memory_enabled:document.getElementById('cfg-group-memory').checked,group_member_memory_enabled:document.getElementById('cfg-group-memory').checked&&document.getElementById('cfg-group-member-memory').checked,private_participant_memory_enabled:document.getElementById('cfg-private-participant-memory').checked,allow_cross_group_context:document.getElementById('cfg-cross-group-context').checked};if(!isMaskedTokenPlaceholder(tokenValue))args.token=tokenValue;if(state.backlogLabels&&state.backlogLabels.length)args.backlog_labels=state.backlogLabels;let r=await call('config',{action:'save',...args});if(r&&r.persisted===!1)toast(t('ui.shared.toast.save_failed','保存失败（写入磁盘失败）'));else{toast(t('ui.shared.toast.saved','设置已保存'),!0);_settingsDirty=!1}await loadDashboard()}catch(e){toast(t('ui.shared.toast.save_failed_prefix','保存失败: ')+e.message)}}
 async function doStart(){try{var mode=currentMode();/* 先捕获方向再刷新：loadDashboard 会用已保存配置重置方向卡片，晚读就拿到旧方向 */await loadDashboard();await call('config', {action:'save', qq_connection_mode:mode});await call('runtime',{action:'start'});toast(t('ui.shared.toast.started','已启动'),!0);await loadDashboard();startStatusPoll()}catch(e){toast(t('ui.shared.toast.start_failed_prefix','启动失败: ')+e.message)}}
-async function doStop(){try{await call('runtime',{action:'stop'});toast(t('ui.shared.toast.stopped','已停止'),!0);await loadDashboard();stopStatusPoll()}catch(e){toast(t('ui.shared.toast.stop_failed_prefix','停止失败: ')+e.message)}}
+async function doStop(){try{await call('runtime',{action:'stop'});toast(t('ui.shared.toast.stopped','已停止'),!0);await loadDashboard();startStatusPoll()}catch(e){toast(t('ui.shared.toast.stop_failed_prefix','停止失败: ')+e.message)}}
 async function doSyncQrcode(){try{await call('deploy', {action:'qrcode_sync'});await loadDashboard();toast(t('ui.shared.toast.refreshed','已刷新'),!0)}catch(e){toast(t('ui.shared.toast.refresh_failed_prefix','刷新失败: ')+e.message)}}
-async function onLangChange(locale){localStorage.setItem('qq_auto_reply_locale',locale);try{await call('config', {action:'save', locale:locale})}catch(e){}var u=new URL(location.href);if(locale)u.searchParams.set('locale',locale);else u.searchParams.delete('locale');location.href=u.toString()}
 /* 级别下拉的**唯一**生成器：保证恰好一个 option 带 selected。
    坑（真机复现）：浏览器对同一个 select 里的多个 selected 取**最后一个**。老代码既给
    trusted 标了 selected，又在「级别为空或等于 trusted」时给 normal 标了一次 —— 于是点
@@ -633,8 +642,8 @@ async function loadGroupMemory(){try{let d=await call('query', {action:'dashboar
 async function doForgetGroupMemory(gid){if(!await UIConfirm.ask(tf('ui.review.memory.forget_confirm','确定要清除群 {gid} 的全部长期记忆吗？此操作不可撤销。',{gid:gid})))return;try{let d=await call('config', {action:'memory_forget', group_id:gid});toast(tf('ui.review.memory.forgotten','群 {gid} 记忆已清除',{gid:gid}),!0);loadGroupMemory()}catch(e){toast(t('ui.review.memory.forget_failed','清除失败')+': '+e.message)}}
 async function loadUserProfiles(){try{let d=await call('query', {action:'user_profiles'});let profiles=d.profiles||[];let el=document.getElementById('user-profiles-list');if(!profiles.length){el.innerHTML='<span style=color:var(--text-secondary)>'+t('ui.review.profiles.empty','暂无用户数据')+'</span>';return}let lvlMap={admin:t('ui.review.profiles.level_admin','管理员'),trusted:t('ui.review.profiles.level_trusted','信任'),normal:t('ui.review.profiles.level_normal','普通'),none:t('ui.review.profiles.level_none','未授权'),unknown:t('ui.review.profiles.level_unknown','群成员')};let html='<table class=data-table><thead><tr><th>用户</th><th>QQ</th><th>权限</th><th>画像状态</th><th>画像摘要</th></tr></thead><tbody>';profiles.forEach(p=>{let sid=escapeHtml(p.sender_id);let nick=escapeHtml(p.nickname||sid);let lvl=lvlMap[p.permission_level]||p.permission_level;let statusHtml=p.cached?'<span class=tag tag-running>'+tf('ui.review.profiles.cached','已缓存 ({n}s)',{n:p.expires_in_seconds})+'</span>':'<span class=tag tag-offline>'+t('ui.review.profiles.no_cache','暂无画像')+'</span>';let text=p.cached?('<div style=max-width:400px;font-size:11px;white-space:pre-wrap;word-break:break-all>'+escapeHtml(p.profile_text||'')+'</div>'):'<span style=color:var(--text-secondary)>'+t('ui.review.profiles.pending','等待下次回复触发画像采集')+'</span>';html+='<tr><td><strong>'+nick+'</strong></td><td>'+sid+'</td><td>'+lvl+'</td><td>'+statusHtml+'</td><td>'+text+'</td></tr>'});html+='</tbody></table>';el.innerHTML=html}catch(e){document.getElementById('user-profiles-list').innerHTML='<span style=color:var(--danger)>加载失败: '+escapeHtml(e.message)+'</span>'}}
 let _logPollTimer=null,_statusPollTimer=null;
-function startStatusPoll(){if(_statusPollTimer)return;_statusPollTimer=setInterval(function(){if(state.running){loadRuntimeStatus();loadBufferState();loadAttention()}},30000)}/* 30s 兜底轮询：正常刷新走 SSE */
-async function loadRuntimeStatus(){try{let d=await call('query', {action:'dashboard'});let rt=d.runtime||{},lg=d.login||{};state.running=rt.auto_reply_running||!1;state.onebotOk=rt.onebot_connected||!1;state.napcatPid=rt.napcat_pid||null;state.selfId=lg.self_id||'';state.nickname=lg.nickname||'';updateStatusBar();let qr=rt.qrcode_url||'';document.getElementById('qr-img').src=qr?(qr+'?_ts='+Date.now()):'';document.getElementById('qr-img').style.display=qr?'':'none';document.getElementById('qr-empty').style.display=qr?'none':'';let traces=d.recent_pipeline_trace_summaries||[];if(traces.length)document.getElementById('traces-list').innerHTML=traces.map(t=>`<div style="padding:4px 0;border-bottom:1px solid var(--border-subtle)">[${escapeHtml(t.result_kind)||'?'}] ${escapeHtml(t.source)} -> ${escapeHtml(t.delivery_mode)}</div>`).join('')}catch(e){console.error('loadRuntimeStatus failed',e)}}
+function startStatusPoll(){if(_statusPollTimer)return;_statusPollTimer=setInterval(function(){loadRuntimeStatus();if(state.running){loadBufferState();loadAttention()}},30000)}/* 30s 兜底轮询：正常刷新走 SSE */
+async function loadRuntimeStatus(){try{let d=await call('query', {action:'dashboard'});let rt=d.runtime||{},lg=d.login||{};state.running=rt.auto_reply_running||!1;state.onebotOk=rt.onebot_connected||!1;state.napcatPid=rt.napcat_pid||null;state.backendRuntime=rt;state.selfId=lg.self_id||'';state.nickname=lg.nickname||'';updateStatusBar();applyBackendUI();let qr=rt.qrcode_url||'';document.getElementById('qr-img').src=qr?(qr+'?_ts='+Date.now()):'';document.getElementById('qr-img').style.display=qr?'':'none';document.getElementById('qr-empty').style.display=qr?'none':'';let traces=d.recent_pipeline_trace_summaries||[];if(traces.length)document.getElementById('traces-list').innerHTML=traces.map(t=>`<div style="padding:4px 0;border-bottom:1px solid var(--border-subtle)">[${escapeHtml(t.result_kind)||'?'}] ${escapeHtml(t.source)} -> ${escapeHtml(t.delivery_mode)}</div>`).join('')}catch(e){console.error('loadRuntimeStatus failed',e)}}
 async function loadBufferState(){try{let d=await call('query', {action:'buffer'});let el=document.getElementById('st-buffer');if(!el)return;if(d.count>0){el.style.display='';document.getElementById('st-buffer-text').textContent=d.pending.map(function(p){return p.session.replace('group:','群').replace('private:','私')+': '+p.messages+'条 '+p.wait_remaining+'s'}).join(' | ')}else{el.style.display='none'}}catch(e){}}
 function stopStatusPoll(){if(_statusPollTimer){clearInterval(_statusPollTimer);_statusPollTimer=null}}
 async function loadLogs(){try{let d=await call('query', {action:'logs', lines:200});let el=document.getElementById('log-content');if(d.lines&&d.lines.length){/* 贴底判断必须在 textContent 重写**之前**读：重写本身会把滚动位置重置到顶部，之后再量就永远是"不在底部"。距底 > 40px 说明用户正在往上读，别把他拽回去。 */let stick=el.scrollHeight-el.scrollTop-el.clientHeight<=40;let txt=d.lines.join('\n');el.textContent=txt;if(stick)el.scrollTop=el.scrollHeight;if(txt.indexOf('账号信息: QQ=')>=0)loadDashboard()}else el.textContent=d.message||t('ui.shared.topbar.no_logs_fallback','暂无日志')}catch(e){document.getElementById('log-content').textContent=t('ui.shared.render.load_failed','加载失败')}}
@@ -678,7 +687,7 @@ function onGroupPromptEntryClick(gid){document.getElementById('gp-group-select')
 async function doSaveGroupPrompt(){let gid=document.getElementById('gp-group-select').value;if(!gid)return toast(t('ui.groupprompt.select','请先选择群聊'));let text=document.getElementById('gp-text').value;try{await call('config', {action:'group_prompt_save', group_id:gid,text:text});if(text.trim()){_groupPrompts[gid]=text.trim()}else{delete _groupPrompts[gid]}renderGroupPromptList();toast(t('ui.groupprompt.saved','已保存'),!0)}catch(e){toast(t('ui.groupprompt.save_failed','保存失败')+': '+e.message)}}
 async function doDeleteGroupPrompt(){let gid=document.getElementById('gp-group-select').value;if(!gid)return toast(t('ui.groupprompt.select','请先选择群聊'));try{await call('config', {action:'group_prompt_delete', group_id:gid});delete _groupPrompts[gid];document.getElementById('gp-text').value='';renderGroupPromptList();toast(t('ui.groupprompt.deleted','已删除'),!0)}catch(e){toast(t('ui.groupprompt.delete_failed','删除失败')+': '+e.message)}}
 document.getElementById('cfg-group-memory').addEventListener('change',syncGroupMemoryDeps);
-async function bootstrap(){try{let d=await call('query', {action:'dashboard'});applyDashboard(d);await call('config', {action:'save', qq_connection_mode:currentMode()});await call('deploy', {action:'ensure'});await loadDashboard();await loadGroupPrompts();if(state.running)startStatusPoll()}catch(e){console.error('bootstrap failed',e);try{await call('config', {action:'init'});await loadDashboard()}catch(e2){console.error('init failed',e2)}}}bootstrap();
+async function bootstrap(){try{let d=await call('query', {action:'dashboard'});applyDashboard(d);await call('config', {action:'save', qq_connection_mode:currentMode()});await loadDashboard();await loadGroupPrompts();startStatusPoll()}catch(e){console.error('bootstrap failed',e);try{await call('config', {action:'init'});await loadDashboard()}catch(e2){console.error('init failed',e2)}}}bootstrap();
 </script>
 <script>
 /* ── 主动搭话（管理员私聊）──────────��────────────────────────────────
@@ -744,5 +753,6 @@ async function loadInitiativeStatus(){
 })();
 </script>
 <script src="plugin-tools.js?v=1"></script>
+<script src="background-settings.js?v=1"></script>
 </body>
 </html>

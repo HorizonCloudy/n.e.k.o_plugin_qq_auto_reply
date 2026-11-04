@@ -78,7 +78,8 @@ class QQSnowLumaDeployService(QQDeployService):
             host, port, path = "127.0.0.1", napcat_onebot_config.DEFAULT_FORWARD_PORT, "/"
             reverse = napcat_onebot_config.dial_url(url)
         result = snowluma_onebot_config.apply(root, uin, reverse_url=reverse, forward_host=host,
-                                             forward_port=port, forward_path=path, token=token)
+                                             forward_port=port, forward_path=path, token=token,
+                                             mode=mode or "napcat")
         self._emit(emit, "config", f"已写入 SnowLuma 账号配置: {result.name}")
         return result
 

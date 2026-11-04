@@ -1,0 +1,69 @@
+/* Shared layout for setup and daily management. Existing theme owns colors. */
+.console-layout { --sidebar-w:208px; --topbar-h:58px; }
+.console-layout #sidebar .logo { padding:22px 16px; }
+.console-layout #sidebar nav { padding:10px 12px; gap:4px; }
+.console-layout .nav-section { padding:18px 12px 6px; font-size:11px; font-weight:700; color:var(--text-secondary); letter-spacing:.08em; }
+.console-layout #sidebar nav .nav-item { padding:9px 12px; font-size:13px; text-decoration:none; }
+.console-layout #sidebar nav .setup-nav { margin-top:10px; border:1px solid var(--border); }
+.console-layout #sidebar .actions { display:grid; grid-template-columns:1fr 1fr; gap:8px; padding:14px 12px; }
+.console-layout #sidebar .actions .btn-save { grid-column:1 / -1; padding:11px; }
+.console-layout #sidebar .actions .btn-stop { background:var(--danger-tint); color:var(--danger-on-tint); }
+.console-layout #topbar { gap:10px; }
+.console-layout #topbar-tabs { flex:1; }
+.console-layout #topbar .tb-spacer { display:none; }
+.console-layout #topbar .tb-switch { white-space:nowrap; }
+.console-layout #content { padding:28px; }
+.console-layout #content > .page { max-width:1120px; margin:auto; }
+.console-layout .card { padding:24px; border-radius:var(--radius-lg); }
+.console-layout .form-hint { line-height:1.7; }
+.console-layout .backend-console-slot { padding-top:12px; }
+.deploy-layout .wrap { max-width:880px; }
+.deploy-layout .card { padding:24px; border-radius:var(--radius-lg); margin-bottom:18px; }
+.deploy-layout .action-caption { margin-right:auto; font-size:12px; color:var(--text-secondary); }
+.deploy-layout #onebot-backend-section { padding:16px; border:1px solid var(--border); border-radius:var(--radius-md); background:var(--primary-tint-soft); }
+.deploy-layout #napcat-login { padding:14px 16px; background:var(--primary-tint-soft); border-radius:var(--radius-md); font-size:13px; }
+.deploy-layout #deploy-log { max-height:180px; }
+.home-layout .wrap { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; }
+.home-layout .card { min-width:0; text-align:left; padding:26px 22px; }
+.home-layout .card .icon { margin:0 0 20px; }
+.home-layout .card h2 { font-size:17px; line-height:1.6; }
+.home-layout .legacy-link { display:block; width:fit-content; margin:24px auto 0; color:var(--text-secondary); font-size:12px; text-underline-offset:4px; }
+@media (max-width:850px) {
+  .console-layout { --sidebar-w:176px; }
+  .console-layout #content { padding:16px; }
+  .console-layout .card { padding:16px; }
+  .console-layout #topbar { flex-wrap:wrap; height:auto; min-height:58px; padding:8px 12px; }
+  .console-layout #topbar-tabs { flex-basis:100%; order:2; }
+  .console-layout #topbar .tb-status { margin-left:auto !important; }
+  .home-layout .wrap { grid-template-columns:1fr; }
+  .home-layout { padding:24px 0; }
+}
+@media (max-width:540px) {
+  .console-layout { --sidebar-w:126px; }
+  .console-layout #sidebar .logo { padding:14px 8px; gap:5px; }
+  .console-layout #sidebar .logo span { font-size:12px; }
+  .console-layout #sidebar .logo img { width:22px; height:22px; }
+  .console-layout #sidebar nav { padding:4px; }
+  .console-layout .nav-section { letter-spacing:0; padding-left:8px; }
+  .console-layout .backend-console-slot { padding:8px 4px; }
+  .console-layout .backend-console-link { font-size:10px; gap:3px; padding:8px 4px; }
+  .console-layout #sidebar .actions { padding:8px 4px; gap:4px; }
+  .console-layout .form-row { grid-template-columns:1fr; }
+  .console-layout .radio-cards { flex-direction:column; }
+  .deploy-layout { padding:12px; }
+  .deploy-layout .card { padding:16px; }
+  .deploy-layout .action-caption { flex-basis:100%; }
+}
+
+.backend-process-controls{padding:14px;border:1px solid var(--border-subtle);border-radius:10px;margin:12px 0;font-size:13px}
+.backend-process-controls[hidden]{display:none}
+.backend-process-state{font-size:12px;color:var(--text-secondary);overflow-wrap:anywhere}
+.backend-process-actions{display:flex;gap:8px;flex-wrap:wrap}
+.backend-process-actions button{cursor:pointer;padding:8px 12px;border-radius:8px}
+.backend-process-actions button:disabled{opacity:.45;cursor:not-allowed}
+.backend-process-hint{font-size:12px;color:var(--text-secondary);line-height:1.6}
+.backend-process-result{font-size:12px;overflow-wrap:anywhere}
+.backend-process-result:empty{display:none}
+
+.backend-process-controls strong{font-size:16px}
+.backend-process-controls p{margin:8px 0}
