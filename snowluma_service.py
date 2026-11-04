@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import os
+import re
 import subprocess
 from pathlib import Path
+from urllib.parse import urlencode, urlparse
 
 from . import snowluma_install
 from .napcat_service import QQNapcatService
@@ -49,6 +53,40 @@ class QQSnowLumaService(QQNapcatService):
             scheme = "https" if runtime.get("webuiTls", {}).get("enabled") else "http"
             return f"{scheme}://{host}:{port}/"
         except (ValueError, OSError):
+            return ""
+
+    async def get_webui_login_url(self):
+        # Credentials are resolved only on an explicit console-open request,
+        # never included in periodic dashboard status or log exports.
+        url = self.get_webui_url()
+        if urlparse(url).hostname not in {"localhost", "127.0.0.1", "::1"}:
+            return url
+        password = await asyncio.to_thread(self._initial_webui_password)
+        return url + "?" + urlencode({"token": password}) if password else url
+
+    def _initial_webui_password(self):
+        root = self.get_napcat_directory()
+        try:
+            auth = read_object(root / "config" / "webui.json")
+            if auth.get("mustChangePassword") is not True:
+                return ""  # Never reuse an initial password after the user changed it.
+            salt = bytes.fromhex(auth["passwordSalt"])
+            expected = bytes.fromhex(auth["passwordHash"])
+            if len(salt) != 16 or len(expected) != 64:
+                return ""
+            # Startup logs append across restarts; use the newest credential only.
+            with (root / "logs" / "neko-launch.log").open("rb") as log:
+                log.seek(0, os.SEEK_END)
+                log.seek(max(0, log.tell() - 1024 * 1024))
+                text = log.read().decode("utf-8", errors="replace")
+            text = re.sub(r"\x1b\[[0-9;]*m", "", text)
+            matches = re.findall(r"initial credentials: user=admin password=([0-9a-f]{16})(?=\s|$)", text)
+            if not matches:
+                return ""
+            password = matches[-1]
+            actual = hashlib.scrypt(password.encode(), salt=salt, n=16384, r=8, p=1, dklen=64)
+            return password if hmac.compare_digest(actual, expected) else ""
+        except (OSError, ValueError, KeyError, TypeError):
             return ""
 
     async def sync_napcat_qrcode_into_static(self):

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title data-i18n="ui.status.title">QQ 一键部署</title>
-<link rel="stylesheet" href="theme.css?v=6">
+<link rel="stylesheet" href="theme.css?v=7">
 <style>
 /* 本页用**森林插画**当底图（使用者指定），其余三页用默认的蓝白图形。
  * 这张比默认那张暗（暗部 25%）且细节多（边缘密度 2.3 倍），所以本页要两处让步：
@@ -140,7 +140,6 @@ ul.list .empty { color:var(--text-secondary); font-size:12px; padding:4px 0; }
       <label for="onebot-backend">OneBot 部署后端</label>
       <select id="onebot-backend"><option value="napcat">NapCat</option><option value="snowluma">SnowLuma</option></select>
       <div id="backend-login-hint" class="muted" style="margin-top:8px"></div>
-      <a id="backend-webui" target="_blank" rel="noopener noreferrer" style="display:none">打开后端 WebUI</a>
     </div>
 
     <!-- 流程小字 + 管理员提醒。两种模式的流程不同，按当前模式显示其中一条。
@@ -182,7 +181,7 @@ ul.list .empty { color:var(--text-secondary); font-size:12px; padding:4px 0; }
   </div>
 
   <div class="card">
-    <h2 id="backend-login-heading">登录二维码</h2>
+    <div class="backend-card-heading"><h2 id="backend-login-heading">登录二维码</h2><a id="backend-webui" class="backend-console-link" target="_blank" rel="noopener noreferrer" style="display:none">后端控制台</a></div>
     <!-- 这句放在码**上面**：得先读到再扫。扫错号的代价是"登录成功了，却发现
          没人和她说话"。 -->
     <div id="qr-instructions" class="muted" style="margin-bottom:12px;line-height:1.8">
@@ -268,7 +267,7 @@ ul.list .empty { color:var(--text-secondary); font-size:12px; padding:4px 0; }
 
 <script src="i18n.js?v=2"></script>
 <script src="nav.js?v=1"></script>
-<script src="onebot-backend.js?v=1"></script>
+<script src="onebot-backend.js?v=2"></script>
 <script src="ui-sse.js?v=3"></script>
 <script>
 const P = 'qq_auto_reply', RUNS = '/runs';
@@ -452,9 +451,7 @@ async function loadDashboardState() {
   document.getElementById('onebot-backend').value = st.onebot_backend || 'napcat';
   document.getElementById('backend-login-hint').textContent = backend.loginHint;
   const webui = document.getElementById('backend-webui');
-  webui.href = (d.runtime || {}).backend_webui_url || '#';
-  webui.textContent = '打开 ' + backend.label + ' WebUI';
-  webui.style.display = (d.runtime || {}).backend_webui_url ? '' : 'none';
+  updateBackendConsoleLink(webui,st.onebot_backend||'napcat',(d.runtime||{}).backend_webui_url,false,call);
   const openplat = applyMode(st.qq_connection_mode || 'napcat');
   const nativeLogin = backend.loginMethod === 'native_qq';
   document.getElementById('backend-login-heading').textContent = nativeLogin ? 'QQ 登录' : '登录二维码';

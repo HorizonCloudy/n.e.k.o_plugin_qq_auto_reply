@@ -1396,9 +1396,10 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
 
     async def _query_napcat_webui(self, kw: dict[str, Any]):
         _ = kw
-        url = self.napcat_service.get_webui_url()
+        url = await self.napcat_service.get_webui_login_url()
         webui_lines = await self.napcat_service._read_napcat_webui_lines()
-        return Ok({"url": url, "lines": webui_lines})
+        return Ok({"url": url, "lines": webui_lines,
+                   "backend": str(self._qq_settings.get("onebot_backend") or "napcat")})
 
     async def _query_bots(self, kw: dict[str, Any]):
         _ = kw

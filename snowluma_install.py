@@ -24,6 +24,8 @@ ASSETS = {
 }
 MANIFEST = ".neko-snowluma-files.json"
 PRESERVED = {"config", "logs", "data", "cache"}
+MIRROR_DELAY = 2.0
+DOWNLOAD_TIMEOUT = 240
 
 
 def platform_key():
@@ -43,11 +45,20 @@ async def download(directory: Path, progress, report) -> Path:
     if target.is_file() and target.stat().st_size == size and await asyncio.to_thread(sha256_of, target) == digest:
         return target
     url = f"https://github.com/SnowLuma/SnowLuma/releases/download/{VERSION}/{name}"
-    part = target.with_suffix(target.suffix + ".part")
-    for prefix in ("", "https://gh-proxy.com/"):
-        report("下载官方发布包" if not prefix else "尝试镜像源，仍使用官方 SHA-256 校验")
+    # A slow but live GitHub stream must not block the mirror for four minutes.
+    # Separate partial files let both sources run; only a verified winner is used.
+    parts = [target.with_name(name + f".{source}.part") for source in ("official", "mirror")]
+    high_water = 0
+
+    async def fetch(index, prefix):
+        nonlocal high_water
+        if index:
+            await asyncio.sleep(MIRROR_DELAY)
+        label = "GitHub 直连" if not prefix else "镜像加速"
+        report(f"开始{label}下载，采用最先通过官方 SHA-256 校验的安装包")
+        part = parts[index]
         try:
-            async with asyncio.timeout(240), httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
                 async with client.stream("GET", prefix + url) as response:
                     response.raise_for_status()
                     done = 0
@@ -59,12 +70,34 @@ async def download(directory: Path, progress, report) -> Path:
                                 raise RuntimeError("安装包大小超出官方记录")
                             output.write(chunk)
                             hasher.update(chunk)
-                            progress(done, size)
+                            if done > high_water:
+                                high_water = done
+                                progress(done, size)
                 if done != size or hasher.hexdigest() != digest:
                     raise RuntimeError("SnowLuma 安装包大小或 SHA-256 校验失败")
-                part.replace(target)
-                return target
-        except (httpx.HTTPError, OSError, RuntimeError, TimeoutError):
+                return part, label
+        except (httpx.HTTPError, OSError, RuntimeError, TimeoutError) as exc:
+            report(f"{label}未完成（{type(exc).__name__}），等待其他下载源")
+            return None
+
+    tasks = [asyncio.create_task(fetch(i, prefix))
+             for i, prefix in enumerate(("", "https://gh-proxy.com/"))]
+    try:
+        async with asyncio.timeout(DOWNLOAD_TIMEOUT):
+            for task in asyncio.as_completed(tasks):
+                result = await task
+                if result is not None:
+                    part, label = result
+                    part.replace(target)
+                    report(f"{label}下载完成，官方 SHA-256 校验通过")
+                    return target
+    except TimeoutError:
+        report("下载超时，请检查网络后重试")
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        for part in parts:
             part.unlink(missing_ok=True)
     raise RuntimeError("SnowLuma 下载失败，请检查网络后重试")
 

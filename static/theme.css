@@ -195,3 +195,15 @@ body {
 ::-webkit-scrollbar-thumb:hover {
     background: rgba(148, 163, 184, .65);
 }
+
+/* OneBot backend console: secondary action beside login, fixed in console sidebar. */
+.backend-card-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:14px; }
+.backend-card-heading h2 { margin:0; font-size:14px; color:var(--text-main); }
+.backend-console-link { display:inline-flex; align-items:center; justify-content:center; gap:10px; padding:9px 13px; border:1px solid var(--primary-border); border-radius:var(--radius-md); background:var(--primary-tint); color:var(--primary-on-tint); text-decoration:none; font-size:12px; font-weight:650; line-height:1.4; transition:background-color .15s, box-shadow .15s; }
+.backend-console-link::after { content:"↗"; font-size:16px; line-height:1; }
+.backend-console-link:hover { background:var(--primary-tint-soft); box-shadow:var(--shadow-soft); }
+.backend-console-link:focus-visible { outline:2px solid var(--primary); outline-offset:3px; }
+.backend-console-slot { padding:8px 12px 0; }
+.backend-console-slot .backend-console-link { width:100%; padding:9px 8px; gap:6px; white-space:nowrap; }
+
+.backend-console-link[aria-disabled="true"] { opacity:.6; cursor:not-allowed; box-shadow:none; }

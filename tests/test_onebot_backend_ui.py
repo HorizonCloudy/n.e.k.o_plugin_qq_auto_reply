@@ -27,7 +27,7 @@ const assert = require('node:assert/strict');
 const elements = new Map();
 const document = {
   getElementById(id) {
-    if (!elements.has(id)) elements.set(id,{style:{},value:'',textContent:'',checked:false});
+    if (!elements.has(id)) elements.set(id,{style:{},value:'',textContent:'',checked:false,setAttribute(k,v){this[k]=v},removeAttribute(k){delete this[k]}});
     return elements.get(id);
   },
   querySelectorAll(selector) { return [this.getElementById(selector)]; }
@@ -38,6 +38,7 @@ document.querySelectorAll = selector => selector === '#modes .mode' ? [] : query
 let lastMode = null, _settingsDirty = false;
 let state = {settings:{napcat_directory:'C:/nc',snowluma_directory:'C:/sl',show_napcat_window:true,show_snowluma_window:false}};
 function stopBindPoll() {}
+function call() {}
 function currentMode() { return 'napcat_forward'; }
 """
     checks = r"""
@@ -50,6 +51,9 @@ applyMode('napcat_forward');
 assert.equal(document.getElementById('onebot-backend-section').style.display,'');
 assert.equal(document.getElementById('sec-openplat').style.display,'none');
 onBackendChange('snowluma');
+assert.equal(document.getElementById('backend-webui-link').style.display,'');
+assert.equal(document.getElementById('backend-webui-link')['aria-disabled'],'true');
+assert.equal(document.getElementById('backend-webui-link').href,undefined);
 assert.equal(document.getElementById('cfg-path').value,'C:/sl');
 assert.equal(document.getElementById('cfg-show-napcat').checked,false);
 assert.equal(document.getElementById('cfg-url-label').textContent,'SnowLuma WebSocket 服务器地址');
@@ -61,6 +65,15 @@ assert.equal(document.getElementById('cfg-path').value,'C:/nc');
 assert.equal(document.getElementById('cfg-show-napcat').checked,true);
 assert.equal(document.getElementById('[data-i18n="ui.napcat.config.refresh_qrcode"]').style.display,'');
 assert.equal(state.settings.snowluma_directory,'C:/sl');
+state.backendWebuiUrl='http://localhost:6099/webui';
+applyBackendUI();
+assert.equal(document.getElementById('backend-webui-link')['aria-disabled'],'false');
+onBackendChange('snowluma');
+assert.equal(document.getElementById('backend-webui-link').href,undefined);
+state.settings.onebot_backend='snowluma';
+state.backendWebuiUrl='http://localhost:5099/';
+applyBackendUI();
+assert.equal(document.getElementById('backend-webui-link').href,'http://localhost:5099/');
 """
     code = harness + source + function(status, "applyMode") + function(console, "onBackendChange") + function(console, "applyBackendUI") + checks
     result = subprocess.run([node, "-"], input=code, text=True, encoding="utf-8", capture_output=True, timeout=20)

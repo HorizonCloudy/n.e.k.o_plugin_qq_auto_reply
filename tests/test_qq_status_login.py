@@ -18,6 +18,7 @@ const assert = require('node:assert/strict');
 const elements = new Map();
 const document = {getElementById(id) {
   if (!elements.has(id)) elements.set(id, {style:{}, dataset:{}, textContent:'', src:'',
+    setAttribute(name, value) { this[name] = value; },
     removeAttribute(name) { delete this[name]; }});
   return elements.get(id);
 }};

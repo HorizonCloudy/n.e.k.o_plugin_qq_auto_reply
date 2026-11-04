@@ -342,6 +342,9 @@ class QQNapcatService:
             self._emit_log("DEBUG", f"同步登录二维码失败: {e}")
             return False
 
+    async def get_webui_login_url(self) -> str:
+        return self.get_webui_url()
+
     async def _read_napcat_webui_lines(self) -> list[str]:
         """Return NapCat WebUI access info."""
         url = self.get_webui_url()
