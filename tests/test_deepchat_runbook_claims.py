@@ -208,5 +208,41 @@ class SurfaceClaimTests(unittest.TestCase):
         )
 
 
+class P0bUncoveredSurfaceContractTests(unittest.TestCase):
+    """P0b 的**正向** description 契约（16b 是否断言的对偶面）。
+
+    16b 要求"不许出现过度承诺"；这条要求"必须把未覆盖面写清楚"。两者缺一不可：
+    只做前者，description 可以什么都不说（技术上不违规，但用户仍会误解为"全删了"）。
+
+    3D/P0a 的 description 目前写了 `not_covered: ["group_participant"]` 与
+    `identity_meta.supported=false`，但**没有** P0b 之后才成立的那个限定：
+    `group_participant:history_before_P0b`（P0b 之前写下的群成员记忆不在清理范围）。
+    因此本条现在是**红的**，作为 P0b 的验收靶子。
+    """
+
+    REQUIRED_SNIPPETS = (
+        "group_participant",       # 未覆盖的域
+        "history_before_P0b",      # P0b 之前的历史不在覆盖范围（P0b 才引入索引，可追溯）
+        "identity_meta",           # trust/profile 由宿主账本维护
+    )
+
+    def test_forget_user_description_declares_uncovered_surfaces(self) -> None:
+        blocks = _description_blocks()
+        self.assertIn("dc_forget_user", blocks, "找不到 dc_forget_user 的 description")
+
+        text = blocks["dc_forget_user"]
+        missing = [snippet for snippet in self.REQUIRED_SNIPPETS if snippet not in text]
+        self.assertEqual(
+            missing,
+            [],
+            f"dc_forget_user 的 description 缺少未覆盖面声明：{missing}（当前文本：{text!r}）",
+        )
+        # trust / profile 至少出现一个，且必须与"没有擦除端点"同处一句
+        self.assertTrue(
+            ("trust" in text or "profile" in text),
+            f"未说明 trust/profile 的覆盖情况：{text!r}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
