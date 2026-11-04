@@ -116,10 +116,19 @@ TUNING_KEYS: dict[str, Any] = {
 #: 键仍在 ``TUNING_KEYS`` 里（Phase 1 可能恢复），但当前**调了也不会生效**，
 #: 所以 ``tune`` 会显式抛错、``dc_tune`` 的说明也不再广告它们。
 #: 留着能调但静默无效的键，比拒绝更糟：调用方会以为设置成功了。
-RETIRED_TUNING_KEYS: frozenset[str] = frozenset({"deepchat_reflection_enabled"})
+#: 3A：自主联系尚未接入共享预算账本，此时允许开启会绕过「有由头搭话」的日限，
+#: 所以在 3B 落地前把开关停用（3B 的同一提交里从这里移除）。
+RETIRED_TUNING_KEYS: frozenset[str] = frozenset({
+    "deepchat_reflection_enabled",
+    "deepchat_autonomy_enabled",
+})
 
 #: 停用键的拒绝文案。要写成"可行动"的：为什么停 + 什么时候回来 + 现在别调。
 RETIRED_TUNING_REASON: dict[str, str] = {
+    "deepchat_autonomy_enabled": (
+        "该参数暂不可用：自主联系尚未接入共享预算账本（3B），此时开启会绕过"
+        "有由头搭话的日限；3B 落地后解除。当前调用不会生效。"
+    ),
     "deepchat_reflection_enabled": (
         "该参数已停用：里程碑已停止写入用户原话（Phase 0 隐私修复），"
         "后续改由宿主 participant 记忆承载后恢复；当前调用不会生效。"
@@ -202,8 +211,25 @@ class DeepChatService:
 
     @property
     def generation_mode(self) -> str:
+        """**实际生效**的生成模式；主开关关闭时一律回落 ``host``。
+
+        注意这是「生效值」而不是「配置值」：``deepchat_enabled=false`` 时即使配置写着
+        ``direct``，路由也必须走宿主会话（否则会绕过宿主），所以这里如实返回 ``host``。
+        **不写回配置** —— 重新打开主开关后仍按配置里的模式跑。
+        """
+        if not self.enabled:
+            return "host"
         mode = str(self._setting("deepchat_generation_mode", "host") or "").strip().lower()
         return mode if mode in {"host", "direct"} else "host"
+
+    @property
+    def direct_mode_active(self) -> bool:
+        """是否真的在走 direct 路径：总开关 ON 且配置为 direct。
+
+        路由处只认这个属性，不要再各自比较 ``generation_mode == 'direct'`` ——
+        「关掉总开关」与「重新打开」两处都要同时正确，散在多个调用点迟早漏一个。
+        """
+        return self.enabled and self.generation_mode == "direct"
 
     @property
     def expression_learning_enabled(self) -> bool:
@@ -557,11 +583,16 @@ class DeepChatService:
             await save(candidate)
         settings[key] = parsed
         # 配置在构造时读取，重建这三个无状态对象（mood/relationship/expressions）才能立即生效。
-        self._rebuild_config_bound()
+        self.apply_runtime_config()
         return {"param": key, "value": parsed}
 
-    def _rebuild_config_bound(self) -> None:
-        """Re-create the cheap, stateless objects that cache constructor settings."""
+    def apply_runtime_config(self) -> None:
+        """按当前配置重建「构造期读配置」的对象（mood / relationship / expressions）。
+
+        两个调用方：``tune``（改完立即生效）与 ``SettingsService.apply_runtime_settings``
+        （配置从文件/UI 载入后统一应用）。重建的都是廉价无状态对象，无副作用；
+        刻意做成**公开**方法，避免「配置入口各自重建一次」的重复实现漂移。
+        """
         self.mood = MoodStateMachine(
             self.store,
             decay_rate=self._float_setting("deepchat_mood_decay_rate", 0.05),

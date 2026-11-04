@@ -24,7 +24,9 @@ class QQReplyModelNode:
             )
 
         deepchat = getattr(self.plugin, "deepchat_service", None)
-        if deepchat is not None and deepchat.generation_mode == "direct":
+        # 路由只认 ``direct_mode_active``：总开关关掉时它一定是 False，
+        # 不会因为配置里还写着 direct 就绕过宿主会话。
+        if deepchat is not None and deepchat.direct_mode_active:
             return await self._run_direct_primary(context)
 
         primary_result = await self._run_primary(context)

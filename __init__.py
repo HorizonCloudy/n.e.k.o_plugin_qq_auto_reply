@@ -910,7 +910,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         # DeepChat 自主调度：默认关闭，循环内部每轮先查开关；开启后
         # 只在私聊过、关系达标、非静音时段且过了冷却的用户里挑一个。
         deepchat = getattr(self, "deepchat_service", None)
-        if deepchat is not None:
+        # 总开关关闭时不起这个循环：循环内部虽然每轮都查开关，但「关掉还在跑」
+        # 本身就会让「关掉 = 不再有任何 DeepChat 行为」这条承诺变形。
+        if deepchat is not None and deepchat.enabled:
             task = getattr(self, "_deepchat_autonomy_task", None)
             if task is None or task.done():
                 self._deepchat_autonomy_task = asyncio.create_task(

@@ -65,12 +65,16 @@ class AutonomyScheduler:
 
     @property
     def enabled(self) -> bool:
-        """双开关 AND：深聊自主联系 **且** 既有「有由头主动搭话」总开关。
+        """三重 AND：总开关 **且** 自主联系 **且** 既有「有由头主动搭话」开关。
 
-        两者都会让"她"主动开口，只开一个就发消息等于绕过了使用者的另一个刹车。
+        前两者都会让「她」主动开口，只开一个就等于绕过使用者的另一个刹车；
+        外层再 AND 上 ``deepchat_enabled`` —— 总开关关闭时不得有任何 DeepChat 行为
+        （不只是不注入提示词，也不该主动发消息）。
         """
-        return bool(self._setting("deepchat_autonomy_enabled", False)) and bool(
-            self._setting("proactive_initiative_enabled", False)
+        return (
+            self.service.enabled
+            and bool(self._setting("deepchat_autonomy_enabled", False))
+            and bool(self._setting("proactive_initiative_enabled", False))
         )
 
     @staticmethod
