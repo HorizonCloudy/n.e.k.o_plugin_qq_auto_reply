@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import asyncio
 import tempfile
 import unittest
@@ -7,6 +8,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from deepchat.service import DeepChatService, classify_signal
+
+#: 仓库根：用于对宿主编排模块做源码级契约（它们载不进单测）。
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class FakeConfigStore:
@@ -307,6 +311,71 @@ class ConcurrentWritebackTests(unittest.TestCase):
             del self.service._writeback_locked  # type: ignore[attr-defined]
 
         self.assertEqual(seen, [True], "writeback 的 RMW 体未在持锁状态下执行")
+
+
+class EmotionExitContractTests(unittest.TestCase):
+    """P2-⑤：同一轮只能有**一路**情绪出口。
+
+    两条出口目前靠 `is_group` 天然互斥：
+    - 群：`session_instruction_service._append_emotion_section`（attention 的情绪）；
+    - 私聊：`deepchat.enrich_system_prompt` 的 mood 片段。
+
+    两个模块都依赖宿主包（`config.prompts`/`utils`），载不进单测，所以这里做
+    **源码级契约**：钉住两条互斥判据还在。行为层由
+    `test_group_prompt_excludes_mood_fragment` / `test_private_...` 覆盖。
+    """
+
+    @staticmethod
+    def _function(root: ast.AST, name: str) -> ast.FunctionDef:
+        for node in ast.walk(root):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+                return node  # type: ignore[return-value]
+        raise AssertionError(f"找不到函数 {name}")
+
+    def test_session_emotion_section_is_group_only(self) -> None:
+        source = (_REPO_ROOT / "session_instruction_service.py").read_text(encoding="utf-8")
+        func = self._function(ast.parse(source), "_append_emotion_section")
+
+        guard = next((node for node in func.body if isinstance(node, ast.If)), None)
+        self.assertIsNotNone(guard, "_append_emotion_section 不再有 is_group 早退")
+        self.assertIn(
+            "not is_group",
+            ast.unparse(guard.test),
+            "群情绪段落必须对私聊早退，否则私聊会出现两路情绪",
+        )
+        self.assertTrue(
+            any(isinstance(node, ast.Return) for node in guard.body),
+            "is_group 判据必须是早退（return），不能只是包一层 if",
+        )
+
+    def test_deepchat_mood_fragment_is_private_only(self) -> None:
+        source = (_REPO_ROOT / "deepchat" / "service.py").read_text(encoding="utf-8")
+        func = self._function(ast.parse(source), "enrich_system_prompt")
+
+        def mentions_mood_fragment(node: ast.AST) -> bool:
+            for child in ast.walk(node):
+                if (
+                    isinstance(child, ast.Call)
+                    and isinstance(child.func, ast.Attribute)
+                    and child.func.attr == "fragment"
+                    and isinstance(child.func.value, ast.Attribute)
+                    and child.func.value.attr == "mood"
+                ):
+                    return True
+            return False
+
+        guarded = [
+            node
+            for node in func.body
+            if isinstance(node, ast.If)
+            and "is_group" in ast.unparse(node.test)
+            and mentions_mood_fragment(node)
+        ]
+        self.assertTrue(
+            guarded,
+            "mood 片段必须在 `if not is_group` 里注入（否则群聊会出现两路情绪）",
+        )
+        self.assertIn("not is_group", ast.unparse(guarded[0].test))
 
 
 if __name__ == "__main__":

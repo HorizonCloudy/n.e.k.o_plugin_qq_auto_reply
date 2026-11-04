@@ -12,6 +12,7 @@ dashboard_service.save_settings 与前端字段还没有这四个键；若贸然
 
 from __future__ import annotations
 
+import ast
 import pathlib
 import unittest
 
@@ -19,6 +20,7 @@ import settings_schema
 from deepchat import service as deepchat_service
 
 _PLUGIN_INIT = pathlib.Path(__file__).resolve().parents[1] / "__init__.py"
+_REPO_ROOT = _PLUGIN_INIT.parent
 
 #: 缺一不可的隐私/行为开关。
 PRIVACY_KEYS: tuple[str, ...] = (
@@ -98,6 +100,71 @@ class RetiredTuningKeyTests(unittest.TestCase):
             "if k not in DEEPCHAT_RETIRED_TUNING_KEYS",
             block,
             "广告生成器必须排除 RETIRED 键（等价于 advertised == TUNING_KEYS - RETIRED）",
+        )
+
+
+class EmotionVocabularyTests(unittest.TestCase):
+    """P2-⑤：DeepChat 的 Mood 与 attention 情绪词表必须显式对齐。
+
+    两侧词表**目前不共享**（DeepChat: neutral/happy/excited/...；attention:
+    calm/playful/proud/...），交集只有 4 个。这里不硬编码"必须完全统一"，
+    而是要求：**每个 Mood 要么出现在共享词表里，要么被显式登记为 deepchat 专有**。
+
+    想加新 mood 的人，必须在这里做一次有意识的选择（登记，或先去统一词表）——
+    仓库里 attention 侧已有同样惯例（`test_qq_emotion_vocabulary.py` 的白名单）。
+    """
+
+    #: 显式登记：这些 mood 只在 DeepChat 内部使用，不入 attention 词表。
+    #: 空集合 = 目前一个都没登记（所以本用例现在是红的，见 docstring）。
+    DEEPCHAT_ONLY_MOODS: frozenset[str] = frozenset()
+
+    @staticmethod
+    def _mood_values() -> set[str]:
+        source = (_REPO_ROOT / "deepchat" / "models.py").read_text(encoding="utf-8")
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.ClassDef) and node.name == "Mood":
+                values = {
+                    stmt.value.value
+                    for stmt in node.body
+                    if isinstance(stmt, ast.Assign)
+                    and isinstance(stmt.value, ast.Constant)
+                    and isinstance(stmt.value.value, str)
+                }
+                if values:
+                    return values
+        raise AssertionError("解析不到 Mood 枚举取值")
+
+    @staticmethod
+    def _attention_emotions() -> set[str]:
+        source = (_REPO_ROOT / "attention_service.py").read_text(encoding="utf-8")
+        for node in ast.walk(ast.parse(source)):
+            if (
+                isinstance(node, ast.Assign)
+                and any(
+                    isinstance(target, ast.Name) and target.id == "_EMOTION_MULTIPLIER"
+                    for target in node.targets
+                )
+                and isinstance(node.value, ast.Dict)
+            ):
+                return {
+                    key.value
+                    for key in node.value.keys
+                    if isinstance(key, ast.Constant) and isinstance(key.value, str)
+                }
+        raise AssertionError("解析不到 attention 的 _EMOTION_MULTIPLIER 词表")
+
+    def test_every_mood_is_shared_or_explicitly_registered(self) -> None:
+        moods = self._mood_values()
+        shared = self._attention_emotions()
+
+        unregistered = sorted(
+            mood for mood in moods if mood not in shared and mood not in self.DEEPCHAT_ONLY_MOODS
+        )
+        self.assertEqual(
+            unregistered,
+            [],
+            "这些 Mood 既不在共享情绪词表里，也没登记为 deepchat 专有："
+            f"{unregistered}（共享词表：{sorted(shared)}）",
         )
 
 

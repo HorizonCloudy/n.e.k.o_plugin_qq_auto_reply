@@ -53,6 +53,7 @@ QQReplyContext = _load_plugin_module("pipeline_models").QQReplyContext
 QQReplyModelNode = _load_plugin_module("reply_model_node").QQReplyModelNode
 is_synthetic_source = _load_plugin_module("pipeline_models").is_synthetic_source
 SYNTHETIC_SOURCE_KINDS = _load_plugin_module("pipeline_models").SYNTHETIC_SOURCE_KINDS
+QQModelResult = _load_plugin_module("pipeline_models").QQModelResult
 
 #: review 描述里写的是 `source_kind="synthetic"`，但那不是生产取值——
 #: 生产只认 `SYNTHETIC_SOURCE_KINDS` 里这几个常量，`"synthetic"` 会被判成
@@ -74,6 +75,10 @@ class FakeReplyGenerationService:
         self.writeback_calls: list[QQReplyContext] = []
         self.generate_fallback_from_context = AsyncMock(return_value="ok")
         self.run_fallback_memory_hooks = AsyncMock(return_value=None)
+        # host 模式的 primary 调用：主开关关掉时会走到这里
+        self.run_primary_session_call = AsyncMock(
+            return_value=QQModelResult(reply_text="host-reply", source="primary")
+        )
 
     async def writeback_deepchat(self, context: QQReplyContext) -> None:
         self.writeback_calls.append(context)
@@ -328,6 +333,123 @@ class WritebackThreadContractTests(unittest.TestCase):
             f"不得在事件循环里同步调用 deepchat.writeback（违规行号 {sync_calls}）",
         )
 
+
+
+class MasterSwitchRoutingTests(unittest.TestCase):
+    """P2-②：`deepchat_enabled` 关掉后不得再走 DeepChat 自己的生成路径。"""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.plugin = FakePlugin(self._tmp.name)
+        self.plugin._qq_settings["deepchat_generation_mode"] = "direct"
+        self.service = DeepChatService(self.plugin)
+        self.plugin.deepchat_service = self.service
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_disabled_forces_host_path(self) -> None:
+        self.plugin._qq_settings["deepchat_enabled"] = False
+
+        self.assertFalse(self.service.enabled)
+        self.assertEqual(
+            self.service.generation_mode,
+            "host",
+            "主开关关掉后必须回到 host 路径，否则会绕过宿主会话",
+        )
+
+        result = asyncio.run(QQReplyModelNode(self.plugin).generate(_context()))
+        self.assertNotEqual(
+            result.source,
+            "deepchat_direct",
+            "主开关关掉后节点仍走了 direct 路径",
+        )
+
+
+class EnrichLoopBlockingTests(unittest.TestCase):
+    """P2-④：`enrich_system_prompt` 目前在 async 的 context 节点里同步执行。
+
+    它内部会 `mood.get()`（valenсe≠0 时**每次读都写库**）与 `relationship.get()`
+    （跨结算边界时会写），所以锁争用会把整个事件循环拖住。
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.plugin = FakePlugin(self._tmp.name)
+        self.service = DeepChatService(self.plugin)
+        self.plugin.deepchat_service = self.service
+        self.service.set_mood("u1", "happy")  # valenсe≠0 → mood.get 每读必写
+        self.db_path = Path(self._tmp.name) / "deepchat.sqlite3"
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _hold_write_lock(self) -> sqlite3.Connection:
+        holder = sqlite3.connect(str(self.db_path), isolation_level=None)
+        holder.execute("BEGIN IMMEDIATE")
+        return holder
+
+    def test_enrich_does_not_block_event_loop(self) -> None:
+        holder = self._hold_write_lock()
+        gaps: list[float] = []
+        stop = {"flag": False}
+        try:
+
+            async def scenario() -> None:
+                last = {"t": time.perf_counter()}
+
+                async def ticker() -> None:
+                    while not stop["flag"]:
+                        await asyncio.sleep(0.02)
+                        now = time.perf_counter()
+                        gaps.append((now - last["t"]) * 1000)
+                        last["t"] = now
+
+                task = asyncio.create_task(ticker())
+                await asyncio.sleep(0.05)
+                try:
+                    self.service.enrich_system_prompt(
+                        system_prompt="BASE", sender_id="u1", sender_name="小明"
+                    )
+                except Exception:  # noqa: BLE001 —— 锁争用下抛错可以，阻塞不行
+                    pass
+                await asyncio.sleep(0.05)
+                stop["flag"] = True
+                await task
+
+            asyncio.run(scenario())
+        finally:
+            holder.execute("ROLLBACK")
+            holder.close()
+
+        worst = max(gaps) if gaps else 0.0
+        self.assertLess(
+            worst,
+            250.0,
+            f"enrich 把事件循环阻塞了 {worst:.0f}ms（应在线程里跑）",
+        )
+
+    def test_enrich_fails_fast_under_lock_contention(self) -> None:
+        """`timeout=0.5` 同样保护 enrich 的写路径：不得等默认 5s。"""
+        holder = self._hold_write_lock()
+        try:
+            started = time.perf_counter()
+            try:
+                self.service.enrich_system_prompt(
+                    system_prompt="BASE", sender_id="u1", sender_name="小明"
+                )
+            except sqlite3.OperationalError:
+                pass
+            elapsed = time.perf_counter() - started
+        finally:
+            holder.execute("ROLLBACK")
+            holder.close()
+
+        self.assertLess(
+            elapsed,
+            1.5,
+            f"锁等待应在 0.5s 量级返回，实际 {elapsed:.2f}s（是不是退回默认 5s 了？）",
+        )
 
 
 if __name__ == "__main__":

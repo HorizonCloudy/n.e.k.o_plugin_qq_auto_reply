@@ -224,6 +224,21 @@ class HotTuneTests(RelationshipLifecycleTestCase):
             f"decay_rate=0.8 应明显衰减更快：fast={fast:.4f} slow={slow:.4f}",
         )
 
+    def test_mood_decay_rate_is_read_at_construction(self) -> None:
+        """P2-③：构造期就要读到 `deepchat_mood_decay_rate`（等价于"重启后仍生效"）。"""
+        service = self._new_service({"deepchat_mood_decay_rate": 0.8})
+        self.assertAlmostEqual(service.mood.decay_rate, 0.8, places=6)
+
+        service.set_mood("u1", "happy")
+        state = service.mood.get("user:u1")
+        decayed = service.mood.get("user:u1", now=state.updated_at + 120).valence
+        self.assertAlmostEqual(
+            decayed,
+            0.0,
+            delta=0.02,
+            msg=f"0.8 的衰减率下 2 分钟应见底，实际 {decayed:.4f}（像用了默认 0.05）",
+        )
+
 
 class RelationshipFreezeTests(RelationshipLifecycleTestCase):
     def _freeze(self, user_id: str = "u1") -> None:

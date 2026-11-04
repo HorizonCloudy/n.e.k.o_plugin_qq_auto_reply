@@ -32,7 +32,9 @@ class FakePlugin:
         return f"group:{group_id or ''}" if is_group else f"private:{sender_id}"
 
 
-class AutonomyTests(unittest.TestCase):
+class _AutonomyFixture(unittest.TestCase):
+    """共用 fixture（不含用例）：子类各自持有自己的用例。"""
+
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.plugin = FakePlugin(self._tmp.name)
@@ -68,6 +70,7 @@ class AutonomyTests(unittest.TestCase):
             self.service.autonomy.record_private_interaction(user_id, now=at)
         self.service.relationship.reinforce(user_id, affinity, now=at)
 
+class AutonomyTests(_AutonomyFixture):
     def test_due_private_user_is_candidate(self) -> None:
         self._seed()
         candidate = self.service.autonomy.should_reach_out("u1", now=self.now)
@@ -144,6 +147,100 @@ class AutonomyTests(unittest.TestCase):
             self.service.autonomy.should_reach_out("u1", now=self.now),
             "额度仍有剩余时不应被这道 gate 拦住",
         )
+
+
+class FakeSharedBudget:
+    """P2 契约替身：**两个来源共用一个账本**。
+
+    现状（实现前）只有单向只读闸门：`autonomy` 读 `remaining_today()` 但不记账，
+    proactive 也只记自己的内存计数。所以这些用例现在应当是红的——它们描述的是
+    "共享账本"这一目标行为，不是当前行为。
+    """
+
+    def __init__(self, max_per_day: int = 2) -> None:
+        self.max_per_day = max_per_day
+        self.sent: list[tuple[str, float]] = []
+
+    def record(self, source: str, now: float) -> None:
+        self.sent.append((source, now))
+
+    def remaining_today(self, **_: object) -> int:
+        return max(0, self.max_per_day - len(self.sent))
+
+    def last_sent_at(self) -> float:
+        return self.sent[-1][1] if self.sent else 0.0
+
+
+class SharedBudgetTests(_AutonomyFixture):
+    """P2-①：proactive_initiative 与 deepchat autonomy 必须共用一本账。"""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.plugin._qq_settings["proactive_initiative_max_per_day"] = 2
+        self.ledger = FakeSharedBudget(2)
+        self.plugin.proactive_initiative_service = SimpleNamespace(
+            remaining_today=self.ledger.remaining_today,
+            mark_reached_out=lambda *a, **k: self.ledger.record("proactive", self.now),
+            last_sent_at=self.ledger.last_sent_at,
+        )
+
+    def test_deepchat_send_decrements_shared_budget(self) -> None:
+        self._seed()
+        self.ledger.record("proactive", self.now - 2 * 3600)  # 今天已由原服务发出 1
+        self.assertEqual(self.ledger.remaining_today(), 1)
+
+        self.assertIsNotNone(self.service.autonomy.should_reach_out("u1", now=self.now))
+        self.service.autonomy.mark_reached_out("u1", now=self.now)
+
+        self.assertEqual(
+            self.ledger.remaining_today(),
+            0,
+            f"DeepChat 的发送没有记进共享账本（账本：{self.ledger.sent}）",
+        )
+
+    def test_interleaved_sends_never_exceed_max_per_day(self) -> None:
+        self._seed()
+        self.ledger.record("proactive", self.now - 2 * 3600)
+        self.service.autonomy.mark_reached_out("u1", now=self.now)  # DeepChat 发第 2 次
+
+        self.assertEqual(
+            self.ledger.remaining_today(),
+            0,
+            f"两来源交错后总额度未被共享限制（账本：{self.ledger.sent}）",
+        )
+        self.assertIsNone(
+            self.service.autonomy.should_reach_out("u1", now=self.now + 10),
+            "额度已满时 DeepChat 不得再开口",
+        )
+
+    def test_min_gap_is_shared_across_both_sources(self) -> None:
+        self._seed()
+        self.ledger.record("proactive", self.now - 60)  # 60s 前原服务刚发过（gap=3600）
+        self.assertIsNone(
+            self.service.autonomy.should_reach_out("u1", now=self.now),
+            "间隔闸门未共享：原服务刚发完，DeepChat 仍认为可以开口",
+        )
+
+    def test_mark_reached_out_records_into_shared_ledger(self) -> None:
+        self._seed()
+        self.service.autonomy.mark_reached_out("u1", now=self.now)
+        self.assertTrue(
+            any(source == "deepchat" for source, _ in self.ledger.sent),
+            f"共享账本里没有 deepchat 的记录：{self.ledger.sent}",
+        )
+
+
+class MasterSwitchTests(_AutonomyFixture):
+    """P2-②：`deepchat_enabled` 是总开关，关掉后不得再有任何 DeepChat 行为。"""
+
+    def test_master_switch_off_disables_autonomy(self) -> None:
+        self.plugin._qq_settings["deepchat_enabled"] = False
+        self.assertFalse(
+            self.service.autonomy.enabled,
+            "主开关关掉后 autonomy 必须视为关闭",
+        )
+        self._seed()
+        self.assertIsNone(self.service.autonomy.should_reach_out("u1", now=self.now))
 
 
 if __name__ == "__main__":
