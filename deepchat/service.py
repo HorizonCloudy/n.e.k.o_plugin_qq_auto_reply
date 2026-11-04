@@ -20,6 +20,15 @@ from .subject_index import SubjectIndex
 POSITIVE_SIGNALS = frozenset({"praise", "thank", "funny"})
 NEGATIVE_SIGNALS = frozenset({"insult"})
 
+#: 印象文本上限（字符）。里程碑从"原话副本"改成"提炼后的印象"，长度必须有界。
+REMEMBER_IMPRESSION_MAX_CHARS = 120
+#: 原话子串命中判定时取样多少条最近用户原话。
+REMEMBER_GUARD_SAMPLE = 3
+#: 原话子串判定的最小命中长度：太短的片段（"好的"）当子串命中会误杀正常提炼。
+REMEMBER_GUARD_MIN_CHARS = 6
+#: 「写入成功过、随后连续零新事实」的告警阈值 M。
+REMEMBER_EMPTY_STREAK_WARN = 3
+
 #: 学习路径的硬预算：``writeback`` 跑在回复主链路上，历史再长也不能阻塞。
 LEARNING_PER_MESSAGE = 300
 LEARNING_BUDGET = 8000
@@ -159,6 +168,12 @@ class DeepChatService:
         )
         self.autonomy = AutonomyScheduler(self)
         self.subject_index = SubjectIndex(self.store)
+        #: `remember_milestone` 的可观测状态（见该方法 docstring 的三档告警）。
+        self._remember_stats: dict[str, int] = {
+            "attempts": 0,
+            "succeeded": 0,
+            "empty_streak": 0,
+        }
         # 写回是跨多张表/多个连接的读-改-写；并发调用会交错覆盖（实测 16 并发送回丢 5 次）
         # 且静默无异常。这里用**整条链**的互斥串行化——⚠️ 不要改成"给 connection() 加锁":
         # 那是单连接粒度，RMW 照样交错，实测比不修更差；
@@ -194,6 +209,15 @@ class DeepChatService:
         try:
             logger.warning(message)
         except Exception:  # noqa: BLE001 —— 诊断日志失败不影响主流程
+            pass
+
+    def _info(self, message: str) -> None:
+        logger = getattr(self.plugin, "logger", None)
+        if logger is None:
+            return
+        try:
+            logger.info(message)
+        except Exception:  # noqa: BLE001
             pass
 
     @property
@@ -633,6 +657,158 @@ class DeepChatService:
             self.store,
             max_entries=self._int_setting("deepchat_expression_max_entries", 200),
         )
+
+    # ── 里程碑写入（Phase 1 形态：写"印象"，不写原话）────────────────────
+
+    def remember_milestone(
+        self,
+        *,
+        sender_id: str,
+        impression: str,
+        group_id: str | None = None,
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        """把一轮提炼出的**印象**写进宿主的 participant 记忆。
+
+        与 Phase 0 删掉的「原话副本」的区别，是三道闸 + 一条写入形态：
+
+        1. **只写私聊 participant 域**：`group_id` 非空直接 `private_only`，**零请求**
+           （群成员域由 scoped history 那条链路负责，不走这里）。
+        2. **文本闸**：`sanitize_text` 去控制字符后截断 120 字；再取最近
+           `REMEMBER_GUARD_SAMPLE` 条用户原话做**子串命中**判定——命中即拒。
+           理由：所谓"提炼"很容易退化成"抄写"，抄写就把 Phase 0 修掉的原话副本
+           又请回来了，而且这次还带着"已脱敏"的错觉。
+        3. **授权闸（发前复检）**：`private_participant_memory_enabled` +
+           `private_memory_mode == "participant"` + 记忆服务可用，三者同时满足才写；
+           legacy 模式一律 **fail-closed**（不清、不猜、写明原因）。
+           闸在入口查一次、**发 HTTP 前再查一次**：这中间可能被用户改设置。
+
+        ⚠️ **当前不发真实 HTTP**：服务端的 assistant 抽取行为与原话守卫尚未确认，
+        `_post_impression` 是占位实现。三道闸与可观测性现在就能生效并可被 mock 验证，
+        将来只需替换 `_post_impression`。
+
+        可观测（`created_fact_identities` 为空时）：
+        - 还没成功过 → **WARNING** `never_succeeded`（一次就够，别刷屏）；
+        - 成功过、且连续空 ≥ `REMEMBER_EMPTY_STREAK_WARN` → **WARNING** `empty_streak`；
+        - 其余情况 → **INFO** + `no_new_fact`（单次空是正常现象）。
+        """
+        stamp = time.time() if now is None else float(now)
+        uid = str(sender_id or "").strip()
+        if not uid:
+            return {"ok": False, "written": False, "reason": "invalid_sender"}
+
+        # 闸 1：只写私聊个人域。
+        if str(group_id or "").strip():
+            self._info("[DeepChat] 里程碑印象跳过：private_only")
+            return {"ok": False, "written": False, "reason": "private_only"}
+
+        # 闸 2：文本清洗 + 截断 + 原话子串守卫。
+        cleaned = sanitize_text(str(impression or "")).strip()
+        if not cleaned:
+            return {"ok": False, "written": False, "reason": "empty_impression"}
+        if len(cleaned) > REMEMBER_IMPRESSION_MAX_CHARS:
+            cleaned = cleaned[:REMEMBER_IMPRESSION_MAX_CHARS].rstrip()
+        leaked = self._verbatim_overlap(uid, cleaned)
+        if leaked:
+            self._warn(f"[DeepChat] 里程碑印象被拒：命中用户原话子串（{len(leaked)} 字）")
+            return {"ok": False, "written": False, "reason": "verbatim_user_words"}
+
+        # 闸 3（入口先查一次）。
+        gate = self._remember_gate(uid)
+        if not gate["allowed"]:
+            return {"ok": False, "written": False, "reason": gate["reason"]}
+
+        self._remember_stats["attempts"] += 1
+
+        # 闸 3（发前复检）：入口到这里之间用户可能改了设置。
+        gate = self._remember_gate(uid)
+        if not gate["allowed"]:
+            return {"ok": False, "written": False, "reason": f"recheck_{gate['reason']}"}
+
+        result = self._post_impression(sender_id=uid, impression=cleaned, now=stamp)
+        identities = [str(item) for item in (result.get("identities") or []) if str(item).strip()]
+
+        if identities:
+            self._remember_stats["succeeded"] += 1
+            self._remember_stats["empty_streak"] = 0
+            self._info(f"[DeepChat] 里程碑印象写入：新增 {len(identities)} 条事实")
+            return {
+                "ok": True,
+                "written": True,
+                "reason": "written",
+                "identities": identities,
+                "transport": result.get("transport", "unknown"),
+            }
+
+        streak = self._remember_stats["empty_streak"] + 1
+        self._remember_stats["empty_streak"] = streak
+        threshold = max(1, self._int_setting("deepchat_remember_empty_streak_warn", REMEMBER_EMPTY_STREAK_WARN))
+        if self._remember_stats["succeeded"] == 0:
+            # 一次就够：从没成功过说明契约/闸/线路有一处不对，别每轮刷同一条。
+            if streak == 1:
+                self._warn(
+                    "[DeepChat] 里程碑写入从未产出新事实（never_succeeded）："
+                    "检查服务端契约、开关与线路"
+                )
+            reason = "never_succeeded"
+        elif streak >= threshold:
+            self._warn(
+                f"[DeepChat] 里程碑写入连续 {streak} 次零新事实（empty_streak）："
+                "可能的判断是提炼退化成空转或服务端丢弃"
+            )
+            reason = "empty_streak"
+        else:
+            self._info("[DeepChat] 里程碑写入本次无新事实（no_new_fact）")
+            reason = "no_new_fact"
+        return {
+            "ok": False,
+            "written": False,
+            "reason": reason,
+            "identities": [],
+            "transport": result.get("transport", "unknown"),
+        }
+
+    def _verbatim_overlap(self, sender_id: str, text: str) -> str:
+        """返回命中的用户原话片段（空串 = 未命中）。
+
+        只看**较长的**原话片段（≥ `REMEMBER_GUARD_MIN_CHARS`）：否则"好的"/"嗯"这类
+        高频短句会把正常提炼全部误杀。
+        """
+        try:
+            recent = self._recent_user_messages(
+                sender_id, limit=REMEMBER_GUARD_SAMPLE, per_message=REMEMBER_IMPRESSION_MAX_CHARS,
+                budget=REMEMBER_IMPRESSION_MAX_CHARS * REMEMBER_GUARD_SAMPLE,
+            )
+        except Exception:  # noqa: BLE001 —— 取不到原话就不做这道守卫，不阻断写入
+            return ""
+        for line in recent:
+            snippet = str(line or "").strip()
+            if len(snippet) >= REMEMBER_GUARD_MIN_CHARS and snippet in text:
+                return snippet
+        return ""
+
+    def _remember_gate(self, sender_id: str) -> dict[str, Any]:
+        """授权闸：开关 + 模式 + 记忆服务可用。三者缺一即 fail-closed。"""
+        if not bool(self._setting("private_participant_memory_enabled", False)):
+            return {"allowed": False, "reason": "participant_memory_disabled"}
+        bridge = getattr(self.plugin, "memory_bridge", None)
+        if bridge is None:
+            return {"allowed": False, "reason": "memory_unavailable"}
+        user_data = (getattr(self.plugin, "_user_sessions", {}) or {}).get(f"private:{sender_id}")
+        mode = str((user_data or {}).get("private_memory_mode") or "")
+        if mode != "participant":
+            # legacy（管理员私聊走宿主的"私聊主人语料"）与"没有会话记录"都 fail-closed：
+            # 没有 participant 域可写，猜一个等于把印象丢进别的域。
+            return {"allowed": False, "reason": f"mode_{mode or 'unknown'}"}
+        return {"allowed": True, "reason": ""}
+
+    def _post_impression(self, *, sender_id: str, impression: str, now: float) -> dict[str, Any]:
+        """把印象交给宿主的 participant 记忆。**当前是占位**，不发真实 HTTP。
+
+        服务端契约（assistant 抽取行为、原话守卫是否在服务端再做一次）尚未确认；
+        在此之前发出去等于用未验证的语义污染真实记忆库。替换本方法即可上线。
+        """
+        return {"transport": "pending_server_contract", "identities": []}
 
     async def recall(
         self,
