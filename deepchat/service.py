@@ -153,8 +153,11 @@ class DeepChatService:
         self.autonomy = AutonomyScheduler(self)
         # 写回是跨多张表/多个连接的读-改-写；并发调用会交错覆盖（实测 16 并发送回丢 5 次）
         # 且静默无异常。这里用**整条链**的互斥串行化——⚠️ 不要改成"给 connection() 加锁":
-        # 那是单连接粒度，RMW 照样交错，实测比不修更差（16 并发只落 1~2 次）。
+        # 那是单连接粒度，RMW 照样交错，实测比不修更差；
+        # 对照时须先关掉 _writeback_lock，否则测到的是整链锁的效果（connection 锁 16 并发只落 1~2 次）。
         # 这是止血；长期治因是把 reinforce/weaken 改成单语句原子 UPDATE。
+        # 注意**只覆盖单实例**：插件 reload 窗口旧实例的在飞写回、或外部工具直连同一 db 时，
+        # 仍可能丢更新（进程级锁/原子 UPDATE 才是跨实例解，见 PR 已知限制）。
         self._writeback_lock = threading.Lock()
         self.expressions = ExpressionStore(
             self.store,

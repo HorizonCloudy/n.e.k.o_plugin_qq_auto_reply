@@ -257,7 +257,10 @@ class ConcurrentWritebackTests(unittest.TestCase):
         写回会并发交错，后写覆盖前写且**不抛任何异常**——只能靠计数发现。
         修前实测：16 并发只落 11 条、32 并发只落 2 条，锁失败数为 0。
         """
-        n = 16
+        # n=32：不要调小。n 太小会假绿——拆掉 _writeback_lock 后实测 n=16 有 4/6 轮
+        # 仍通过（安全侧那台 2/6），n=32 才 6/6 变红（赤字 7~15 条、异常 8~12 次）。
+        # 代价：串行 32×~45ms ≈ 1.4s（n=16 约 0.8s）。
+        n = 32
 
         async def scenario() -> None:
             await asyncio.gather(
@@ -279,6 +282,31 @@ class ConcurrentWritebackTests(unittest.TestCase):
             "（读-改-写交错，且不会抛异常——只能靠计数发现）",
         )
         self.assertLessEqual(len(state["relationship"]["milestones"]), 20)
+
+    def test_writeback_runs_while_holding_mutex(self) -> None:
+        """RMW 体必须在持锁状态下执行——断言"互斥存在"这个事实，不依赖竞态。
+
+        并发用例（上面那条）靠竞态自然发生，实测拆掉锁后仍有一半轮次蒙对；这条是
+        **确定性**护栏：替换 ``_writeback_locked`` 为 spy，读一眼进入时锁是否被持有。
+        实测拆锁 3/3 红，其中一次是唯一抓到它的用例。
+
+        ⚠️ 这是 stopgap 锁的结构护栏：将来把 ``reinforce``/``weaken`` 改成单语句
+        原子 UPDATE、不再需要整链锁时，这条与 ``_writeback_lock`` 一并删除。
+        """
+        seen: list[bool] = []
+        original = self.service._writeback_locked
+
+        def spy(**kwargs):
+            seen.append(self.service._writeback_lock.locked())
+            return original(**kwargs)
+
+        self.service._writeback_locked = spy  # type: ignore[method-assign]
+        try:
+            self.service.writeback(sender_id="u1", text="谢谢")
+        finally:
+            del self.service._writeback_locked  # type: ignore[attr-defined]
+
+        self.assertEqual(seen, [True], "writeback 的 RMW 体未在持锁状态下执行")
 
 
 if __name__ == "__main__":
