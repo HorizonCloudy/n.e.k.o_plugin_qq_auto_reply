@@ -1209,6 +1209,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             "\n**身份元数据**：trust/profile 由宿主账本维护，本插件没有擦除端点，"
             "故 identity_meta.supported=false（不计入 partial）。"
             "\n**与 dc_reset_user 的差别**：dc_reset_user 只清本地 sqlite、不碰宿主记忆。"
+            "\n**与群遗忘互为对偶**：本入口不清群本体域（group_chat），"
+            "群遗忘（memory_forget）也不清成员个人域——两个域各自需要各自的入口。"
         ),
         input_schema={"type": "object", "properties": {
             "user_id": {"type": "string", "description": "QQ 号"},
@@ -2262,7 +2264,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     @plugin_entry(
         id="config",
         name=tr("entries.config.name", default="保存配置"),
-        description=tr("entries.config.description", default="写入持久化设置与提示词。action 取 save / init / nl / prompt_save / prompt_reset / group_prompt_save / group_prompt_delete / attention_adjust / memory_forget。"),
+        description=tr("entries.config.description", default="写入持久化设置与提示词。action 取 save / init / nl / prompt_save / prompt_reset / group_prompt_save / group_prompt_delete / attention_adjust / memory_forget（**群遗忘不等于成员遗忘**：memory_forget 只清群本体域 + 群轴坐标，成员个人域要逐个 dc_forget_user）。"),
         input_schema={"type": "object", "properties": {
             "action": {"type": "string",
                        "enum": ["save", "init", "nl", "prompt_save", "prompt_reset",

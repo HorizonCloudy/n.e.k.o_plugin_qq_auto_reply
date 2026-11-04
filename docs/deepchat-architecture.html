@@ -460,6 +460,46 @@ SELECT COUNT(*) AS remaining
   </div>
   <!-- deepchat-runbook:end -->
 
+  <h2>11. 遗忘入口与覆盖边界</h2>
+  <div class="note">
+    <p>
+      三个入口各管一段，<b>不能互相替代</b>。判断"删干净没有"要看返回体的
+      <code>subjects_forgotten</code> / <code>subjects_skipped</code> /
+      <code>not_covered</code> / <code>partial</code>，不要只看有没有报错。
+    </p>
+    <table>
+      <tr><th>入口</th><th>清什么</th><th>不清什么</th></tr>
+      <tr>
+        <td><code>dc_reset_user</code></td>
+        <td>本地 <code>deepchat.sqlite3</code>：关系 / 情绪 / 自主调度 / 表达学习</td>
+        <td>宿主记忆一律不碰</td>
+      </tr>
+      <tr>
+        <td><code>dc_forget_user</code></td>
+        <td>本地四表 + 宿主 <code>participant</code>（私聊个人域）+
+            <b>写入时登记过</b>的 <code>group_participant</code>（逐群清）</td>
+        <td>群本体域 <code>group_chat</code>；P0b 之前写下的群成员历史
+            （无坐标、枚举不到 → <code>not_covered: group_participant:history_before_P0b</code>）</td>
+      </tr>
+      <tr>
+        <td><code>memory_forget(group_id)</code></td>
+        <td>群本体域 <code>group_chat</code> + 群轴坐标</td>
+        <td>成员个人域（<code>group_participant</code> 内容）：要逐人 <code>dc_forget_user</code></td>
+      </tr>
+    </table>
+    <p>
+      <b>群遗忘不等于成员遗忘</b>：群本体与群成员在宿主侧是两个独立域，
+      所以删群不会顺带删掉成员个人记忆，反之亦然——这是刻意的，不是遗漏。
+    </p>
+    <p>
+      <b>社交坐标索引</b>：<code>deepchat_subject_index</code> 只存"谁 × 哪个域"写过，
+      不存内容，用于遗忘时按用户轴 / 群轴枚举（宿主没有"列出某人的所有 subject"端点，
+      不登记就只能猜——猜就是漏删）。写入顺序是 <b>授权闸 → 发前复检 → 登记 → HTTP</b>，
+      登记失败即 <b>fail-closed</b>（不发），遗忘顺序是 <b>HTTP 成功 → 再删索引行</b>
+      （删早了就永远枚举不到，重试也没机会）。
+      ⚠️ 该表含社交关系坐标，属于隐私数据，<b>禁止明文备份/导出</b>。
+    </p>
+  </div>
   <footer>
     文件地图：<code>deepchat/{models,store,mood,relationship,fragments,guard,autonomy,expression,bad_meme_words,service}.py</code> ·
     <code>tests/test_deepchat_{state,service,guard,autonomy,manifest,bad_meme,expression,relationship_lifecycle,security}.py</code>
