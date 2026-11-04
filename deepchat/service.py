@@ -788,9 +788,21 @@ class DeepChatService:
         return ""
 
     def _remember_gate(self, sender_id: str) -> dict[str, Any]:
-        """授权闸：开关 + 模式 + 记忆服务可用。三者缺一即 fail-closed。"""
+        """授权闸：三者缺一即 fail-closed —— **能力可用 ≠ 用户授权**。
+
+        三个条件各管一件事，不要合并、也不要互相替代：
+        1. ``private_participant_memory_enabled``：**用户授权**（他自己开的开关）；
+        2. ``private_memory_mode == "participant"``：**这一轮确实在 participant 域**
+           （legacy 管理员私聊走宿主的"私聊主人语料"，那里没有 participant 行）；
+        3. ``memory_bridge is not None``：**能力存在**（宿主装了记忆服务没有）。
+
+        第 3 条只说明"能写"，绝不代表"可以写"——把能力当成授权是本仓库反复在修的
+        同一形状。所以这里的顺序也是刻意的：**先问授权、再问能力**，日志里看到的
+        `memory_unavailable` 永远只会在用户已授权之后出现。
+        """
         if not bool(self._setting("private_participant_memory_enabled", False)):
             return {"allowed": False, "reason": "participant_memory_disabled"}
+        # 能力闸（能力可用 ≠ 用户授权；授权已在上一条判过）。
         bridge = getattr(self.plugin, "memory_bridge", None)
         if bridge is None:
             return {"allowed": False, "reason": "memory_unavailable"}
