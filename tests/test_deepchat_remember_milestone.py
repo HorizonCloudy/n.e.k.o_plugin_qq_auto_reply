@@ -107,6 +107,72 @@ class RememberMilestoneGateTests(unittest.TestCase):
         )
 
 
+class ZeroFactGradingTests(unittest.TestCase):
+    """零事实三档：三档必须**可区分**，否则告警要么刷屏要么该响不响。
+
+    实现（`service.py`）：`never_succeeded`（从未成功，只报一次）/ `empty_streak`
+    （成功过且连续空 ≥ 阈值）/ `no_new_fact`（成功过但没到阈值，INFO）。
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.plugin = _FakePlugin(self._tmp.name)
+        self.service = DeepChatService(self.plugin)
+        self.service._remember_gate = lambda uid: {"allowed": True, "reason": ""}  # type: ignore[method-assign]
+        self.warnings: list[str] = []
+        self.infos: list[str] = []
+        self.service._warn = self.warnings.append  # type: ignore[method-assign]
+        self.service._info = self.infos.append  # type: ignore[method-assign]
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _post_returning(self, identities: list[str]):
+        def _post(**kwargs):
+            return {"identities": list(identities), "transport": "mock"}
+        self.service._post_impression = _post  # type: ignore[method-assign]
+
+    def _call(self):
+        return self.service.remember_milestone(sender_id="u1", impression="他最近在准备搬家")
+
+    def test_after_one_success_a_single_empty_is_info(self) -> None:
+        self._post_returning(["fact-1"])
+        self.assertTrue(self._call()["written"])
+        self._post_returning([])
+        result = self._call()
+
+        self.assertEqual(result["reason"], "no_new_fact", "成功过但未到阈值应是 INFO 档")
+        self.assertEqual([w for w in self.warnings if "empty_streak" in w], [],
+                         f"单次空不该告警：{self.warnings}")
+        self.assertTrue(any("no_new_fact" in i for i in self.infos), f"应记 INFO：{self.infos}")
+
+    def test_three_consecutive_empties_raise_streak_warning(self) -> None:
+        self._post_returning(["fact-1"])
+        self._call()
+        self._post_returning([])
+        self.warnings.clear()
+        reasons = [self._call()["reason"] for _ in range(3)]
+
+        self.assertEqual(reasons, ["no_new_fact", "no_new_fact", "empty_streak"],
+                         f"第 3 次空才跨过阈值：{reasons}")
+        self.assertEqual(len([w for w in self.warnings if "empty_streak" in w]), 1,
+                         f"跨阈值应恰好告警一次：{self.warnings}")
+
+    def test_success_resets_the_streak(self) -> None:
+        self._post_returning(["fact-1"])
+        self._call()
+        self._post_returning([])
+        self._call()
+        self._call()
+        self._post_returning(["fact-2"])
+        self._call()  # 成功 → streak 归零
+        self._post_returning([])
+        self.warnings.clear()
+
+        self.assertEqual(self._call()["reason"], "no_new_fact",
+                         "成功后 streak 必须归零，不该立刻判 empty_streak")
+
+
 class _FakePlugin:
     def __init__(self, data_dir: str) -> None:
         self._qq_settings: dict = {
