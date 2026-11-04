@@ -138,19 +138,25 @@ class EmotionVocabularyTests(unittest.TestCase):
     def _attention_emotions() -> set[str]:
         source = (_REPO_ROOT / "attention_service.py").read_text(encoding="utf-8")
         for node in ast.walk(ast.parse(source)):
-            if (
-                isinstance(node, ast.Assign)
-                and any(
-                    isinstance(target, ast.Name) and target.id == "_EMOTION_MULTIPLIER"
-                    for target in node.targets
-                )
-                and isinstance(node.value, ast.Dict)
+            # 带类型注解的写法是 AnnAssign（`_EMOTION_MULTIPLIER: dict[str, float] = {...}`），
+            # 不带注解才是 Assign —— 只认 Assign 会误报"解析不到词表"，让 3D 的红变成假信号。
+            if isinstance(node, ast.AnnAssign):
+                target, value = node.target, node.value
+            elif isinstance(node, ast.Assign):
+                target, value = (node.targets[0] if node.targets else None), node.value
+            else:
+                continue
+            if not (
+                isinstance(target, ast.Name)
+                and target.id == "_EMOTION_MULTIPLIER"
+                and isinstance(value, ast.Dict)
             ):
-                return {
-                    key.value
-                    for key in node.value.keys
-                    if isinstance(key, ast.Constant) and isinstance(key.value, str)
-                }
+                continue
+            return {
+                key.value
+                for key in value.keys
+                if isinstance(key, ast.Constant) and isinstance(key.value, str)
+            }
         raise AssertionError("解析不到 attention 的 _EMOTION_MULTIPLIER 词表")
 
     def test_every_mood_is_shared_or_explicitly_registered(self) -> None:
