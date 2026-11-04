@@ -85,8 +85,8 @@
     结论：本框架不重造插件已有的注意力门、接话判定、防抖缓冲与记忆桥，
     只补两块真正缺失的持久状态——<b>情绪状态机</b>与<b>关系图谱</b>；
     在上下文构建时注入提示词，在生成成功后异步写回。默认走宿主 session，
-    可切换 <code>direct</code> 模式获得逐轮提示词注入。后续三项（自主调度 /
-    人格一致性守卫 / 记忆反思）已落地，其中自主调度默认关闭。
+    可切换 <code>direct</code> 模式获得逐轮提示词注入。后续三项里，自主调度与人格一致性守卫已落地（自主调度默认关闭）；
+    记忆反思<b>已停用</b>——Phase 0 起不再把用户原话写成里程碑，见第 9/10 节。
   </p>
 
   <h2>1. 消息流水线（标注新增 / 复用）</h2>
@@ -116,13 +116,13 @@
       <tr><td>注意力 / 接话</td><td>群热度、@/引用/点名、防抖、回复必要性</td><td><code>attention_*</code>、<code>reply_necessity.py</code>、<code>reply_buffer_service.py</code></td><td><span class="badge b-reuse">复用</span></td></tr>
       <tr><td>记忆</td><td>scoped 长期记忆、成员轮、召回</td><td><code>memory_bridge.py</code>、<code>session_memory_service.py</code></td><td><span class="badge b-reuse">复用</span></td></tr>
       <tr><td>情绪</td><td>持久 valence/arousal + 状态分类 + 时间衰减</td><td><code>deepchat/mood.py</code></td><td><span class="badge b-new">新增</span></td></tr>
-      <tr><td>关系</td><td>per-user affinity/trust/interactions/milestones + 日衰减</td><td><code>deepchat/relationship.py</code></td><td><span class="badge b-new">新增</span></td></tr>
+      <tr><td>关系</td><td>per-user affinity/trust/interactions/milestones + 日衰减（<code>milestones</code> 列保留，但 Phase 0 起不再产生新条目）</td><td><code>deepchat/relationship.py</code></td><td><span class="badge b-new">新增</span></td></tr>
       <tr><td>状态存储</td><td>两张 SQLite 表，按需建表</td><td><code>deepchat/store.py</code></td><td><span class="badge b-new">新增</span></td></tr>
       <tr><td>提示词片段</td><td>把状态渲染成可注入文本</td><td><code>deepchat/fragments.py</code> + 各模块 <code>fragment()</code></td><td><span class="badge b-new">新增</span></td></tr>
       <tr><td>编排 / 管理</td><td>enrich / writeback / view / reset / set_mood / tune / recall</td><td><code>deepchat/service.py</code></td><td><span class="badge b-new">新增</span></td></tr>
       <tr><td>自主调度</td><td>私聊同意信号 + 好感/静默/冷却/每日上限门控</td><td><code>deepchat/autonomy.py</code></td><td><span class="badge b-new">新增</span></td></tr>
       <tr><td>人格守卫</td><td>清洗片段、拦截指令注入</td><td><code>deepchat/guard.py</code></td><td><span class="badge b-new">新增</span></td></tr>
-      <tr><td>记忆反思</td><td>每 10 次互动提炼关系里程碑</td><td><code>deepchat/service.py::reflect_if_due</code></td><td><span class="badge b-new">新增</span></td></tr>
+      <tr><td>记忆反思</td><td><b>Phase 0 停写</b>：不再把用户原话写成里程碑（原为每 10 次互动提炼）</td><td><code>deepchat/service.py::reflect_if_due</code></td><td><span class="badge b-new">新增</span></td></tr>
     </tbody>
   </table>
 
@@ -136,7 +136,7 @@
     <div class="card">
       <h3>deepchat_relationship</h3>
       <p><code>user_id</code> PK · <code>affinity</code> −1..1 · <code>trust</code> 0..1 · <code>interactions</code> · <code>milestones</code> JSON · <code>updated_at</code></p>
-      <p>按天衰减：默认每天 1%；里程碑上限 20 条，避免提示词无界增长。</p>
+      <p><b>读取时结算</b>：默认半衰期 14 天；关系在下一次被读取时按已过整天结算（不是后台定时衰减）。<code>milestones</code> 列与 20 条上限<b>仍然保留</b>（历史上防止提示词无界增长），但 Phase 0 起不再写入新条目。</p>
     </div>
   </div>
 
@@ -164,7 +164,7 @@
       <tr><td><code>deepchat_relationship_freeze_threshold</code></td><td>0.10</td><td>好感进入 ±该阈值即冻结（休眠）：停止衰减并落库，等互动解冻</td></tr>
       <tr><td><code>deepchat_relationship_revive_threshold</code></td><td>0.15</td><td>休眠关系 |好感| 回到该值才解冻（自动夹到 ≥ 冻结阈值）</td></tr>
       <tr><td><code>deepchat_guard_enabled</code></td><td>true</td><td>片段注入前清洗并拦截指令注入</td></tr>
-      <tr><td><code>deepchat_reflection_enabled</code></td><td>true</td><td>每 10 次互动提炼关系里程碑</td></tr>
+      <tr><td><code>deepchat_reflection_enabled</code></td><td>—（已停用）</td><td><b>已停用</b>：原为"每 10 次互动提炼关系里程碑"。Phase 0 起不再写入用户原话；键仍留在 <code>TUNING_KEYS</code> 但取值无效，<code>dc_tune</code> 传入会明确报错（文案含原因与 Phase 1 恢复条件），<code>dc_tune</code> 的说明也不再广告它</td></tr>
       <tr><td><code>deepchat_autonomy_enabled</code></td><td>false</td><td>主动联系总开关（仅私聊过的人）</td></tr>
       <tr><td><code>deepchat_autonomy_min_affinity</code></td><td>0.35</td><td>主动联系的最低好感</td></tr>
       <tr><td><code>deepchat_autonomy_min_idle_hours</code></td><td>6</td><td>最短静默多久才考虑开口</td></tr>
@@ -182,7 +182,7 @@
   <h2>6. 验证结果</h2>
   <div class="card">
     <ul>
-      <li><span class="ok">113 / 113</span> 单测通过：<code>PYTHONPATH=. python -m unittest discover -s tests -p "test_deepchat_*.py" -v</code>（42 原有 + 15 烂梗守卫 + 28 表达学习 + 19 关系生命周期 + 9 安全回归；含负向冻结/解冻、亚日粒度、跨天零头累计、烂梗分句过滤、正常/误伤样本、<code>max_entries=0</code> 拒绝）</li>
+      <li><span class="ok">127 / 127</span> 单测通过：<code>PYTHONPATH=. python -m unittest discover -s tests -p "test_deepchat_*.py" -v</code>（state/service/guard/manifest/autonomy 45 + 烂梗守卫 15 + 表达学习 28 + 关系生命周期 20 + 安全回归 14 + direct 回写 3 + 设置面 2；含负向冻结/解冻、亚日粒度、跨天零头累计、烂梗分句过滤、群聊不注入私聊里程碑与情绪句、direct 回写与 synthetic 排除、autonomy 双开关 AND、隐私开关可保存、里程碑停写与逐条 guard）</li>
       <li><span class="ok">E2E</span> 桩 SDK 联调通过：<code>PYTHONPATH=. python tests/e2e_deepchat_stub.py</code>（真实插件包加载/实例化、注入、写回、host/direct 两条生成路径）</li>
       <li><span class="ok">真实 Steam 宿主</span> 已部署并注册 v0.14.4；启动后共 12 个入口，含 <code>dc_view_state</code> / <code>dc_reset_user</code> / <code>dc_set_mood</code> / <code>dc_tune</code> / <code>dc_recall</code>；状态目录已生成 <code>deepchat.sqlite3</code>（<code>deepchat_mood</code> / <code>deepchat_relationship</code>）。</li>
       <li><span class="ok">ruff</span> 全过：<code>ruff check deepchat tests/test_deepchat_*.py __init__.py reply_context_node.py reply_generation_service.py reply_model_node.py</code></li>
@@ -200,7 +200,7 @@
     这是计划中已预留的混合分支，不是回归。
   </div>
   <ul>
-    <li>已落地：自主调度（默认关）、人格一致性守卫、记忆反思；未做：跨会话记忆摘要合并（仍由宿主 <code>session_memory_service</code> 负责）。</li>
+    <li>已落地：自主调度（默认关）、人格一致性守卫；<b>已停用</b>：记忆反思（Phase 0 起不再写用户原话，见第 9/10 节）；未做：跨会话记忆摘要合并（仍由宿主 <code>session_memory_service</code> 负责）。</li>
     <li>现有全量 pytest 未运行：本机无 N.E.K.O 运行时依赖（<code>main_logic</code>/<code>utils</code> 与三方包），本轮以纯标准库单测覆盖新模块。</li>
     <li>关系信号为关键词启发式，不额外调用 LLM；后续可在 <code>classify_signal</code> 处替换为可插拔分类器。</li>
   </ul>
@@ -216,8 +216,17 @@
       <p><code>deepchat/guard.py</code>：注入前清洗控制字符/超长文本，拦截「忽略以上」「system prompt」「你现在是」等指令注入；非法片段直接丢弃，不影响其余提示词。</p>
     </div>
     <div class="card">
-      <h3>记忆反思 <span class="badge b-new">新增</span></h3>
-      <p>每 10 次互动，把最近 3 条用户发言提炼成一条关系里程碑（「最近聊到：…」）；不另建记忆库，不额外调用模型。</p>
+      <h3>记忆反思 <span class="badge b-reuse">已停用（Phase 0）</span></h3>
+      <p><b>停的是什么</b>：每 10 次互动读最近 3 条用户发言、逐字拼成「最近聊到：…」写进
+      <code>deepchat_relationship.milestones</code> 的行为，已整体停写
+      （<code>reflect_if_due</code> 恒返回 None，不写脱敏占位）。</p>
+      <p><b>为什么停</b>：① 它把用户原话副本落在<b>独立 sqlite</b>里，而那份数据没有授权面、
+      也没有撤销面（撤销群记忆不会清它）；② 该片段每轮注入 prompt（宿主
+      <code>_apply_turn_memory_context</code> 逐轮替换 <code>conversation_history[0]</code>），
+      拆开写的指令句能过人格守卫并<b>持久生效</b>；③ 失败半径过大——一条坏里程碑会让整段
+      关系片段被丢弃，连好感/信任一起消失。</p>
+      <p><b>什么时候回来</b>：Phase 1 把里程碑改由<b>宿主 participant 记忆</b>承载
+      （授权/遗忘复用现有链路），届时再决定是否恢复「共同经历」注入。存量清理见第 10 节 runbook。</p>
     </div>
   </div>
 
@@ -240,12 +249,16 @@
         去调用工具，这条会变成实际攻击面，需人工确认宿主入口的授权模型。
       </li>
       <li>
-        <b><code>deepchat_mood_decay_rate</code> 仍需重启（配置热生效的例外）</b>：
-        <code>dc_tune</code> 会让 <code>relationship</code>（半衰期/冻结/解冻阈值）与
-        <code>expressions</code>（<code>max_entries</code>）立即生效，但
-        <code>MoodStateMachine</code> 的衰减率仍是<b>构造时读取</b>，改完需重启插件服务才生效。
-        其余 <code>deepchat_expression_*</code> 的 cadence 类配置（<code>min_messages</code> /
-        <code>min_interval_seconds</code> / <code>max_selected</code>）本来就是每次调用时读取，无需重启。
+        <b>配置全部热生效（含 <code>deepchat_mood_decay_rate</code>）</b>：
+        <code>dc_tune</code> 成功后会重建三个构造期读配置的无状态对象——
+        <code>mood</code>（<code>mood_decay_rate</code>）、
+        <code>relationship</code>（半衰期 / 冻结 / 解冻阈值）、
+        <code>expressions</code>（<code>max_entries</code>），
+        因此不需要重启插件服务；其余 <code>deepchat_expression_*</code> 的 cadence 类配置
+        （<code>min_messages</code> / <code>min_interval_seconds</code> / <code>max_selected</code>）
+        本来就是每次调用时读取。
+        <b>[历史]</b> 早前 <code>mood_decay_rate</code> 曾是唯一需要重启的键，已随
+        <code>_rebuild_config_bound()</code> 一并修好，不要再把它写成例外。
       </li>
       <li>
         <b>既有 WAL 并发首启（非本次引入）</b>：
@@ -259,6 +272,33 @@
         即可——但必须重试、不能只捕获，否则会静默跳过建表。
       </li>
       <li>
+        <b>Phase 0 已做的三条隔离（本轮）</b>：① 群聊不再注入她的情绪句——
+        <code>enrich_system_prompt</code> 的 <code>mood.fragment</code> 只在私聊加入，
+        群情绪由 <code>session_instruction_service._append_emotion_section</code> 唯一提供，
+        避免两个来源互相打脸；② 深聊自主联系改为<b>双开关 AND</b>
+        （<code>deepchat_autonomy_enabled</code> 且 <code>proactive_initiative_enabled</code>），
+        并在开口前读 <code>proactive_initiative_service.remaining_today()</code>
+        做日限 gate，两个主动私聊功能共用 <code>proactive_initiative_max_per_day</code>；
+        ③ 四个 <code>deepchat_*</code> 开关登记进 <code>MISC</code> / <code>SAVEABLE_KEYS</code>，
+        用户可以在面板上关掉"默认开启、写独立 <code>deepchat.sqlite3</code>"的特性。
+        <b>follow-up</b>：烂梗词表与表达词表统一、两个主动私聊功能的共享预算账本
+        （目前只共用日限读数，计数仍各记各的）。
+<b>Phase 1 计划项</b>：里程碑改由宿主 participant 记忆承载（复用现有的授权/遗忘链路），届时再决定是否恢复「共同经历」注入。
+      </li>
+      <li>
+        <b>M5 里程碑曾长期保存用户原话（Phase 0 已停写 + 逐条过滤）</b>：
+        ① <code>reflect_if_due</code> 恒返回 <code>None</code>，不再写「最近聊到：…」；
+        ② <code>relationship.fragment</code> 对 <code>edge.milestones[-3:]</code> <b>逐条</b>
+        过 <code>is_safe_text</code>，坏条目只丢自己——此前是整段 relation 片段被
+        <code>enrich_system_prompt</code> 丢弃，一条脏里程碑会连带好感/信任一起消失，
+        而存量坏条目会<b>每轮复发</b>。
+        <b>存量数据没有自动清</b>（不做静默删除）。要清现有原话副本有两条路径：
+        ① <code>dc_reset_user</code> 清**单个用户**（连情绪/关系/表达一起重置，代价是该用户状态归零）；
+        ② 按第 10 节 runbook 清**全量**：逐条剔除 <code>milestones</code> 中匹配的元素、<b>保留行</b>、不脱敏成占位、可审计。
+        <b>[已知缺口]</b> <code>_config_memory_forget</code>（撤销群记忆）<b>不会</b>清 deepchat 里程碑，
+        需上面任一条路径；把两者联动留 follow-up（Phase 3 的 <code>forget_user</code> / <code>partial: True</code>）。
+      </li>
+      <li>
         <b>片段长度余量（观察）</b>：<code>MAX_SELECTED=10</code> × <code>MAX_PHRASE_LEN=32</code>
         ≈ 320 字，加标题与框架句后距 <code>sanitize_text</code> 默认 400 字只余约 80 字。
         调大 <code>MAX_SELECTED</code> 会让尾部被静默截断，改动这两个常量时需同步复核上限。
@@ -269,6 +309,144 @@
         需另立需求（建议用更慢速率继续向 0 收敛，避免数值跳变）。
       </li>
     </ul>
+  </div>
+
+  <h2>10. 运维 runbook：存量里程碑清理</h2>
+  <div class="note">
+    <p>
+      Phase 0 只<b>停写</b>里程碑（<code>reflect_if_due</code> 恒返回 None），存量
+      「最近聊到：…」条目仍在 <code>deepchat.sqlite3</code> 里。是否清理由运维决定，
+      本仓库<b>不自动清</b>、也不提供会误伤其它数据的脚本。
+    </p>
+    <p>
+      <b>有界的一次性操作</b>：<code>add_milestone</code> 已无运行时调用方（只有定义与测试引用），
+      Phase 0 之后也没有路径写新里程碑，因此不存在"边清边进"竞态。
+      <b>时间窗（比"同一自然日"更严）</b>：被应用静默重置的触发点不只跨天衰减——
+      <code>reinforce</code>/<code>weaken</code> 里是<b>无条件</b> <code>_save()</code>，
+      而 <code>writeback</code> 每次回复都会调其中一个。所以对活跃用户，触发点是
+      <b>他下一条消息</b>，<code>frozen=True</code> 也挡不住（它只让 <code>get()</code> 不衰减）。
+      因此：<b>apply 前必须立刻重跑一次 dry-run 取数</b>，不要用几小时前打印的数字授权；
+      dry-run 与 apply 尽量在同一维护窗口内连续完成。
+    </p>
+    <p><b>要覆盖的四层坑</b>（任一层漏掉都会"看起来干净"）：① 整串 <code>LIKE '最近聊到：%'</code>
+      在 JSON 列上永远 0 命中；② 一行非法 JSON 会让所有 <code>json_each</code> 查询直接报
+      <code>malformed JSON</code>；③ 合法但**不是数组**的行（object/null/text/number）会被应用
+      静默清空；④ 没有后置断言就无法证明清理真的发生。按下面八条执行：</p>
+    <ol>
+      <li><b>自查先跑（三支 UNION，互不接触）</b>：会被应用静默清空/会让查询报错的行有三类——
+        <b>① NULL 单元格</b>（<code>json_valid(NULL)</code> 返回 <b>NULL 而不是 0</b>，
+        所以 <code>=0</code> 抓不到它）<b>② 非法 JSON</b>（<code>json_each</code> 直接
+        <code>malformed JSON</code>）<b>③ 合法但不是数组</b>（能过 <code>json_valid</code>，
+        但 <code>_load_milestones</code> 的判据是 <code>isinstance(parsed, list)</code>，
+        写回时被重置为 <code>[]</code>）。
+        ⚠️ 三者<b>不能合成一条</b> <code>WHERE json_valid=0 OR json_type&lt;&gt;'array'</code>：
+        <code>json_type</code> 对 malformed JSON 同样抛错，能跑只是靠短路——
+        违反本 runbook"不依赖优化器/求值顺序"的原则。非数组那支必须先子查询过滤
+        <code>json_valid=1</code> 再算 <code>json_type</code>。
+        <b>先跑这一步再看别的</b>，否则第一步就是 ERROR，很容易退回
+        <code>LIKE '%…%'</code> 那条误伤路径。</li>
+      <li><b>默认 dry-run</b>：先只跑 <code>SELECT</code>，不要直接 <code>DELETE</code>／不要直接改。</li>
+      <li><b>作用域＝逐条目前缀匹配</b>：<code>json_each(milestones)</code> + <code>LIKE '最近聊到：%'</code>。
+        不要对整串 LIKE（前缀 0 命中＝假干净；子串 <code>%最近聊到：%</code> 会把"手写条目里
+        句中提到这句话"的行一起算进来＝误伤）。<b>所有 <code>json_each</code> 查询都必须用
+        子查询/CTE 先过滤 <code>json_valid=1</code> 再过滤 <code>json_type='array'</code></b>，
+        用构造强制顺序，不依赖优化器。</li>
+      <li><b>dry-run 打印「元素数」+ 按用户拆明细</b>（行数仅供参考）：dry-run 数的是元素、
+        apply 删的也是元素、行<b>保留</b>。最小反例：一个用户 3 条命中 + 2 条干净 → 行数 1、
+        元素数 3。按行数确认会低估影响，apply 后也容易误判"没生效"。</li>
+      <li><b>审计留痕（A / B 分开记）</b>：
+        <b>A</b> = 命中元素数（参与后面的算术）+ 涉及行数 + uid 打码（前 3 位 + <code>***</code>）+ 时间；
+        <b>B</b> = NULL/非法/非数组行数 N（<b>只记数量、不记内容、不参与算术</b>），
+        并注明这些行会在<b>该用户下次交互时</b>被应用自动重置为 <code>[]</code>。
+        ⚠️ B 的数量必须在 apply <b>之前</b>记：静默改写是"迟早会发生"而非"每次读都会发生"
+        （只有衰减真的触发 <code>_save</code> 才写库），事后无法从库状态反推。</li>
+      <li><b>apply</b>：应用层逐行剔除<b>以「最近聊到：」开头</b>的元素后写回，<b>保留行</b>、
+        <b>不脱敏成占位</b>（<code>最近聊到：（已脱敏）</code> 仍会被当共同经历注入＝噪声）、
+        单事务；不要用字符串 <code>REPLACE</code>（会破坏 JSON），也不要删整行
+        （会连好感/信任一起丢）。</li>
+      <li><b>skip 规则（必须写进 apply 实现）</b>：<code>milestones IS NULL</code> /
+        <code>json_valid=0</code> / <code>json_type&lt;&gt;'array'</code> 的行<b>一律跳过、
+        不读-改-写</b>——只记 B 的数量，<b>交给应用自动重置</b>（该用户下次交互时
+        <code>reinforce</code>/<code>weaken</code> 的无条件 <code>_save()</code> 会写成
+        <code>[]</code>）。理由：应用层对非 list 本来就返回 <code>[]</code>，
+        你"读出来再写回去"等于把原文静默清空，而审计记 0 条、后置断言也会过——
+        数据被改过却不可发现。要单独处理请另立清单。</li>
+      <li><b>后置断言（不做完等于没清）</b>：apply 后再跑元素计数，必须为 <b>0</b>，
+        且满足「apply 前 A = apply 后 remaining + 实际剔除数」。不为 0 说明本次清理未完成，不要收工。</li>
+      <li><b>禁止明文备份</b>：不要 <code>cp deepchat.sqlite3 backup.sqlite3</code> —— 那等于把
+        刚清掉的原话副本又完整复制一份。要回滚就依赖 apply 前的事务边界，不要留副本。</li>
+    </ol>
+    <p>
+      <b>等价性声明</b>：<code>j.value LIKE '最近聊到：%'</code> 与 Python 侧
+      <code>entry.startswith("最近聊到：")</code> <b>等价</b>——模式串只有尾部一个 <code>%</code>，
+      无前导/中间通配符，不存在 <code>_</code> / <code>%</code> 被当通配符的风险；前缀是 CJK，
+      SQLite <code>LIKE</code> 的 ASCII 大小写不敏感在这里不产生差异。改谓词时两处必须同时改。
+    </p>
+    <p>dry-run 与自检参考（只读；把 <code>deepchat_relationship</code> 换成实际表名即可）：</p>
+    <pre><code>-- 规则 1) 自查（必须最先跑）：三支 UNION，互不接触
+--   ① NULL 单元格（json_valid(NULL) 返回 NULL，不是 0）
+--   ② 非法 JSON（json_each 会直接报 malformed JSON）
+--   ③ 合法但不是数组（会被应用静默清空成 []）
+SELECT user_id, 'null-cell' AS kind FROM deepchat_relationship WHERE milestones IS NULL
+UNION ALL
+SELECT user_id, 'invalid' FROM deepchat_relationship WHERE json_valid(milestones) = 0
+UNION ALL
+SELECT user_id, 'non-array'
+  FROM (SELECT user_id, milestones FROM deepchat_relationship WHERE json_valid(milestones)) x
+ WHERE json_type(x.milestones) <> 'array';
+
+-- 规则 4) dry-run：A = 将被剔除的「元素数」（授权依据是它，不是行数）
+--   嵌套子查询不能省：json_each 若写在 FROM 里会先于 WHERE 展开，坏行照样报错
+SELECT COUNT(*) AS A_doomed_items
+  FROM (SELECT milestones FROM
+          (SELECT milestones FROM deepchat_relationship WHERE json_valid(milestones)) v
+         WHERE json_type(v.milestones) = 'array') r,
+       json_each(r.milestones) j
+ WHERE j.value LIKE '最近聊到：%';
+
+-- 规则 4 附) 涉及「行数」（仅供参考，不作为授权依据）
+SELECT COUNT(*) AS touched_rows
+  FROM (SELECT milestones FROM
+          (SELECT milestones FROM deepchat_relationship WHERE json_valid(milestones)) v
+         WHERE json_type(v.milestones) = 'array') r
+ WHERE EXISTS (SELECT 1 FROM json_each(r.milestones) j WHERE j.value LIKE '最近聊到：%');
+
+-- 规则 4 明细) 按用户 + 逐条看：要删的是这些元素，不是这些行
+SELECT r.user_id, j.value AS doomed_item
+  FROM (SELECT user_id, milestones FROM
+          (SELECT user_id, milestones FROM deepchat_relationship WHERE json_valid(milestones)) v
+         WHERE json_type(v.milestones) = 'array') r,
+       json_each(r.milestones) j
+ WHERE j.value LIKE '最近聊到：%';
+
+-- 规则 5) B = NULL/非法/非数组行数（只计数、不记内容、不参与算术）
+SELECT (SELECT COUNT(*) FROM deepchat_relationship WHERE milestones IS NULL)
+     + (SELECT COUNT(*) FROM deepchat_relationship WHERE json_valid(milestones) = 0)
+     + (SELECT COUNT(*) FROM (SELECT milestones FROM deepchat_relationship WHERE json_valid(milestones)) x
+         WHERE json_type(x.milestones) <> 'array') AS B_rows;
+
+-- 规则 8) apply 后置断言：A 必须为 0；且（规则 4 的 A）= 此处 remaining + 实际剔除数
+SELECT COUNT(*) AS remaining
+  FROM (SELECT milestones FROM
+          (SELECT milestones FROM deepchat_relationship WHERE json_valid(milestones)) v
+         WHERE json_type(v.milestones) = 'array') r,
+       json_each(r.milestones) j
+ WHERE j.value LIKE '最近聊到：%';
+
+-- 兜底：若运营环境的 SQLite 没编 JSON1（json_each 报 no such table: json_each），
+-- 退回 LIKE '%最近聊到：%' 取候选行，但**必须人工逐行看明细**再决定 ——
+-- 它会多命中"手写里程碑里恰好提到这句话"的非前缀条目。
+</code></pre>
+    <p>
+      <b>注意</b>：里程碑与好感/信任存在同一行（<code>deepchat_relationship</code>），
+      所以清理只能改 <code>milestones</code> 字段，<b>不要删整行</b>——删行会连关系数值一起丢。
+    </p>
+    <p>
+      <b>“清理完成”的定义</b>：只等于 A（array 行命中元素）归零；不得据此宣称“库里已无原话”。
+      审计必须显式记录 B（NULL/非法/非数组）行数；B 类行<b>只有在后续被读取或交互时</b>才会被应用重置为
+      <code>[]</code>，<b>frozen 行与不再被读到的行会保留</b>——这是显式接受的残留，不得据此宣称“库里已无原话”。
+      <b>不要做取证导出</b>——导出物就是原话副本，与禁止明文备份同源。
+    </p>
   </div>
 
   <footer>

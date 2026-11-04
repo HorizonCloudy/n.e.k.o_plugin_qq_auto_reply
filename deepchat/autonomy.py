@@ -65,11 +65,32 @@ class AutonomyScheduler:
 
     @property
     def enabled(self) -> bool:
-        return bool(self._setting("deepchat_autonomy_enabled", False))
+        """双开关 AND：深聊自主联系 **且** 既有「有由头主动搭话」总开关。
+
+        两者都会让"她"主动开口，只开一个就发消息等于绕过了使用者的另一个刹车。
+        """
+        return bool(self._setting("deepchat_autonomy_enabled", False)) and bool(
+            self._setting("proactive_initiative_enabled", False)
+        )
 
     @staticmethod
     def _day_key(now: float) -> str:
         return datetime.fromtimestamp(now).strftime("%Y-%m-%d")
+
+    def _daily_quota_exhausted(self, now: float) -> bool:
+        """「有由头主动搭话」的日限还剩 0 次时，深聊自主联系也不再开口。
+
+        两个功能都是"她主动私聊"，共用 ``proactive_initiative_max_per_day`` 这一个
+        日限——否则两套账本各记各的，用户设的 2 次会变成实际 4 次。
+        账本仍在既有服务里（这里只读），完整共享账本留 follow-up。
+        """
+        initiative = getattr(self.service.plugin, "proactive_initiative_service", None)
+        if initiative is None:
+            return False
+        try:
+            return int(initiative.remaining_today(now=now)) <= 0
+        except Exception:  # noqa: BLE001 —— 读不到日限时 fail-open，不因此彻底静默
+            return False
 
     def _within_quiet_hours(self, now: float) -> bool:
         start = self._int_setting("proactive_initiative_quiet_start_hour", 23) % 24
@@ -137,6 +158,8 @@ class AutonomyScheduler:
         if not self.enabled:
             return None
         now = time.time() if now is None else float(now)
+        if self._daily_quota_exhausted(now):
+            return None
         if self._within_quiet_hours(now):
             return None
         row = self._row(user_id)

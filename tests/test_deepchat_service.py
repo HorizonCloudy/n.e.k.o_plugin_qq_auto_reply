@@ -99,6 +99,26 @@ class DeepChatServiceTests(unittest.TestCase):
         )
         self.assertEqual(prompt, "BASE")
 
+    def test_group_prompt_excludes_mood_fragment(self) -> None:
+        """Phase 0：情绪是私聊语境下的状态，群聊里注入等于把她的情绪摆给一群人看。"""
+        self.service.writeback(sender_id="u1", text="谢谢你，好棒")
+
+        private_prompt = self.service.enrich_system_prompt(
+            system_prompt="BASE", sender_id="u1", sender_name="小明"
+        )
+        self.assertIn("## 当前情绪（Mood）", private_prompt, "私聊应带上情绪片段")
+
+        group_prompt = self.service.enrich_system_prompt(
+            system_prompt="BASE",
+            sender_id="u1",
+            group_id="g1",
+            is_group=True,
+            sender_name="小明",
+        )
+        self.assertNotIn(
+            "## 当前情绪（Mood）", group_prompt, "群聊不得注入该成员的私聊情绪"
+        )
+
     def test_writeback_updates_state(self) -> None:
         result = self.service.writeback(sender_id="u1", text="谢谢你，好棒")
         self.assertEqual(result["signal"], "praise")
@@ -159,7 +179,12 @@ class DeepChatServiceTests(unittest.TestCase):
         self.assertNotIn("忽略以上", prompt)
         self.assertIn("当前情绪", prompt)
 
-    def test_reflection_adds_milestone_every_ten_interactions(self) -> None:
+    def test_reflection_content_disabled_phase0(self) -> None:
+        """Phase 0：里程碑内容停写（原话会落进 sqlite），只保留 interactions 计数。
+
+        历史上这里断言"每 10 次追加一条 最近聊到：…"，那正是隐私问题的来源；
+        契约改为：计数照常推进，但**不再写入任何内容**。
+        """
         session = SimpleNamespace(_conversation_history=[
             {"role": "user", "content": "今天加班好累"},
             {"role": "assistant", "content": "辛苦了"},
@@ -169,11 +194,7 @@ class DeepChatServiceTests(unittest.TestCase):
         for _ in range(10):
             self.service.writeback(sender_id="u1", text="谢谢")
         state = self.service.view_state("u1")
-        milestones = state["relationship"]["milestones"]
-        self.assertTrue(
-            any(item.startswith("最近聊到：") for item in milestones),
-            milestones,
-        )
+        self.assertEqual(state["relationship"]["milestones"], [], "Phase 0 起不再写入里程碑内容")
         self.assertEqual(state["autonomy"]["private_interactions"], 10)
 
     def test_recall_builds_group_participant_subject(self) -> None:

@@ -40,6 +40,9 @@ class AutonomyTests(unittest.TestCase):
         self.now = datetime(2026, 11, 3, 12, 0, 0).timestamp()
         self.plugin._qq_settings.update({
             "deepchat_autonomy_enabled": True,
+            # 双开关 AND 之后，自主联系的用例必须两个总开关都打开；
+            # 「只开一个不许开口」由 test_both_switches_are_required 专测。
+            "proactive_initiative_enabled": True,
             "deepchat_autonomy_min_affinity": 0.35,
             "deepchat_autonomy_min_idle_hours": 6,
             "deepchat_autonomy_max_idle_hours": 72,
@@ -105,6 +108,42 @@ class AutonomyTests(unittest.TestCase):
         self.plugin._qq_settings["deepchat_autonomy_enabled"] = False
         self._seed()
         self.assertIsNone(self.service.autonomy.should_reach_out("u1", now=self.now))
+
+    def test_both_switches_are_required(self) -> None:
+        """Phase 0：deepchat 与 proactive 两个总开关必须 AND，任一关掉都不许开口。"""
+        self.plugin._qq_settings["proactive_initiative_enabled"] = False
+        self.assertFalse(
+            self.service.autonomy.enabled, "proactive 总开关关掉时 autonomy 必须视为关闭"
+        )
+        self._seed()
+        self.assertIsNone(
+            self.service.autonomy.should_reach_out("u1", now=self.now),
+            "两个开关任一关闭都不得主动私聊",
+        )
+
+    def test_daily_budget_from_proactive_service_gates_outreach(self) -> None:
+        """Phase 0：当日额度由 proactive 服务统一记账，用尽即不得再开口。
+
+        契约：``proactive_initiative_service.remaining_today(*, now=None) -> int``（同步）。
+        """
+        self.plugin._qq_settings["proactive_initiative_enabled"] = True
+        self._seed()
+
+        self.plugin.proactive_initiative_service = SimpleNamespace(
+            remaining_today=lambda *a, **k: 0
+        )
+        self.assertIsNone(
+            self.service.autonomy.should_reach_out("u1", now=self.now),
+            "今日额度已用尽，不得再主动私聊",
+        )
+
+        self.plugin.proactive_initiative_service = SimpleNamespace(
+            remaining_today=lambda *a, **k: 1
+        )
+        self.assertIsNotNone(
+            self.service.autonomy.should_reach_out("u1", now=self.now),
+            "额度仍有剩余时不应被这道 gate 拦住",
+        )
 
 
 if __name__ == "__main__":

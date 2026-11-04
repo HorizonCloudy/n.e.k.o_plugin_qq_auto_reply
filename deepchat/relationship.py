@@ -4,6 +4,7 @@ import json
 import time
 from typing import Any
 
+from .guard import is_safe_text
 from .models import RelationshipEdge
 from .store import DeepChatStore
 
@@ -164,6 +165,10 @@ class RelationshipGraph:
         return edge
 
     def decay_all(self, *, now: float | None = None) -> int:
+        """批量结算所有关系行。**当前未接线**：没有定时器/循环调用它
+        （``get()`` 读取时按已过整天惰性结算，``reinforce``/``weaken`` 走交互路径）。
+        不要假设有后台清扫——冻结且不再被交互的行不会被自动改写。
+        """
         now = time.time() if now is None else float(now)
         with self.store.connection() as conn:
             rows = conn.execute(
@@ -199,15 +204,32 @@ class RelationshipGraph:
             ).fetchall()
         return [str(row["user_id"]) for row in rows]
 
-    def fragment(self, edge: RelationshipEdge, display_name: str = "") -> str:
+    def fragment(
+        self,
+        edge: RelationshipEdge,
+        display_name: str = "",
+        *,
+        include_milestones: bool = True,
+    ) -> str:
+        """Relationship prompt fragment.
+
+        ``include_milestones=False`` 用于**群聊**：里程碑是从私聊历史里提炼的，
+        把它贴进群聊 prompt 等于把两个人的私聊内容放到群里（跨语境泄露）。
+        好感/信任/互动次数是数值派生，不带原话，群聊照常注入。
+        """
         name = display_name or edge.user_id
         parts = [
             "## 与当前对话者的关系（Relationship）",
             f"你和「{name}」的关系：{affinity_tier(edge.affinity)}"
             f"（好感 {edge.affinity:+.2f}，信任 {edge.trust:.2f}，已互动 {edge.interactions} 次）。",
         ]
-        if edge.milestones:
-            parts.append("记得的共同经历：" + "；".join(edge.milestones[-3:]) + "。")
+        if include_milestones:
+            # 逐条过滤（照 expression.fragment 的写法）：对整段跑 is_safe_text 会让
+            # **一条**脏里程碑带走全部好感/信任信息，而存量坏条目还会每轮复发。
+            # 先取窗口（最近 3 条）再逐条过滤，坏条目只丢自己，不挤掉后面的好条目。
+            safe = [item for item in edge.milestones[-3:] if is_safe_text(item)]
+            if safe:
+                parts.append("记得的共同经历：" + "；".join(safe) + "。")
         parts.append("按这个关系亲疏自然地说话，不要直接复述数值。")
         return "\n".join(parts)
 

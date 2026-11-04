@@ -543,10 +543,37 @@ MISC = (
                 description="save：主动搭话静音时段的结束小时（不含）"),
     SettingSpec("proactive_initiative_max_per_day", "int", 2, saveable=True,
                 floor=0, ceiling=12,
-                description="save：主动搭话每天最多几次（0=不发）"),
+                description=(
+                    "save：有由头主动搭话每天最多几次（0=不发）；"
+                    "深聊自主联系不越过这个剩余额度、自身另记一笔"
+                )),
     SettingSpec("proactive_initiative_min_gap_seconds", "int", 10800, saveable=True,
                 floor=0, ceiling=86400,
-                description="save：两次主动搭话之间至少隔多少秒"),
+                description=(
+                    "save：两次有由头主动搭话之间至少隔多少秒；"
+                    "深聊自主联系也读这个间隔，但计数各记各的"
+                )),
+    # ── 深聊（deepchat）：默认值与 DeepChatService 现状一致 ──
+    # 这几个特性都会往状态目录写**独立的** deepchat.sqlite3（情绪/关系/学到的说法），
+    # 属于"默认开启但在别处不可见"的那类，所以必须有 UI 上的隐私开关；
+    # 这里只登记开关，不改运行时行为。
+    SettingSpec("deepchat_enabled", "bool", True, saveable=True,
+                description="save：深聊总开关（情绪/关系/表达学习；关闭后不注入也不写回）",
+                ui=UIInput("cfg-deepchat-enabled", kind="checkbox")),
+    SettingSpec("deepchat_fragments_enabled", "bool", True, saveable=True,
+                description="save：深聊提示词片段（情绪/关系）是否注入",
+                ui=UIInput("cfg-deepchat-fragments", kind="checkbox")),
+    SettingSpec("deepchat_autonomy_enabled", "bool", False, saveable=True,
+                description=(
+                    "save：深聊自主联系（仅私聊过的人）；"
+                    "需与 proactive_initiative_enabled 同时开启，且共用其每日上限与最小间隔"
+                ),
+                ui=UIInput("cfg-deepchat-autonomy", kind="checkbox")),
+    SettingSpec("deepchat_expression_learning_enabled", "bool", False, saveable=True,
+                description="save：从私聊里学习群友常用说法（仅私聊注入；默认关闭）",
+                ui=UIInput("cfg-deepchat-expression", kind="checkbox")),
+    # deepchat_guard_enabled 故意不进 UI：安全阀不给一键关闭，只留 dc_tune 给运维。
+    # （M2 修的是"关守卫也必须 sanitize_text"，一旦给了复选框，"关掉更清爽"就会被点下去。）
     # ── 回复缓冲开关 ──
     # 群聊与私聊**各自独立**开关，默认都开（与历史行为一致）。
     # 关掉的那一类不再排队等待，每条消息各自判定并立即投递。

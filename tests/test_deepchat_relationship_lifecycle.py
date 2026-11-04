@@ -203,6 +203,27 @@ class HotTuneTests(RelationshipLifecycleTestCase):
             self.service.expressions.count("u1"), 3, "改完上限后应立即按 3 条淘汰"
         )
 
+    @staticmethod
+    def _valence_after_two_minutes(service: DeepChatService) -> float:
+        """同一初始情绪，推进 2 分钟后的 valence。"""
+        service.set_mood("u1", "happy")
+        state = service.mood.get("user:u1")
+        return service.mood.get("user:u1", now=state.updated_at + 120).valence
+
+    def test_mood_decay_rate_applies_without_restart(self) -> None:
+        """P2 review：mood 的 decay_rate 只在构造时读取，tune 后必须热生效。"""
+        asyncio.run(self.service.tune("deepchat_mood_decay_rate", "0.8"))
+        self.assertAlmostEqual(self.service.mood.decay_rate, 0.8, places=6)
+
+        # 行为断言：0.8 分钟衰减率下 2 分钟就该见底，默认 0.05 远没到头。
+        fast = self._valence_after_two_minutes(self.service)
+        slow = self._valence_after_two_minutes(self._new_service({}))
+        self.assertLess(
+            fast,
+            slow - 0.05,
+            f"decay_rate=0.8 应明显衰减更快：fast={fast:.4f} slow={slow:.4f}",
+        )
+
 
 class RelationshipFreezeTests(RelationshipLifecycleTestCase):
     def _freeze(self, user_id: str = "u1") -> None:

@@ -47,6 +47,7 @@ from .backlog_models import QQBacklogMessage as QQBacklogMessage
 from .backlog_service import QQBacklogService
 from .config_store import QQAutoReplyConfigStore
 from .dashboard_service import QQDashboardService
+from .deepchat import RETIRED_TUNING_KEYS as DEEPCHAT_RETIRED_TUNING_KEYS
 from .deepchat import TUNING_KEYS as DEEPCHAT_TUNING_KEYS
 from .deepchat import DeepChatService
 from .deploy_service import QQDeployService
@@ -1208,8 +1209,11 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         name=tr("entries.dc_tune.name", default="深度聊天：调参"),
         description=(
             "调整深度聊天参数并持久化。param 取 "
-            + ", ".join(DEEPCHAT_TUNING_KEYS)
+            + ", ".join(k for k in DEEPCHAT_TUNING_KEYS if k not in DEEPCHAT_RETIRED_TUNING_KEYS)
             + "；deepchat_generation_mode 只接受 host 或 direct。"
+            + "已停用（传入会明确报错）："
+            + ", ".join(sorted(DEEPCHAT_RETIRED_TUNING_KEYS))
+            + "——里程碑已停止写入用户原话（Phase 0 隐私修复）。"
         ),
         input_schema={"type": "object", "properties": {
             "param": {"type": "string"},

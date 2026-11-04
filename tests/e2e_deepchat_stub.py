@@ -470,7 +470,13 @@ def main() -> int:
         context_source = inspect.getsource(module.QQReplyContextNode.build)
         _assert("deepchat.enrich_system_prompt" in context_source, "context hook missing")
         generation_source = inspect.getsource(module.QQReplyGenerationService.run_primary_session_call)
-        _assert("deepchat.writeback" in generation_source, "writeback hook missing")
+        writeback_source = inspect.getsource(module.QQReplyGenerationService.writeback_deepchat)
+        # 双向扫描：主路径必须调用写回入口，写回入口里必须真的落到 deepchat。
+        # 只扫其中一边都会漏——只扫 helper 就证明不了"主路径确实调了它"。
+        _assert(
+            "writeback_deepchat" in generation_source and "deepchat.writeback" in writeback_source,
+            "writeback hook missing",
+        )
 
         print("PASS: plugin package loaded and instantiated")
         print("PASS: prompt enrichment (mood + relationship)")

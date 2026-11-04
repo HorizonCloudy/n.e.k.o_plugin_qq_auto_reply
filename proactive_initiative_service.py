@@ -229,6 +229,15 @@ class QQProactiveInitiativeService:
         today = datetime.fromtimestamp(now).strftime("%Y-%m-%d")
         return self._today_count if today == self._today else 0
 
+    def remaining_today(self, now: float | None = None) -> int:
+        """今天还能主动开口几次（只读，不新增账本）。
+
+        深聊自主联系（``deepchat_autonomy_*``）只**借用这个读数当闸门**：
+        它不扣有由头的额度、自己另记一笔（共享账本上限见 follow-up）。
+        """
+        stamp = time.time() if now is None else float(now)
+        return max(0, self.max_per_day() - self._count_today(stamp))
+
     def _within_active_hours(self, now: float) -> bool:
         start, end = self.quiet_hours()
         if start == end:

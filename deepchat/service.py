@@ -112,6 +112,19 @@ TUNING_KEYS: dict[str, Any] = {
     "deepchat_expression_max_selected": _as_int,
 }
 
+#: 键仍在 ``TUNING_KEYS`` 里（Phase 1 可能恢复），但当前**调了也不会生效**，
+#: 所以 ``tune`` 会显式抛错、``dc_tune`` 的说明也不再广告它们。
+#: 留着能调但静默无效的键，比拒绝更糟：调用方会以为设置成功了。
+RETIRED_TUNING_KEYS: frozenset[str] = frozenset({"deepchat_reflection_enabled"})
+
+#: 停用键的拒绝文案。要写成"可行动"的：为什么停 + 什么时候回来 + 现在别调。
+RETIRED_TUNING_REASON: dict[str, str] = {
+    "deepchat_reflection_enabled": (
+        "该参数已停用：里程碑已停止写入用户原话（Phase 0 隐私修复），"
+        "后续改由宿主 participant 记忆承载后恢复；当前调用不会生效。"
+    ),
+}
+
 
 class DeepChatService:
     """Mood + relationship layer for the QQ pipeline.
@@ -208,10 +221,20 @@ class DeepChatService:
             return system_prompt
         state = self.mood.get(self._mood_key(sender_id))
         edge = self.relationship.get(sender_id)
-        candidates: list[str] = [
-            self.mood.fragment(state),
-            self.relationship.fragment(edge, sender_name or sender_id),
-        ]
+        candidates: list[str] = []
+        if not is_group:
+            # 群聊不注入"她自己的情绪"：群是多人语境，情绪句会让她的心情变成
+            # 公开发言；群情绪由 session_instruction_service._append_emotion_section
+            # 唯一提供，这里再加一份就是两个来源互相打脸。
+            candidates.append(self.mood.fragment(state))
+        candidates.append(
+            # 群聊也不注入私聊里程碑（跨语境泄露），只保留数值派生的好感/信任/互动次数。
+            self.relationship.fragment(
+                edge,
+                sender_name or sender_id,
+                include_milestones=not is_group,
+            )
+        )
         # 私聊学到的短语只回私聊：群聊里注入等于把 A 的私聊原话放到 B 群面前。
         if self.expression_learning_enabled and not is_group:
             candidates.append(self._expression_fragment(sender_id))
@@ -281,29 +304,22 @@ class DeepChatService:
         edge: Any | None = None,
         now: float | None = None,
     ) -> str | None:
-        """Every N interactions, turn the last few user lines into a milestone.
+        """**Phase 0 起停写**：里程碑不再保存用户原话，本方法恒返回 None。
 
-        This is a lightweight reflection, not a replacement for the host's
-        session-memory digest: it only adds a short, human-readable "what we
-        talked about" line to the relationship edge. No LLM call, no new memory
-        store.
+        原实现每 10 次互动取最近 3 条用户消息逐字拼成「最近聊到：…」落库。这等于
+        在 sqlite 里留一份**用户原话副本**：默认开启、无 UI 开关、撤销群记忆也不会
+        清它，而它又会每轮注入 prompt（宿主 turn-memory hook 每轮刷新
+        ``_apply_turn_memory_context``），拆分后的指令句还能绕过人格守卫持久生效。
 
-        **只读私聊会话**（``is_group=False``）：群聊里的发言既不进里程碑，也不参与
-        表达学习 —— 群聊是多人语境，用它去做"这个人的关系记忆"会张冠李戴。
+        因此 Phase 0 直接停写（不写脱敏占位——占位会被 ``relationship.fragment``
+        当成"共同经历"注入，纯噪声）。后续里程碑改由宿主的 participant 记忆承载。
+        签名与 ``deepchat_reflection_enabled`` 开关保留，方便 Phase 1 恢复。
+
+        ⚠️ 已删除：``_recent_summary()``（"读用户历史 + 拼成一句"的私有 helper）。
+        Phase 1 要恢复里程碑内容时**不要**把它拿回来 —— 那会把这次的原话副本缺陷
+        原样带回。``_recent_user_messages()`` 仍然保留：表达学习在用。
         """
-        if not bool(self._setting("deepchat_reflection_enabled", True)):
-            return None
-        edge = edge or self.relationship.get(user_id, now=now)
-        if edge.interactions <= 0 or edge.interactions % 10 != 0:
-            return None
-        summary = self._recent_summary(user_id)
-        if not summary:
-            return None
-        milestone = f"最近聊到：{summary}"
-        if milestone in edge.milestones:
-            return None
-        self.relationship.add_milestone(user_id, milestone, now=now)
-        return milestone
+        return None
 
     def learn_expressions_if_due(
         self,
@@ -395,12 +411,6 @@ class DeepChatService:
                 break
         texts.reverse()
         return texts
-
-    def _recent_summary(self, user_id: str) -> str:
-        texts = self._recent_user_messages(user_id, limit=3)
-        if not texts:
-            return ""
-        return "；".join(texts)[:160]
 
     async def autonomy_loop(self, interval_seconds: float | None = None) -> None:
         """Opt-in proactive loop. Disabled by default; see ``deepchat_autonomy_*``."""
@@ -507,7 +517,12 @@ class DeepChatService:
     async def tune(self, param: str, value: str) -> dict[str, Any]:
         key = str(param or "").strip()
         if key not in TUNING_KEYS:
-            raise ValueError(f"未知参数 {key!r}；可选：{', '.join(TUNING_KEYS)}")
+            # 可选列表与 dc_tune 描述同口径：停用键单独说，不混进"可选"。
+            available = ", ".join(k for k in TUNING_KEYS if k not in RETIRED_TUNING_KEYS)
+            raise ValueError(f"未知参数 {key!r}；可选：{available}")
+        if key in RETIRED_TUNING_KEYS:
+            # 显式拒绝，而不是"接受并静默无效"——那是本仓库反复在修的同一形状。
+            raise ValueError(RETIRED_TUNING_REASON.get(key, f"{key} 已停用"))
         parsed = TUNING_KEYS[key](value)
         settings = getattr(self.plugin, "_qq_settings", None)
         if settings is None:
@@ -518,12 +533,16 @@ class DeepChatService:
         if callable(save):
             await save(candidate)
         settings[key] = parsed
-        # 配置在构造时读取，重建这两个无状态对象才能让改动立即生效。
+        # 配置在构造时读取，重建这三个无状态对象（mood/relationship/expressions）才能立即生效。
         self._rebuild_config_bound()
         return {"param": key, "value": parsed}
 
     def _rebuild_config_bound(self) -> None:
         """Re-create the cheap, stateless objects that cache constructor settings."""
+        self.mood = MoodStateMachine(
+            self.store,
+            decay_rate=self._float_setting("deepchat_mood_decay_rate", 0.05),
+        )
         self.relationship = RelationshipGraph(
             self.store,
             half_life_days=self._float_setting("deepchat_relationship_half_life_days", 14.0),

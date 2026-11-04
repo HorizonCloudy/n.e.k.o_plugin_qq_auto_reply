@@ -59,8 +59,9 @@ class MoodStateMachine:
     """Persistent affect state with lazy time decay.
 
     ``decay_rate`` is per minute: after 20 minutes at the default 0.05 the
-    deviation from neutral is gone. Decay is applied on read, so no timer is
-    required for correctness; ``decay_all`` exists for housekeeping sweeps.
+    deviation from neutral is gone. Decay is applied **lazily on read**, so no timer
+    is required for correctness. ``decay_all`` 目前**未接线**（没有后台清扫）：
+    需要批量结算时必须由调用方显式调用，不要假设有定时任务在跑。
     """
 
     def __init__(self, store: DeepChatStore, decay_rate: float = 0.05):
@@ -107,6 +108,9 @@ class MoodStateMachine:
         return state
 
     def decay_all(self, *, now: float | None = None) -> int:
+        """批量结算所有情绪行。**当前未接线**：没有任何定时器/循环调用它，
+        正确性靠读路径的惰性结算；不要假设存在后台清扫。
+        """
         now = time.time() if now is None else float(now)
         with self.store.connection() as conn:
             rows = conn.execute(

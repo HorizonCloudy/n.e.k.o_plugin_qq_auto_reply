@@ -5,7 +5,7 @@ from .expression import ExpressionStore, extract_expressions
 from .models import ChatEvent, Mood, MoodState, RelationshipEdge
 from .mood import MoodStateMachine
 from .relationship import RelationshipGraph
-from .service import TUNING_KEYS, DeepChatService, classify_signal
+from .service import RETIRED_TUNING_KEYS, TUNING_KEYS, DeepChatService, classify_signal
 from .store import DeepChatStore
 
 __all__ = [
@@ -19,6 +19,7 @@ __all__ = [
     "MoodStateMachine",
     "RelationshipEdge",
     "RelationshipGraph",
+    "RETIRED_TUNING_KEYS",
     "TUNING_KEYS",
     "classify_signal",
     "extract_expressions",
