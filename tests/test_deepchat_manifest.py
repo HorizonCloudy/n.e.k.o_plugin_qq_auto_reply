@@ -13,6 +13,9 @@ EXPECTED_ENTRIES = {
     "dc_set_mood",
     "dc_tune",
     "dc_recall",
+    # P0a（8577d21）新增的遗忘入口：本地 sqlite + 宿主 participant，边界显式。
+    # 加进入口集合即等于声明"它要遵守 dc_* 的 async / **kw 契约"，所以必须登记而不是放过。
+    "dc_forget_user",
 }
 
 
