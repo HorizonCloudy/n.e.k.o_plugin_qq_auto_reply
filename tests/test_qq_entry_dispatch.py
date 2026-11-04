@@ -104,7 +104,15 @@ def test_trust_entry_is_visible_to_the_agent():
 # ── 入口面看门狗 ────────────────────────────────────────────
 
 LEGACY_ENTRIES = {"runtime", "config", "query", "send", "trust", "deploy", "asset"}
-DEEPCHAT_ENTRIES = {"dc_view_state", "dc_reset_user", "dc_set_mood", "dc_tune", "dc_recall"}
+DEEPCHAT_ENTRIES = {
+    "dc_view_state",
+    "dc_reset_user",
+    "dc_set_mood",
+    "dc_tune",
+    "dc_recall",
+    # P0a（8577d21）：遗忘入口。加进这里等于声明它要守入口契约。
+    "dc_forget_user",
+}
 EXPECTED_ENTRIES = LEGACY_ENTRIES | DEEPCHAT_ENTRIES
 
 #: 对 agent 隐藏的入口（braid/task_executor.py 的 _is_plugin_entry_agent_hidden 读这个标记）
