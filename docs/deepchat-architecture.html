@@ -331,7 +331,7 @@
     <p><b>要覆盖的四层坑</b>（任一层漏掉都会"看起来干净"）：① 整串 <code>LIKE '最近聊到：%'</code>
       在 JSON 列上永远 0 命中；② 一行非法 JSON 会让所有 <code>json_each</code> 查询直接报
       <code>malformed JSON</code>；③ 合法但**不是数组**的行（object/null/text/number）会被应用
-      静默清空；④ 没有后置断言就无法证明清理真的发生。按下面八条执行：</p>
+      静默清空；④ 没有后置断言就无法证明清理真的发生。按下面九条执行：</p>
     <ol>
       <li><b>自查先跑（三支 UNION，互不接触）</b>：会被应用静默清空/会让查询报错的行有三类——
         <b>① 表结构被改过</b>（schema 是 <code>TEXT NOT NULL DEFAULT '[]'</code>，正常不可能出现

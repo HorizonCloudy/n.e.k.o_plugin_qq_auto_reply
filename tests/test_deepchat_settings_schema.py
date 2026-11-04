@@ -1,8 +1,9 @@
-"""Phase 0：DeepChat 的隐私开关必须真的可保存。
+"""DeepChat 隐私开关当前只走 dc_tune（dashboard save chain 尚未接）。
 
-这些键控制"是否注入表达/关系/主动私聊"——如果它们不在 ``MISC`` 和
-``SAVEABLE_KEYS`` 里，面板上看起来能关、实际保存后被丢弃，用户会以为
-隐私已关闭而它还在跑。属于"配置面失败导致隐私承诺失效"，故单独成测。
+dashboard_service.save_settings 与前端字段还没有这四个键；若贸然放进
+``MISC``/``SAVEABLE_KEYS``，保存链会丢键、上游 test_qq_settings_* 会红。
+本文件钉住「仍在 TUNING_KEYS、但暂不进 MISC/SAVEABLE」的 deferral；
+恢复条件见测试方法 docstring。
 
 注：仓库里 `tests/test_qq_settings_schema.py` 是 pytest 风格且需要宿主包路径，
 本机没有 pytest，放那里等于写一条无法执行的测试；这里用 unittest 直连
