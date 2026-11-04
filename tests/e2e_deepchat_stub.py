@@ -483,6 +483,80 @@ def main() -> int:
             "writeback hook missing",
         )
 
+        # 6. P0a: forget-user 的两条腿语义（本地 sqlite + 宿主 participant）
+        #    这几条放在 e2e 而不是 unittest：`dc_forget_user` 在 __init__.py 里，
+        #    只有本文件的 loader + 假 SDK 能把它跑起来（单测 import 会拖宿主依赖）。
+        empty = asyncio.run(plugin.dc_forget_user(user_id=""))
+        _assert(isinstance(empty, sdk.Err), f"空 user_id 必须 Err，实际 {type(empty).__name__}")
+        _assert("INVALID_INPUT" in str(empty.error), f"错误码应为 INVALID_INPUT：{empty.error}")
+
+        # 6a 有 bridge：forgotten 只含 participant；not_covered 说明未覆盖面；identity_meta 不参与 partial
+        forget_calls = []
+
+        class _FakeBridge:
+            def participant_subject(self, user_id):
+                return f"participant:{user_id}"
+
+            def group_participant_subject(self, gid, user_id):
+                return f"group_participant:{gid}:{user_id}"
+
+            async def post_scoped_forget(self, her_name, *, subject):
+                forget_calls.append(subject)
+                return {"ok": True}
+
+        plugin.memory_bridge = _FakeBridge()
+        plugin._private_memory_mode_of = lambda user_id: "participant"
+        plugin.deepchat_service.writeback(sender_id="10001", text="谢谢你")
+        payload = asyncio.run(plugin._forget_user("10001"))
+        _assert(payload["subjects_forgotten"] == ["participant"],
+                f"应只遗忘 participant 域：{payload['subjects_forgotten']}")
+        _assert(payload["subjects_skipped"] == [], f"不该有 skipped：{payload['subjects_skipped']}")
+        _assert(payload["partial"] is False, f"全绿时 partial 必须 False：{payload['partial']}")
+        # 前缀匹配：P0b 之后这里带限定后缀（`group_participant:history_before_P0b`），
+        # 用精确相等会把"更精确的说明"判成失败。
+        _assert(any(str(item).startswith("group_participant") for item in payload["not_covered"]),
+                f"not_covered 必须显式列出 group_participant：{payload['not_covered']}")
+        _assert(forget_calls and all(s is not None for s in forget_calls),
+                "subjects 绝不能传 None（None 在 bridge 里等于 legacy 逃生门）")
+        _assert(payload["identity_meta"].get("supported") is False,
+                f"identity_meta 应为能力声明 false：{payload['identity_meta']}")
+        after = plugin.deepchat_service.view_state("10001")
+        _assert(after["mood"]["current"] == "calm", f"本地腿未清情绪：{after['mood']}")
+        _assert(after["relationship"]["interactions"] == 0,
+                f"本地腿未清关系：{after['relationship']}")
+
+        # 6b legacy 模式：fail-closed，且 bridge 一次都不许被调用
+        forget_calls.clear()
+        plugin._private_memory_mode_of = lambda user_id: "legacy"
+        legacy_payload = asyncio.run(plugin._forget_user("10001"))
+        _assert(legacy_payload["subjects_skipped"] == ["participant"],
+                f"legacy 模式应 skip participant：{legacy_payload}")
+        _assert("legacy_memory_mode" in legacy_payload["warnings"],
+                f"缺 legacy_memory_mode 警告：{legacy_payload['warnings']}")
+        _assert(legacy_payload["partial"] is True, "legacy 模式必须 partial=True")
+        _assert(forget_calls == [], f"legacy 模式不得调用 bridge，实际调用 {forget_calls}")
+
+        # 6c 无 bridge：跳过并告警
+        plugin.memory_bridge = None
+        plugin._private_memory_mode_of = lambda user_id: "participant"
+        no_bridge = asyncio.run(plugin._forget_user("10001"))
+        _assert("memory_bridge_unavailable" in no_bridge["warnings"],
+                f"缺 memory_bridge_unavailable：{no_bridge['warnings']}")
+        _assert(no_bridge["partial"] is True, "无 bridge 必须 partial=True")
+
+        # 6d 宿主抛错：按失败记账，不静默
+        class _RaisingBridge(_FakeBridge):
+            async def post_scoped_forget(self, her_name, *, subject):
+                raise RuntimeError("host boom")
+
+        plugin.memory_bridge = _RaisingBridge()
+        raising = asyncio.run(plugin._forget_user("10001"))
+        _assert("participant_forget_failed" in raising["warnings"],
+                f"宿主抛错必须留证：{raising['warnings']}")
+        _assert(raising["partial"] is True, "宿主抛错必须 partial=True")
+
+        print("PASS: forget-user legs (participant / legacy fail-closed / no-bridge / host-error / local)")
+
         print("PASS: plugin package loaded and instantiated")
         print("PASS: prompt enrichment (mood + relationship)")
         print("PASS: writeback (mood/relationship SQLite)")
