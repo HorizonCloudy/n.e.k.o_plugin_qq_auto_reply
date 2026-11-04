@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import time
 
 from .models import Mood, MoodState
@@ -68,13 +69,27 @@ class MoodStateMachine:
         self.store = store
         self.decay_rate = max(0.0, float(decay_rate))
 
-    def get(self, user_key: str, *, now: float | None = None) -> MoodState:
+    def get(
+        self,
+        user_key: str,
+        *,
+        now: float | None = None,
+        conn: sqlite3.Connection | None = None,
+    ) -> MoodState:
+        """读情绪状态；``conn`` 传入时复用调用方的连接（见 ``DeepChatStore.session``）。
+
+        复用连接的意义：读之后若触发衰减还会**写一次**，同一连接可少拿一次锁。
+        """
         now = time.time() if now is None else float(now)
-        with self.store.connection() as conn:
-            row = conn.execute(
-                "SELECT valence, arousal, current, updated_at FROM deepchat_mood WHERE user_key = ?",
-                (user_key,),
-            ).fetchone()
+        sql = (
+            "SELECT valence, arousal, current, updated_at "
+            "FROM deepchat_mood WHERE user_key = ?"
+        )
+        if conn is None:
+            with self.store.connection() as own_conn:
+                row = own_conn.execute(sql, (user_key,)).fetchone()
+        else:
+            row = conn.execute(sql, (user_key,)).fetchone()
         if row is None:
             return MoodState(updated_at=now)
         state = MoodState(
@@ -85,7 +100,7 @@ class MoodStateMachine:
         )
         decayed = self._decay(state, now)
         if decayed.valence != state.valence or decayed.arousal != state.arousal:
-            self._save(user_key, decayed)
+            self._save(user_key, decayed, conn=conn)
         return decayed
 
     def update(self, user_key: str, signal: str, *, now: float | None = None) -> MoodState:
@@ -152,17 +167,35 @@ class MoodStateMachine:
             updated_at=now,
         )
 
-    def _save(self, user_key: str, state: MoodState) -> None:
-        with self.store.connection() as conn:
-            conn.execute(
-                """
-                INSERT INTO deepchat_mood(user_key, valence, arousal, current, updated_at)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(user_key) DO UPDATE SET
-                    valence = excluded.valence,
-                    arousal = excluded.arousal,
-                    current = excluded.current,
-                    updated_at = excluded.updated_at
-                """,
-                (user_key, state.valence, state.arousal, state.current.value, state.updated_at),
-            )
+    def _save(
+        self,
+        user_key: str,
+        state: MoodState,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> None:
+        """写一行情绪状态；``conn`` 传入时复用调用方连接（不再自开）。"""
+        if conn is None:
+            with self.store.connection() as own_conn:
+                self._execute_save(own_conn, user_key, state)
+        else:
+            self._execute_save(conn, user_key, state)
+
+    @staticmethod
+    def _execute_save(
+        conn: sqlite3.Connection,
+        user_key: str,
+        state: MoodState,
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO deepchat_mood(user_key, valence, arousal, current, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_key) DO UPDATE SET
+                valence = excluded.valence,
+                arousal = excluded.arousal,
+                current = excluded.current,
+                updated_at = excluded.updated_at
+            """,
+            (user_key, state.valence, state.arousal, state.current.value, state.updated_at),
+        )

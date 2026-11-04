@@ -31,6 +31,17 @@ class DeepChatStore:
         finally:
             conn.close()
 
+    @contextmanager
+    def session(self) -> Iterator[sqlite3.Connection]:
+        """一个逻辑读作用域共用一个连接（enrich 这类"读两张表再拼片段"的场景）。
+
+        与 :meth:`connection` 的差别只在**语义**：``connection()`` 是「一次操作一个
+        连接」，``session()`` 是「一个作用域一个连接」。少开连接 = 少一次拿锁的机会，
+        也少一次 0.5s 超时的风险。
+        """
+        with self.connection() as conn:
+            yield conn
+
     #: DDL 不能参数化，所以迁移只允许执行这张白名单里的 (表, 列, 定义)。
     _MIGRATIONS: dict[str, dict[str, str]] = {
         "deepchat_relationship": {"frozen": "INTEGER NOT NULL DEFAULT 0"},

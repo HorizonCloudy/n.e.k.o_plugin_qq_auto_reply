@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 from typing import Any
 
@@ -51,6 +52,15 @@ def affinity_tier(affinity: float) -> str:
         return "关系不错"
     return "很亲近"
 
+
+def _load_milestones(raw: object) -> list[str]:
+    try:
+        parsed = json.loads(str(raw or "[]"))
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(item) for item in parsed if str(item).strip()]
 
 class RelationshipGraph:
     """Per-user affinity/trust with lazy day-based decay.
@@ -103,14 +113,27 @@ class RelationshipGraph:
             self.freeze_threshold,
         )
 
-    def get(self, user_id: str, *, now: float | None = None) -> RelationshipEdge:
+    def get(
+        self,
+        user_id: str,
+        *,
+        now: float | None = None,
+        conn: sqlite3.Connection | None = None,
+    ) -> RelationshipEdge:
+        """读关系边；``conn`` 传入时复用调用方连接（见 ``DeepChatStore.session``）。
+
+        读之后若跨过结算边界会**写一次**，同一连接可少拿一次锁。
+        """
         now = time.time() if now is None else float(now)
-        with self.store.connection() as conn:
-            row = conn.execute(
-                "SELECT user_id, affinity, trust, interactions, milestones, updated_at, frozen "
-                "FROM deepchat_relationship WHERE user_id = ?",
-                (user_id,),
-            ).fetchone()
+        sql = (
+            "SELECT user_id, affinity, trust, interactions, milestones, updated_at, frozen "
+            "FROM deepchat_relationship WHERE user_id = ?"
+        )
+        if conn is None:
+            with self.store.connection() as own_conn:
+                row = own_conn.execute(sql, (user_id,)).fetchone()
+        else:
+            row = conn.execute(sql, (user_id,)).fetchone()
         if row is None:
             return RelationshipEdge(user_id=user_id, updated_at=now)
         edge = RelationshipEdge(
@@ -128,7 +151,7 @@ class RelationshipGraph:
             or decayed.trust != edge.trust
             or decayed.frozen != edge.frozen
         ):
-            self._save(decayed)
+            self._save(decayed, conn=conn)
         return decayed
 
     def reinforce(self, user_id: str, amount: float = 0.02, *, now: float | None = None) -> RelationshipEdge:
@@ -265,39 +288,43 @@ class RelationshipGraph:
         if edge.frozen and abs(edge.affinity) >= self.revive_threshold:
             edge.frozen = False
 
-    def _save(self, edge: RelationshipEdge) -> None:
-        with self.store.connection() as conn:
-            conn.execute(
-                """
-                INSERT INTO deepchat_relationship(
-                    user_id, affinity, trust, interactions, milestones, updated_at, frozen
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(user_id) DO UPDATE SET
-                    affinity = excluded.affinity,
-                    trust = excluded.trust,
-                    interactions = excluded.interactions,
-                    milestones = excluded.milestones,
-                    updated_at = excluded.updated_at,
-                    frozen = excluded.frozen
-                """,
-                (
-                    edge.user_id,
-                    edge.affinity,
-                    edge.trust,
-                    edge.interactions,
-                    json.dumps(edge.milestones, ensure_ascii=False),
-                    edge.updated_at,
-                    1 if edge.frozen else 0,
-                ),
+    def _save(
+        self,
+        edge: RelationshipEdge,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> None:
+        """写一行关系边；``conn`` 传入时复用调用方连接（不再自开）。"""
+        if conn is None:
+            with self.store.connection() as own_conn:
+                self._execute_save(own_conn, edge)
+        else:
+            self._execute_save(conn, edge)
+
+    @staticmethod
+    @staticmethod
+    def _execute_save(conn: sqlite3.Connection, edge: RelationshipEdge) -> None:
+        conn.execute(
+            """
+            INSERT INTO deepchat_relationship(
+                user_id, affinity, trust, interactions, milestones, updated_at, frozen
             )
-
-
-def _load_milestones(raw: object) -> list[str]:
-    try:
-        parsed = json.loads(str(raw or "[]"))
-    except (TypeError, ValueError):
-        return []
-    if not isinstance(parsed, list):
-        return []
-    return [str(item) for item in parsed if str(item).strip()]
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                affinity = excluded.affinity,
+                trust = excluded.trust,
+                interactions = excluded.interactions,
+                milestones = excluded.milestones,
+                updated_at = excluded.updated_at,
+                frozen = excluded.frozen
+            """,
+            (
+                edge.user_id,
+                edge.affinity,
+                edge.trust,
+                edge.interactions,
+                json.dumps(edge.milestones, ensure_ascii=False),
+                edge.updated_at,
+                1 if edge.frozen else 0,
+            ),
+        )

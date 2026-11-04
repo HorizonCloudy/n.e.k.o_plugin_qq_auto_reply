@@ -460,7 +460,7 @@ class QQReplyContextNode:
         deepchat = getattr(self.plugin, "deepchat_service", None)
         if deepchat is not None and not is_synthetic_source(source_kind):
             try:
-                system_prompt = deepchat.enrich_system_prompt(
+                system_prompt = await deepchat.enrich_system_prompt(
                     system_prompt=system_prompt,
                     sender_id=sender_id,
                     group_id=group_id,

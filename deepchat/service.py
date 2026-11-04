@@ -234,7 +234,7 @@ class DeepChatService:
     def _mood_key(sender_id: str) -> str:
         return f"user:{str(sender_id or '').strip()}"
 
-    def enrich_system_prompt(
+    async def enrich_system_prompt(
         self,
         *,
         system_prompt: str,
@@ -243,13 +243,41 @@ class DeepChatService:
         is_group: bool = False,
         sender_name: str = "",
     ) -> str:
+        """异步外壳：同步 SQLite 读写丢到线程里跑（与 ``writeback_deepchat`` 同一理由）。
+
+        调用方在 async 的 context 节点里，直接跑同步读会拖住事件循环；而 enrich 恰好会
+        触发两处**写**（mood 衰减、relationship 跨结算边界），锁争用下最明显。
+        同步内核保留为 ``_enrich_sync``，便于测试直接调用。
+        """
+        return await asyncio.to_thread(
+            self._enrich_sync,
+            system_prompt=system_prompt,
+            sender_id=sender_id,
+            group_id=group_id,
+            is_group=is_group,
+            sender_name=sender_name,
+        )
+
+    def _enrich_sync(
+        self,
+        *,
+        system_prompt: str,
+        sender_id: str,
+        group_id: str | None = None,
+        is_group: bool = False,
+        sender_name: str = "",
+    ) -> str:
+        """同步内核：两次读 + 可能的两次衰减写，全程共用**一个**连接。"""
         if not self.enabled or not self.fragments_enabled:
             return system_prompt
         sender_id = str(sender_id or "").strip()
         if not sender_id:
             return system_prompt
-        state = self.mood.get(self._mood_key(sender_id))
-        edge = self.relationship.get(sender_id)
+        # 一个 session 一个连接：读两张表 + 可能的两次衰减写都在同一连接上完成；
+        # 少开连接 = 少一次拿锁的机会（enrich 在回复主链路上）。
+        with self.store.session() as conn:
+            state = self.mood.get(self._mood_key(sender_id), conn=conn)
+            edge = self.relationship.get(sender_id, conn=conn)
         candidates: list[str] = []
         if not is_group:
             # 群聊不注入"她自己的情绪"：群是多人语境，情绪句会让她的心情变成
