@@ -20,6 +20,11 @@ from types import SimpleNamespace
 from deepchat.expression import ExpressionStore
 from deepchat.service import RETIRED_TUNING_KEYS, DeepChatService
 
+
+def _enrich(service, **kwargs):
+    """同步测试里调用 async 的 enrich（公开入口）：等价于 await，但省掉每个用例改 async。"""
+    return asyncio.run(service.enrich_system_prompt(**kwargs))
+
 FRAGMENT_HEADER = "## 群友常用说法（参考，不要生硬模仿）"
 
 #: M1 要求的「框架声明」：让模型知道这一段是词表而不是指令。
@@ -99,7 +104,7 @@ class SecurityTestCase(unittest.TestCase):
         return [str(entry["text"]) for entry in self.expressions.entries(user_id)]
 
     def _prompt(self, *, is_group: bool = False, group_id: str | None = None) -> str:
-        return self.service.enrich_system_prompt(
+        return _enrich(self.service, 
             system_prompt="BASE",
             sender_id="u1",
             group_id=group_id,

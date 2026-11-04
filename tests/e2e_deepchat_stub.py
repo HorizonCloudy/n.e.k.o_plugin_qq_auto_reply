@@ -29,6 +29,11 @@ import types
 from pathlib import Path
 from types import SimpleNamespace
 
+
+def _enrich(service, **kwargs):
+    """同步测试里调用 async 的 enrich（公开入口）：等价于 await，但省掉每个用例改 async。"""
+    return asyncio.run(service.enrich_system_prompt(**kwargs))
+
 REPO_ROOT = Path(
     os.environ.get("DEEPCHAT_PLUGIN_ROOT", Path(__file__).resolve().parents[1])
 ).resolve()
@@ -423,7 +428,7 @@ def main() -> int:
         plugin = module.QQAutoReplyPlugin(ctx)
 
         # 1. prompt enrichment
-        prompt = plugin.deepchat_service.enrich_system_prompt(
+        prompt = _enrich(plugin.deepchat_service, 
             system_prompt="BASE PROMPT",
             sender_id="10001",
             sender_name="小明",

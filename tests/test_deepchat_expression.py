@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,6 +17,11 @@ from deepchat.bad_meme_words import is_bad_meme
 from deepchat.expression import ExpressionStore, extract_expressions
 from deepchat.service import DeepChatService
 from deepchat.store import DeepChatStore
+
+
+def _enrich(service, **kwargs):
+    """同步测试里调用 async 的 enrich（公开入口）：等价于 await，但省掉每个用例改 async。"""
+    return asyncio.run(service.enrich_system_prompt(**kwargs))
 
 FRAGMENT_HEADER = "## 群友常用说法（参考，不要生硬模仿）"
 
@@ -313,7 +319,7 @@ class ExpressionServiceIntegrationTests(unittest.TestCase):
         self._enable()
         self._seed_history()
         self._interact(10)
-        prompt = self.service.enrich_system_prompt(
+        prompt = _enrich(self.service, 
             system_prompt="BASE",
             sender_id="u1",
             sender_name="小明",
@@ -325,7 +331,7 @@ class ExpressionServiceIntegrationTests(unittest.TestCase):
     def test_enrich_prompt_has_no_expression_fragment_when_learning_off(self) -> None:
         self._seed_history()
         self._interact(10)
-        prompt = self.service.enrich_system_prompt(system_prompt="BASE", sender_id="u1")
+        prompt = _enrich(self.service, system_prompt="BASE", sender_id="u1")
         self.assertNotIn("## 群友常用说法", prompt)
 
     def test_reset_user_clears_expressions(self) -> None:

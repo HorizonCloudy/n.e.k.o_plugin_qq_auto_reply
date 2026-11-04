@@ -55,6 +55,11 @@ is_synthetic_source = _load_plugin_module("pipeline_models").is_synthetic_source
 SYNTHETIC_SOURCE_KINDS = _load_plugin_module("pipeline_models").SYNTHETIC_SOURCE_KINDS
 QQModelResult = _load_plugin_module("pipeline_models").QQModelResult
 
+def _enrich(service, **kwargs):
+    """同步用例里调用 async 的 enrich（公开入口）。"""
+    return asyncio.run(service.enrich_system_prompt(**kwargs))
+
+
 #: review 描述里写的是 `source_kind="synthetic"`，但那不是生产取值——
 #: 生产只认 `SYNTHETIC_SOURCE_KINDS` 里这几个常量，`"synthetic"` 会被判成
 #: 真实用户轮（写回照常发生）。所以这里取一个真实的合成轮类型。
@@ -410,7 +415,8 @@ class EnrichLoopBlockingTests(unittest.TestCase):
                 task = asyncio.create_task(ticker())
                 await asyncio.sleep(0.05)
                 try:
-                    self.service.enrich_system_prompt(
+                    # 必须 await：只调用会创建 coroutine 而从不执行 → ticker 当然不阻塞（伪绿）
+                    await self.service.enrich_system_prompt(
                         system_prompt="BASE", sender_id="u1", sender_name="小明"
                     )
                 except Exception:  # noqa: BLE001 —— 锁争用下抛错可以，阻塞不行
@@ -437,9 +443,7 @@ class EnrichLoopBlockingTests(unittest.TestCase):
         try:
             started = time.perf_counter()
             try:
-                self.service.enrich_system_prompt(
-                    system_prompt="BASE", sender_id="u1", sender_name="小明"
-                )
+                _enrich(self.service, system_prompt="BASE", sender_id="u1", sender_name="小明")
             except sqlite3.OperationalError:
                 pass
             elapsed = time.perf_counter() - started
