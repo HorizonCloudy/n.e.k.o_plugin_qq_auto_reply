@@ -72,7 +72,7 @@ class FakeReplyGenerationService:
         self.generate_fallback_from_context = AsyncMock(return_value="ok")
         self.run_fallback_memory_hooks = AsyncMock(return_value=None)
 
-    def writeback_deepchat(self, context: QQReplyContext) -> None:
+    async def writeback_deepchat(self, context: QQReplyContext) -> None:
         self.writeback_calls.append(context)
         deepchat = self.plugin.deepchat_service
         if deepchat is None or is_synthetic_source(getattr(context, "source_kind", "") or ""):
@@ -190,6 +190,83 @@ class DirectModeWritebackTests(unittest.TestCase):
 
         self.assertEqual(
             self._interactions(), 0, "合成轮不得回写，否则同一条消息被计两次"
+        )
+
+
+    def test_writeback_does_not_block_event_loop(self) -> None:
+        """回写若在事件循环里同步执行，同一 loop 上的心跳/定时任务会被一起拖住。
+
+        做法：让替身的 writeback 阻塞 0.5s（模拟慢 SQLite / 慢磁盘），同时跑一个
+        20ms ticker。同步执行会让 ticker 停 0.5s（测出来的间隔 ≈ 阻塞时长）；
+        被 ``asyncio.to_thread`` 挪出 loop 后，间隔应远小于阻塞时长。
+        阈值取 0.25s（阻塞时长的一半），对 CI 抖动留了余量，但仍能拦住"退回同步调用"。
+        """
+        import time as _time
+
+        BLOCK = 0.5
+        max_gap = {"value": 0.0}
+        finished = {"value": False}
+
+        async def blocking_writeback(context) -> None:
+            await asyncio.to_thread(_time.sleep, BLOCK)
+            finished["value"] = True
+
+        self.plugin.reply_generation_service.writeback_deepchat = blocking_writeback
+
+        async def scenario() -> None:
+            # 预热默认 executor：首次建线程本身可能上百 ms，不该算进"是否阻塞 loop"
+            await asyncio.to_thread(lambda: None)
+            last = {"t": _time.perf_counter()}
+            stop = {"flag": False}
+
+            async def ticker() -> None:
+                while not stop["flag"]:
+                    await asyncio.sleep(0.02)
+                    now = _time.perf_counter()
+                    max_gap["value"] = max(max_gap["value"], now - last["t"])
+                    last["t"] = now
+
+            tick = asyncio.create_task(ticker())
+            started = _time.perf_counter()
+            await QQReplyModelNode(self.plugin).generate(_context())
+            elapsed = _time.perf_counter() - started
+            stop["flag"] = True
+            await tick
+            return elapsed
+
+        elapsed = asyncio.run(scenario())
+
+        self.assertTrue(finished["value"], "回写必须被 await 完成，不能 fire-and-forget")
+        self.assertGreaterEqual(elapsed, BLOCK, "await 应等回写真正跑完")
+        self.assertLess(
+            max_gap["value"],
+            BLOCK / 2,
+            f"回写阻塞了事件循环：ticker 最大间隔 {max_gap['value'] * 1000:.0f}ms"
+            f"（阻塞 {BLOCK * 1000:.0f}ms 的一半以上）",
+        )
+
+
+class WritebackThreadContractTests(unittest.TestCase):
+    """``reply_generation_service`` 载不进单测（宿主依赖），所以对它做源码级契约。"""
+
+    def _method_block(self) -> str:
+        source = (_REPO_ROOT / "reply_generation_service.py").read_text(encoding="utf-8")
+        start = source.find("async def writeback_deepchat")
+        self.assertGreater(start, -1, "writeback_deepchat 必须是 async def（否则调用点无法 await）")
+        end = source.find("async def run_primary_session_call", start)
+        return source[start : end if end > start else start + 2000]
+
+    def test_writeback_is_offloaded_to_a_thread(self) -> None:
+        block = self._method_block()
+        self.assertIn(
+            "asyncio.to_thread(",
+            block,
+            "同步 SQLite 写回必须走 to_thread，否则会阻塞事件循环",
+        )
+        self.assertNotIn(
+            "            deepchat.writeback(",
+            block,
+            "不要直接在 loop 里同步调用 deepchat.writeback（用 to_thread 包一层）",
         )
 
 

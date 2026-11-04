@@ -88,7 +88,7 @@ class QQReplyGenerationService:
     async def generate_fallback_from_context(self, context: QQReplyContext) -> Optional[str]:
         return await self.generate_reply_fallback_direct_llm(context=context)
 
-    def writeback_deepchat(self, context: QQReplyContext) -> None:
+    async def writeback_deepchat(self, context: QQReplyContext) -> None:
         """把一轮**成功**回复写回 DeepChat（情绪 / 关系 / 表达学习）。
 
         所有成功路径（host session 主路径、direct 模式、两条 fallback）都必须
@@ -97,12 +97,17 @@ class QQReplyGenerationService:
 
         合成控制轮（synthetic source）不写回——它不计入真实互动，写进去会把
         关系曲线和表达学习一起带偏。
+
+        写回是**同步 SQLite + 纯 CPU** 的活儿，所以丢到线程里跑：直接在事件循环
+        里调用会阻塞同一 loop 上的心跳/定时任务（``decay_all`` 之类的批量结算
+        一旦变慢就更容易看出）。``to_thread`` 不改变语义，只把阻塞挪出 loop。
         """
         deepchat = getattr(self.plugin, "deepchat_service", None)
         if deepchat is None or is_synthetic_source(getattr(context, "source_kind", "")):
             return
         try:
-            deepchat.writeback(
+            await asyncio.to_thread(
+                deepchat.writeback,
                 sender_id=context.sender_id,
                 text=context.message,
                 is_group=context.is_group,
@@ -199,7 +204,7 @@ class QQReplyGenerationService:
                 session_key=session_key, user_data=user_data, context=context,
                 reply_text=ai_reply,
             )
-            self.writeback_deepchat(context)
+            await self.writeback_deepchat(context)
             self.plugin.logger.info(f"AI 生成回复完成 (会话: {session_key}, length: {len(ai_reply)})")
             stage_trace.status = "success"
             stage_trace.metadata["reply_length"] = len(ai_reply)
@@ -1275,7 +1280,7 @@ class QQReplyGenerationService:
             await self.run_fallback_memory_hooks(context, fallback_reply)
             # direct fallback 也是"成功回复"，同样要回写（primary 成功已在
             # run_primary_session_call 内写回并提前 return，不会重复）。
-            self.writeback_deepchat(context)
+            await self.writeback_deepchat(context)
             return QQModelResult(reply_text=fallback_reply, source="direct_llm_fallback", used_fallback=True, traces=primary_result.traces)
         primary_result.traces.append(
             QQPipelineStageTrace(

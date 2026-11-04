@@ -21,7 +21,9 @@ class DeepChatStore:
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(self.db_path)
+        # 写回在回复主链路上：拿不到锁时最多等 0.5s 就放弃，别让整条回复
+        # 卡在 SQLite 的默认 5s 上（另一个进程/线程持锁时尤其明显）。
+        conn = sqlite3.connect(self.db_path, timeout=0.5)
         conn.row_factory = sqlite3.Row
         try:
             yield conn

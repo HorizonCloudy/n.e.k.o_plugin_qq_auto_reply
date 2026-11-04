@@ -47,7 +47,7 @@ class QQReplyModelNode:
             await self.plugin.reply_generation_service.run_fallback_memory_hooks(
                 context, fallback_reply,
             )
-            self._writeback_deepchat(context)
+            await self._writeback_deepchat(context)
             return QQModelResult(
                 reply_text=fallback_reply,
                 source="direct_llm_fallback",
@@ -56,14 +56,14 @@ class QQReplyModelNode:
             )
         return QQModelResult(reply_text=None, source="none", used_fallback=True, traces=primary_result.traces)
 
-    def _writeback_deepchat(self, context: QQReplyContext) -> None:
+    async def _writeback_deepchat(self, context: QQReplyContext) -> None:
         """回写 DeepChat（情绪 / 关系 / 表达学习），synthetic 轮不计入互动。
 
         规则只有一份：``QQReplyGenerationService.writeback_deepchat``。这里不再
         保留"服务层缺失就自己写一遍"的兜底——两套规则迟早分叉，而那个分支也没有
         任何回归护栏（测试替身都提供了服务层方法）。
         """
-        self.plugin.reply_generation_service.writeback_deepchat(context)
+        await self.plugin.reply_generation_service.writeback_deepchat(context)
 
     async def _run_direct_primary(self, context: QQReplyContext) -> QQModelResult:
         """Deep-chat direct mode: per-turn prompt built from scratch.
@@ -89,7 +89,7 @@ class QQReplyModelNode:
             )
             # direct 模式没有 host session 主路径，这一轮的唯一成功路径就是
             # fallback，所以回写放在这里（否则 direct 模式永不回写情绪/关系）。
-            self._writeback_deepchat(context)
+            await self._writeback_deepchat(context)
             return QQModelResult(
                 reply_text=fallback_reply,
                 source="deepchat_direct",
