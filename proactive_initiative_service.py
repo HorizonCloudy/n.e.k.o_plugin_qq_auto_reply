@@ -48,6 +48,7 @@ from datetime import datetime
 from typing import Any
 
 from .pipeline_models import SYNTHETIC_SOURCE_KINDS
+from .proactive_budget import BudgetReservation, ProactiveBudget
 
 #: 落盘文件名（走 `plugin.data_path`）。宿主持久化里"还没交代的事"要能接着等。
 STATE_FILE = "proactive_initiative.json"
@@ -130,10 +131,13 @@ class QQProactiveInitiativeService:
         self._logger = getattr(plugin, "logger", None)
         #: 管理员 → 待交代的那件事（同一个人只留最新一条，避免堆成任务清单）
         self._items: dict[str, dict[str, Any]] = {}
-        #: 当天已开口次数（按本地日期翻篇）
-        self._today: str = ""
-        self._today_count: int = 0
-        self._last_sent_at: float = 0.0
+        #: **唯一**计数源：与深聊自主联系（deepchat autonomy）共用一本账。
+        #: 两边各记一笔会让 max_per_day=2 实际变成 4 条（P2-① 的超发通道）。
+        #: 传取值函数而不是数值：配置改了立刻生效，不用重建对象。
+        self.budget = ProactiveBudget(
+            max_per_day=self.max_per_day,
+            min_gap_seconds=self.min_gap_seconds,
+        )
         #: 他最近一次跟她说话的**回复时刻**（代理"他刚说完、她刚回过"）
         self._last_admin_activity_at: float = 0.0
         self._load()
@@ -225,18 +229,23 @@ class QQProactiveInitiativeService:
 
     # ── 判定 ────────────────────────────────────────────────────────
 
-    def _count_today(self, now: float) -> int:
-        today = datetime.fromtimestamp(now).strftime("%Y-%m-%d")
-        return self._today_count if today == self._today else 0
-
     def remaining_today(self, now: float | None = None) -> int:
-        """今天还能主动开口几次（只读，不新增账本）。
+        """今天两个来源合计还能主动开口几次（读共享账本，含在飞预占）。"""
+        return self.budget.remaining_today(now)
 
-        深聊自主联系（``deepchat_autonomy_*``）只**借用这个读数当闸门**：
-        它不扣有由头的额度、自己另记一笔（共享账本上限见 follow-up）。
+    def last_sent_at(self) -> float:
+        """两个来源里最后一次**真的发出去**的时刻（全局最小间隔的依据）。"""
+        return self.budget.last_sent_at()
+
+    def record_send(self, source: str, now: float | None = None) -> BudgetReservation | str:
+        """登记一次「已经发出去了」的发送（预占 + 提交）。
+
+        供深聊自主联系（source="deepchat"）记账用：它自己没有 HTTP 失败重试语义，
+        发出去就是发出去了，所以不需要三态，直接 record。
         """
-        stamp = time.time() if now is None else float(now)
-        return max(0, self.max_per_day() - self._count_today(stamp))
+        result = self.budget.record(source, now=now)
+        self._save()
+        return result
 
     def _within_active_hours(self, now: float) -> bool:
         start, end = self.quiet_hours()
@@ -269,9 +278,9 @@ class QQProactiveInitiativeService:
             return "这件事过去太久了"
         if not self._within_active_hours(now):
             return "静音时段"
-        if self._count_today(now) >= self.max_per_day():
+        if self.budget.remaining_today(now) <= 0:
             return "今天已经说够了"
-        if now - self._last_sent_at < self.min_gap_seconds():
+        if self.budget.gap_remaining(now) > 0:
             return "距上次太近"
         if now - self._last_admin_activity_at < ACTIVITY_GRACE_SECONDS:
             return "刚跟她说过话"
@@ -307,6 +316,12 @@ class QQProactiveInitiativeService:
             if reason == "这件事过去太久了":
                 self._drop("过期")
             return
+        # 先在**共享账本**里占一个额度：这一笔对深聊自主联系同样生效。
+        # 占不到就不要往下走（今天已说够 / 距上次太近）。
+        reservation = self.budget.try_reserve("initiative", now=now)
+        if isinstance(reservation, str):
+            self._log("INFO", f"[Initiative] 共享账本拒绝开口：{reservation}")
+            return
         admin = self._admin()
         item = self.pending() or {}
         attempts = int(item.get("attempts") or 0) + 1
@@ -320,18 +335,22 @@ class QQProactiveInitiativeService:
 
         from plugin.sdk.plugin import Ok
 
+        # 进入发送阶段后**不可回收**：无法证明对方没收到，按已消耗处理。
+        # 这与「宁可少发，不可重发」一致——一次含糊的失败宁可少说一条。
+        self.budget.mark_sending(reservation)
         try:
             result = await self.plugin.proactive_message_service.send_private_message(
                 target=admin,
                 message=self.build_prompt(item),
             )
         except Exception as exc:  # noqa: BLE001
-            self._warn(f"[Initiative] 发送异常，留着下次再试: {exc}")
+            self.budget.commit(reservation)
+            self._save()
+            self._warn(f"[Initiative] 发送异常，额度按已消耗处理: {exc}")
             return
         if isinstance(result, Ok):
             self._items.pop(admin, None)
-            self._last_sent_at = now
-            self._bump_today(now)
+            self.budget.commit(reservation)
             self._save()
             self._log("INFO", "[Initiative] 已开口并结清这条由头")
             return
@@ -366,12 +385,13 @@ class QQProactiveInitiativeService:
                 else None
             ),
             "blocked_reason": self.blocked_reason(now),
-            "sent_today": self._count_today(now),
+            "sent_today": self.budget.sent_today(now),
             "max_per_day": self.max_per_day(),
             "min_gap_seconds": self.min_gap_seconds(),
             "quiet_start_hour": start,
             "quiet_end_hour": end,
-            "last_sent_at": self._last_sent_at,
+            "last_sent_at": self.budget.last_sent_at(),
+            "budget": self.budget.snapshot(now),
             "now": now,
         }
 
@@ -394,16 +414,13 @@ class QQProactiveInitiativeService:
             self._items = {
                 str(k): dict(v) for k, v in items.items() if isinstance(v, dict) and v.get("quote")
             }
-        self._today = str(data.get("today") or "")
+        # 共享账本（两个来源合计）跟着这份存档走：键名沿用 today/today_count/last_sent_at。
+        self.budget.restore(data)
         try:
-            self._today_count = max(0, int(data.get("today_count") or 0))
-            self._last_sent_at = float(data.get("last_sent_at") or 0.0)
             # 「他最近一次说话」也要落盘：否则停机/重启会把它清成 0，于是"刚跟她说过话"
             # 这条宽限失效 —— 重启后第一轮就可能把一条旧由头抖出来。
             self._last_admin_activity_at = float(data.get("last_admin_activity_at") or 0.0)
         except (TypeError, ValueError):
-            self._today_count = 0
-            self._last_sent_at = 0.0
             self._last_admin_activity_at = 0.0
 
     def _save(self) -> None:
@@ -413,9 +430,8 @@ class QQProactiveInitiativeService:
                 json.dumps(
                     {
                         "items": self._items,
-                        "today": self._today,
-                        "today_count": self._today_count,
-                        "last_sent_at": self._last_sent_at,
+                        # 共享账本：today / today_count / last_sent_at（两来源合计）
+                        **self.budget.to_payload(),
                         "last_admin_activity_at": self._last_admin_activity_at,
                     },
                     ensure_ascii=False,
@@ -426,12 +442,6 @@ class QQProactiveInitiativeService:
         except Exception as exc:  # noqa: BLE001 - 落盘失败不该掀翻回复链路
             self._warn(f"[Initiative] 状态写盘失败: {exc}")
 
-    def _bump_today(self, now: float) -> None:
-        today = datetime.fromtimestamp(now).strftime("%Y-%m-%d")
-        if today != self._today:
-            self._today = today
-            self._today_count = 0
-        self._today_count += 1
 
     def _drop(self, reason: str) -> None:
         admin = self._admin()

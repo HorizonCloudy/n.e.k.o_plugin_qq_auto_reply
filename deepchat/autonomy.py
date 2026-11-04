@@ -65,40 +65,87 @@ class AutonomyScheduler:
 
     @property
     def enabled(self) -> bool:
-        """3A 硬闸：共享预算账本（3B）未落地前，自主联系整体停用。
+        """三重 AND：总开关 **且** 自主联系 **且** 既有「有由头主动搭话」开关。
 
-        只靠 ``RETIRED_TUNING_KEYS`` 是不够的——它只拦 ``dc_tune``，而旧配置/
-        存量存档里 ``deepchat_autonomy_enabled`` 仍可能是 true；那样就会绕过
-        「有由头搭话」的日限（3B 之前两边各记各的账，等于可超发）。
+        三者都会让「她」主动开口：只开一个就等于绕过使用者的另一个刹车；
+        外层 AND 上 ``deepchat_enabled`` 是因为总开关关闭时不得有任何 DeepChat 行为。
 
-        **3B 落地时删除本 ``return False``**，恢复为三重 AND 并把
-        ``deepchat_autonomy_enabled`` 从 ``RETIRED_TUNING_KEYS`` 移除：
-            return (
-                self.service.enabled
-                and bool(self._setting("deepchat_autonomy_enabled", False))
-                and bool(self._setting("proactive_initiative_enabled", False))
-            )
+        真正的**额度**不在这里判——那是 ``ProactiveBudget``（唯一计数源）的事：
+        本属性只回答「功能是否启用」，``should_reach_out`` 再问账本「今天还能不能发」。
         """
-        return False
+        return (
+            self.service.enabled
+            and bool(self._setting("deepchat_autonomy_enabled", False))
+            and bool(self._setting("proactive_initiative_enabled", False))
+        )
 
     @staticmethod
     def _day_key(now: float) -> str:
         return datetime.fromtimestamp(now).strftime("%Y-%m-%d")
 
-    def _daily_quota_exhausted(self, now: float) -> bool:
-        """「有由头主动搭话」的日限还剩 0 次时，深聊自主联系也不再开口。
+    def _has_shared_budget(self) -> bool:
+        """宿主是否提供共享账本读取接口（proactive 服务的 remaining_today）。"""
+        initiative = getattr(self.service.plugin, "proactive_initiative_service", None)
+        return callable(getattr(initiative, "remaining_today", None))
 
-        两个功能都是"她主动私聊"，共用 ``proactive_initiative_max_per_day`` 这一个
-        日限——否则两套账本各记各的，用户设的 2 次会变成实际 4 次。
-        账本仍在既有服务里（这里只读），完整共享账本留 follow-up。
+    def _shared_budget_allows(self, now: float) -> bool:
+        """共享账本是否还允许开口：**日限**与**全局最小间隔**两个来源合一。
+
+        两个功能都是「她主动私聊」，各自记一笔会让 ``max_per_day=2`` 实际变成 4 条。
+        账本由 ``ProactiveBudget`` 持有（proactive 服务一侧），这里只读：
+        - ``remaining_today()``：两个来源合计还剩几次；
+        - ``last_sent_at()``：两个来源里最后一次真发出去的时刻（间隔也要共享，
+          否则「原服务刚发完、她立刻再发」就绕过了最小间隔）。
+
+        读不到就 **fail-open**：账本故障不该让功能彻底静默（少发可以，永久不发不行）。
         """
         initiative = getattr(self.service.plugin, "proactive_initiative_service", None)
         if initiative is None:
-            return False
+            return True
         try:
-            return int(initiative.remaining_today(now=now)) <= 0
-        except Exception:  # noqa: BLE001 —— 读不到日限时 fail-open，不因此彻底静默
-            return False
+            if int(initiative.remaining_today(now=now)) <= 0:
+                return False
+            read_last = getattr(initiative, "last_sent_at", None)
+            if callable(read_last):
+                last_sent_at = float(read_last() or 0.0)
+                gap = self._float_setting("proactive_initiative_min_gap_seconds", 10800.0)
+                if last_sent_at and now - last_sent_at < gap:
+                    return False
+        except Exception:  # noqa: BLE001
+            return True
+        return True
+
+    def _record_shared_send(self, now: float) -> None:
+        """把「她真的发出去了」记进共享账本（source=``deepchat``）。
+
+        优先 ``record_send``（本仓库 proactive 服务的正式入口），其次 ``record``；
+        两者都没有时退回 ``mark_reached_out`` —— 那条只记「有由头」一侧，额度仍会扣，
+        但来源标签会错，所以只在轻量宿主/旧版服务上兜底。
+        """
+        initiative = getattr(self.service.plugin, "proactive_initiative_service", None)
+        if initiative is None:
+            return
+        for name in ("record_send", "record"):
+            writer = getattr(initiative, name, None)
+            if not callable(writer):
+                continue
+            try:
+                writer("deepchat", now)
+                return
+            except TypeError:
+                try:
+                    writer("deepchat", now=now)
+                    return
+                except Exception:  # noqa: BLE001
+                    continue
+            except Exception:  # noqa: BLE001 —— 记账失败不阻断发送
+                continue
+        fallback = getattr(initiative, "mark_reached_out", None)
+        if callable(fallback):
+            try:
+                fallback(now=now)
+            except Exception:  # noqa: BLE001
+                pass
 
     def _within_quiet_hours(self, now: float) -> bool:
         start = self._int_setting("proactive_initiative_quiet_start_hour", 23) % 24
@@ -159,6 +206,8 @@ class AutonomyScheduler:
                 """,
                 (user_id, now, today),
             )
+        # 共享账本：这一笔对「有由头搭话」同样生效（额度 + 全局间隔）。
+        self._record_shared_send(now)
 
     # ── decision ────────────────────────────────────────────────────
 
@@ -166,7 +215,7 @@ class AutonomyScheduler:
         if not self.enabled:
             return None
         now = time.time() if now is None else float(now)
-        if self._daily_quota_exhausted(now):
+        if not self._shared_budget_allows(now):
             return None
         if self._within_quiet_hours(now):
             return None
@@ -187,13 +236,17 @@ class AutonomyScheduler:
             "proactive_initiative_min_gap_seconds", 10800.0,
         ):
             return None
-        count_today = (
-            int(row["count_today"])
-            if str(row["day_key"]) == self._day_key(now)
-            else 0
-        )
-        if count_today >= self._int_setting("proactive_initiative_max_per_day", 2):
-            return None
+        # 日限优先由共享账本判（上面 `_shared_budget_allows`）。但轻量宿主/测试替身
+        # 可能压根没有 proactive 服务：那种情况下退回本地日限，否则日限会彻底失效
+        # ——「账本唯一」的前提是有账本，没有账本时本地兜底比不设防好。
+        if not self._has_shared_budget():
+            local_count = (
+                int(row["count_today"])
+                if str(row["day_key"]) == self._day_key(now)
+                else 0
+            )
+            if local_count >= self._int_setting("proactive_initiative_max_per_day", 2):
+                return None
         mood = self.service.mood.get(self.service._mood_key(user_id), now=now)
         return AutonomyCandidate(
             user_id=user_id,
