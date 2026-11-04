@@ -211,14 +211,12 @@ class DeepChatService:
 
     @property
     def generation_mode(self) -> str:
-        """**实际生效**的生成模式；主开关关闭时一律回落 ``host``。
+        """**配置值**：``deepchat_generation_mode`` 归一化后的取值（host/direct）。
 
-        注意这是「生效值」而不是「配置值」：``deepchat_enabled=false`` 时即使配置写着
-        ``direct``，路由也必须走宿主会话（否则会绕过宿主），所以这里如实返回 ``host``。
-        **不写回配置** —— 重新打开主开关后仍按配置里的模式跑。
+        这个属性只回答「配置里写的是什么」，**不反映总开关**——主开关关闭时它仍可能是
+        ``direct``（``dc_view_state`` 需要如实展示配置）。判断「是否真的在走 direct」
+        请用 :attr:`direct_mode_active`，路由处也只认它。
         """
-        if not self.enabled:
-            return "host"
         mode = str(self._setting("deepchat_generation_mode", "host") or "").strip().lower()
         return mode if mode in {"host", "direct"} else "host"
 

@@ -65,17 +65,21 @@ class AutonomyScheduler:
 
     @property
     def enabled(self) -> bool:
-        """三重 AND：总开关 **且** 自主联系 **且** 既有「有由头主动搭话」开关。
+        """3A 硬闸：共享预算账本（3B）未落地前，自主联系整体停用。
 
-        前两者都会让「她」主动开口，只开一个就等于绕过使用者的另一个刹车；
-        外层再 AND 上 ``deepchat_enabled`` —— 总开关关闭时不得有任何 DeepChat 行为
-        （不只是不注入提示词，也不该主动发消息）。
+        只靠 ``RETIRED_TUNING_KEYS`` 是不够的——它只拦 ``dc_tune``，而旧配置/
+        存量存档里 ``deepchat_autonomy_enabled`` 仍可能是 true；那样就会绕过
+        「有由头搭话」的日限（3B 之前两边各记各的账，等于可超发）。
+
+        **3B 落地时删除本 ``return False``**，恢复为三重 AND 并把
+        ``deepchat_autonomy_enabled`` 从 ``RETIRED_TUNING_KEYS`` 移除：
+            return (
+                self.service.enabled
+                and bool(self._setting("deepchat_autonomy_enabled", False))
+                and bool(self._setting("proactive_initiative_enabled", False))
+            )
         """
-        return (
-            self.service.enabled
-            and bool(self._setting("deepchat_autonomy_enabled", False))
-            and bool(self._setting("proactive_initiative_enabled", False))
-        )
+        return False
 
     @staticmethod
     def _day_key(now: float) -> str:
