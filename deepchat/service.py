@@ -116,19 +116,15 @@ TUNING_KEYS: dict[str, Any] = {
 #: 键仍在 ``TUNING_KEYS`` 里（Phase 1 可能恢复），但当前**调了也不会生效**，
 #: 所以 ``tune`` 会显式抛错、``dc_tune`` 的说明也不再广告它们。
 #: 留着能调但静默无效的键，比拒绝更糟：调用方会以为设置成功了。
-#: 3A：自主联系尚未接入共享预算账本，此时允许开启会绕过「有由头搭话」的日限，
-#: 所以在 3B 落地前把开关停用（3B 的同一提交里从这里移除）。
+#: 3B 已落地（共享预算账本 ``ProactiveBudget`` 是两来源唯一计数源），
+#: 所以 ``deepchat_autonomy_enabled`` 已从停用集合移出、可以正常 tune；
+#: 留下的这个键是 Phase 0 停写的里程碑开关（见下）。
 RETIRED_TUNING_KEYS: frozenset[str] = frozenset({
     "deepchat_reflection_enabled",
-    "deepchat_autonomy_enabled",
 })
 
 #: 停用键的拒绝文案。要写成"可行动"的：为什么停 + 什么时候回来 + 现在别调。
 RETIRED_TUNING_REASON: dict[str, str] = {
-    "deepchat_autonomy_enabled": (
-        "该参数暂不可用：自主联系尚未接入共享预算账本（3B），此时开启会绕过"
-        "有由头搭话的日限；3B 落地后解除。当前调用不会生效。"
-    ),
     "deepchat_reflection_enabled": (
         "该参数已停用：里程碑已停止写入用户原话（Phase 0 隐私修复），"
         "后续改由宿主 participant 记忆承载后恢复；当前调用不会生效。"
