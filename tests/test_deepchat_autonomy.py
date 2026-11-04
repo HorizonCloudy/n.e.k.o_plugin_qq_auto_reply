@@ -197,6 +197,9 @@ class SharedBudgetTests(_AutonomyFixture):
         self.ledger = FakeSharedBudget(2)
         self.plugin.proactive_initiative_service = SimpleNamespace(
             remaining_today=self.ledger.remaining_today,
+            # 3B 起 autonomy 记账优先走 record_send(source, now)；
+            # 只映射 mark_reached_out 会被记成 "proactive"，断言 source=="deepchat" 永不成立。
+            record_send=self.ledger.record,
             mark_reached_out=lambda *a, **k: self.ledger.record("proactive", self.now),
             last_sent_at=self.ledger.last_sent_at,
         )
@@ -267,34 +270,6 @@ class MasterSwitchTests(_AutonomyFixture):
         )
         self._seed()
         self.assertIsNone(self.service.autonomy.should_reach_out("u1", now=self.now))
-
-    def test_autonomy_is_hard_gated_until_shared_budget_lands(self) -> None:
-        """3A 期硬闸：即便两个子开关都为 true，自主联系也不得开口。
-
-        `deepchat_autonomy_enabled` 已被放进 `RETIRED_TUNING_KEYS`（tune 拒调），
-        但**旧配置/存量存档里仍可能是 true**。3B 的共享账本落地前，开了它就等于
-        绕过「有由头搭话」的日限（两套账本各记各的），所以这里必须硬闸关闭 ——
-        只靠 RETIRED 拦 tune 是不够的。
-        """
-        self.plugin._qq_settings["deepchat_autonomy_enabled"] = True
-        self.plugin._qq_settings["proactive_initiative_enabled"] = True
-        self.assertTrue(self.service.enabled, "前置：主开关是开的")
-
-        self.assertFalse(
-            self.service.autonomy.enabled,
-            "3A 期自主联系必须硬闸关闭（共享预算未落地），否则可绕过日限",
-        )
-        self._seed()
-        self.assertIsNone(
-            self.service.autonomy.should_reach_out("u1", now=self.now),
-            "硬闸关闭时不得产出候选",
-        )
-        self.assertEqual(
-            self.service.autonomy.tick(now=self.now, limit=3),
-            [],
-            "硬闸关闭时 tick 必须返回空列表",
-        )
-
 
 if __name__ == "__main__":
     unittest.main()
