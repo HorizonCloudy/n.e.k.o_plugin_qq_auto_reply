@@ -179,7 +179,6 @@ class FakeSharedBudget:
         return self.sent[-1][1] if self.sent else 0.0
 
 
-@unittest.skip("3A hard gate: shared budget lands in 3B")
 class SharedBudgetTests(_AutonomyFixture):
     """P2-①：proactive_initiative 与 deepchat autonomy 必须共用一本账。"""
 
@@ -193,6 +192,7 @@ class SharedBudgetTests(_AutonomyFixture):
             last_sent_at=self.ledger.last_sent_at,
         )
 
+    @unittest.skip("3A hard gate: shared budget lands in 3B（3B: remove this skip）")
     def test_deepchat_send_decrements_shared_budget(self) -> None:
         self._seed()
         self.ledger.record("proactive", self.now - 2 * 3600)  # 今天已由原服务发出 1
@@ -207,6 +207,7 @@ class SharedBudgetTests(_AutonomyFixture):
             f"DeepChat 的发送没有记进共享账本（账本：{self.ledger.sent}）",
         )
 
+    @unittest.skip("3A hard gate: shared budget lands in 3B（3B: remove this skip）")
     def test_interleaved_sends_never_exceed_max_per_day(self) -> None:
         self._seed()
         self.ledger.record("proactive", self.now - 2 * 3600)
@@ -222,6 +223,7 @@ class SharedBudgetTests(_AutonomyFixture):
             "额度已满时 DeepChat 不得再开口",
         )
 
+    @unittest.skip("3A hard gate: shared budget lands in 3B（3B: remove this skip）")
     def test_min_gap_is_shared_across_both_sources(self) -> None:
         self._seed()
         self.ledger.record("proactive", self.now - 60)  # 60s 前原服务刚发过（gap=3600）
