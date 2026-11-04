@@ -1173,7 +1173,11 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     @plugin_entry(
         id="dc_reset_user",
         name=tr("entries.dc_reset_user.name", default="深度聊天：重置用户状态"),
-        description="清空某个 QQ 用户的情绪与关系记录。",
+        description=(
+            "清空某个 QQ 用户的**本地**情绪/关系/自主/表达学习记录。"
+            "只动插件自己的 deepchat.sqlite3，不碰宿主记忆；"
+            "要连宿主 participant 记忆一起清请用 dc_forget_user。"
+        ),
         input_schema={"type": "object", "properties": {
             "user_id": {"type": "string", "description": "QQ 号"},
         }, "required": ["user_id"], "additionalProperties": False},
@@ -1182,6 +1186,118 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         if not str(user_id or "").strip():
             return Err(SdkError("INVALID_INPUT: user_id 不能为空"))
         return Ok(self.deepchat_service.reset_user(user_id))
+
+    #: 遗忘覆盖不到的部分。写进描述与返回体：宁可说清边界，也不给人"已经清干净"的错觉。
+    FORGET_NOT_COVERED: tuple[str, ...] = ("group_participant",)
+
+    @plugin_entry(
+        id="dc_forget_user",
+        name=tr("entries.dc_forget_user.name", default="深度聊天：遗忘用户（本地 + 宿主记忆）"),
+        description=(
+            "完整遗忘某个 QQ 用户：清本地情绪/关系/自主/表达学习，并清宿主的 "
+            "participant 记忆（私聊个人域）。"
+            "\n\n**覆盖边界**：只覆盖私聊 participant 域；群里的 group_participant 记忆"
+            "按群分桶，本次**不清** —— 返回体同样给出 not_covered: [\"group_participant\"]。"
+            "\n**身份元数据**：trust/profile 由宿主账本维护，本插件没有擦除端点，"
+            "故 identity_meta.supported=false（不计入 partial）。"
+            "\n**与 dc_reset_user 的差别**：dc_reset_user 只清本地 sqlite、不碰宿主记忆。"
+        ),
+        input_schema={"type": "object", "properties": {
+            "user_id": {"type": "string", "description": "QQ 号"},
+        }, "required": ["user_id"], "additionalProperties": False},
+    )
+    async def dc_forget_user(self, user_id: str = "", **kw):
+        sender_id = str(user_id or "").strip()
+        if not sender_id:
+            return Err(SdkError("INVALID_INPUT: user_id 不能为空"))
+        return Ok(await self._forget_user(sender_id))
+
+    def _private_memory_mode_of(self, user_id: str) -> str:
+        """该用户私聊记忆模式（`legacy` / `participant` / 空串=没有会话记录）。"""
+        user_data = (getattr(self, "_user_sessions", {}) or {}).get(f"private:{user_id}")
+        if isinstance(user_data, dict):
+            return str(user_data.get("private_memory_mode") or "")
+        return ""
+
+    async def _forget_user(self, user_id: str) -> dict[str, Any]:
+        """遗忘一个用户：本地 sqlite 与宿主 participant 记忆两条腿分别记账。
+
+        - **本地腿**必须成功；失败即 `partial=True`（不许声称清过）。
+        - **宿主腿**只在 `participant` 模式下有意义：legacy admin 的私聊记忆在宿主的
+          "私聊主人语料"里，participant 域本来就没有他那一行 —— 这里 **fail-closed**：
+          不猜、不清、明确写进 `subjects_skipped` 与 `warnings`。
+        - `subjects` 永远是显式 subject 字典，**不传 None**（None 在 bridge 里等于
+          "legacy 私聊语料"这个逃生门，遗忘路径绝不能碰）。
+        - `identity_meta` 只是能力声明，**不参与** `partial` 判定。
+        """
+        masked = (user_id[:3] + "***") if len(user_id) > 3 else "***"
+        warnings: list[str] = []
+        partial = False
+
+        # ── 腿 1：本地 sqlite ──
+        try:
+            local: dict[str, Any] = self.deepchat_service.reset_user(user_id)
+        except Exception as exc:  # noqa: BLE001 —— 一条腿失败不该让整次遗忘崩掉
+            self._emit_log("ERROR", f"[Forget] 本地状态清除失败 {masked}: {type(exc).__name__}")
+            local = {"error": type(exc).__name__}
+            warnings.append("local_failed")
+            partial = True
+
+        # ── 腿 2：宿主 participant 记忆 ──
+        subjects_forgotten: list[str] = []
+        subjects_skipped: list[str] = []
+        detail: Any = None
+        bridge = getattr(self, "memory_bridge", None)
+        mode = self._private_memory_mode_of(user_id)
+
+        if mode and mode != "participant":
+            subjects_skipped.append("participant")
+            warnings.append("legacy_memory_mode")
+            partial = True
+            self._emit_log(
+                "WARNING",
+                f"[Forget] {masked} 处于 legacy 私聊记忆模式：participant 域无数据，"
+                "宿主侧未做任何清除（fail-closed）",
+            )
+        elif bridge is None:
+            subjects_skipped.append("participant")
+            warnings.append("memory_bridge_unavailable")
+            partial = True
+            self._emit_log("WARNING", f"[Forget] 没有 memory_bridge：{masked} 的宿主记忆未清除")
+        else:
+            try:
+                from utils.config_manager import get_config_manager
+
+                _, her_name, *_ = get_config_manager().get_character_data()
+            except Exception:  # noqa: BLE001 —— 独立运行/测试环境没有宿主配置
+                her_name = str(getattr(self, "_her_name", "") or "neko")
+            try:
+                detail = await bridge.post_scoped_forget(
+                    her_name,
+                    subject=bridge.participant_subject(user_id),
+                )
+                subjects_forgotten.append("participant")
+                self._emit_log("INFO", f"[Forget] {masked} 的 participant 记忆已清除")
+            except Exception as exc:  # noqa: BLE001
+                subjects_skipped.append("participant")
+                warnings.append("participant_forget_failed")
+                partial = True
+                self._emit_log(
+                    "ERROR", f"[Forget] {masked} 的 participant 记忆清除失败: {type(exc).__name__}"
+                )
+
+        return {
+            "user_id": user_id,
+            "local": local,
+            "subjects_forgotten": subjects_forgotten,
+            "subjects_skipped": subjects_skipped,
+            "not_covered": list(self.FORGET_NOT_COVERED),
+            # 能力声明，不是清除结果：不参与 partial。
+            "identity_meta": {"supported": False, "reason": "no_endpoint"},
+            "partial": partial,
+            "warnings": warnings,
+            "detail": detail,
+        }
 
     @plugin_entry(
         id="dc_set_mood",
