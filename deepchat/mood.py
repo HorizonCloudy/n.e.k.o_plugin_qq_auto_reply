@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 import time
 
-from .models import Mood, MoodState
+from .models import Mood, MoodState, coerce_mood
 from .store import DeepChatStore
 
 #: Keyword signals mapped to a (valence, arousal) delta. This is a cheap
@@ -95,7 +95,7 @@ class MoodStateMachine:
         state = MoodState(
             valence=float(row["valence"]),
             arousal=float(row["arousal"]),
-            current=Mood(str(row["current"])),
+            current=coerce_mood(row["current"]),
             updated_at=float(row["updated_at"]),
         )
         decayed = self._decay(state, now)
@@ -116,7 +116,7 @@ class MoodStateMachine:
 
     def set_mood(self, user_key: str, mood: Mood | str, *, now: float | None = None) -> MoodState:
         now = time.time() if now is None else float(now)
-        target = mood if isinstance(mood, Mood) else Mood(str(mood))
+        target = mood if isinstance(mood, Mood) else coerce_mood(mood)
         valence, arousal = MOOD_ANCHORS[target]
         state = MoodState(valence=valence, arousal=arousal, current=target, updated_at=now)
         self._save(user_key, state)
@@ -136,7 +136,7 @@ class MoodStateMachine:
             state = MoodState(
                 valence=float(row["valence"]),
                 arousal=float(row["arousal"]),
-                current=Mood(str(row["current"])),
+                current=coerce_mood(row["current"]),
                 updated_at=float(row["updated_at"]),
             )
             decayed = self._decay(state, now)

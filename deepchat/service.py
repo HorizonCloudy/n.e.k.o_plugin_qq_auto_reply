@@ -11,7 +11,7 @@ from .autonomy import AutonomyScheduler
 from .expression import ExpressionStore, extract_expressions
 from .fragments import append_fragments
 from .guard import is_safe_text, sanitize_text
-from .models import Mood
+from .models import LEGACY_MOOD_ALIASES, Mood, coerce_mood
 from .mood import MoodStateMachine
 from .relationship import RelationshipGraph
 from .store import DeepChatStore
@@ -572,11 +572,12 @@ class DeepChatService:
 
     def set_mood(self, user_id: str, mood: str) -> dict[str, Any]:
         sender_id = str(user_id or "").strip()
-        try:
-            target = Mood(str(mood or "").strip())
-        except ValueError:
+        raw = str(mood or "").strip()
+        if raw not in {item.value for item in Mood} and raw not in LEGACY_MOOD_ALIASES:
             valid = ", ".join(item.value for item in Mood)
-            raise ValueError(f"未知情绪 {mood!r}；可选：{valid}") from None
+            raise ValueError(f"未知情绪 {mood!r}；可选：{valid}")
+        # 历史值（neutral）在这里被归一化到 calm，而不是报错。
+        target = coerce_mood(raw)
         state = self.mood.set_mood(self._mood_key(sender_id), target)
         return {
             "user_id": sender_id,

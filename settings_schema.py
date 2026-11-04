@@ -83,7 +83,9 @@ class SettingSpec:
 DEFAULT_EMOTION_MULTIPLIERS: dict[str, float] = {
     "arguing": 1.2,      # 上头死磕，涨得快跌得慢
     "proud": 0.8,        # 赢了要炫耀，猛拉注意力
+    "excited": 0.6,      # 兴奋：比"不爽"更往外冲，但没到炫耀
     "annoyed": 0.5,      # 不爽，比正常更专注
+    "happy": 0.4,        # 开心：比玩闹更稳，比不爽更轻
     "playful": 0.3,      # 玩闹中，微微挂住
     "curious": 0.2,      # 被勾起兴趣
     "calm": 0.0,         # 正常

@@ -1188,12 +1188,13 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         name=tr("entries.dc_set_mood.name", default="深度聊天：设置情绪"),
         description=(
             "手动覆盖某个 QQ 用户的情绪状态（调试用）。mood 取 "
-            "neutral/happy/excited/sulking/embarrassed/bored/annoyed。"
+            "calm/happy/excited/sulking/embarrassed/bored/annoyed"
+            "（历史值 neutral 视同 calm）。"
         ),
         input_schema={"type": "object", "properties": {
             "user_id": {"type": "string", "description": "QQ 号"},
             "mood": {"type": "string", "enum": [
-                "neutral", "happy", "excited", "sulking",
+                "calm", "happy", "excited", "sulking",
                 "embarrassed", "bored", "annoyed",
             ]},
         }, "required": ["user_id", "mood"], "additionalProperties": False},

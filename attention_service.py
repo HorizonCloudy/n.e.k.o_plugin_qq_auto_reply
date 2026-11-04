@@ -25,7 +25,9 @@ from .feedback_classifier import QQFeedbackClassifier
 _EMOTION_MULTIPLIER: dict[str, float] = {
     "arguing": 1.2,      # 上头死磕，涨得快跌得慢
     "proud": 0.8,        # 赢了要炫耀，猛拉注意力
+    "excited": 0.6,      # 兴奋：比"不爽"更往外冲，但没到炫耀
     "annoyed": 0.5,      # 不爽，比正常更专注
+    "happy": 0.4,        # 开心：比玩闹更稳，比不爽更轻
     "playful": 0.3,      # 玩闹中，微微挂住
     "curious": 0.2,      # 被勾起兴趣
     "calm": 0.0,         # 正常
@@ -46,7 +48,8 @@ _EMOTION_DROP_FOCUS = {"sulking", "embarrassed", "bored"}  # 立刻让出焦点
 # 情绪降温阶梯：30 秒无新情绪就朝 calm 方向走一级。顺序 = 倍率从高到低，
 # 于是「上升侧 = calm 之前」「回落侧 = calm 之后」与倍率符号自动一致。
 _EMOTION_DECAY_ORDER = [
-    "arguing", "proud", "annoyed", "playful", "curious",
+    "arguing", "proud", "excited", "annoyed", "happy",
+    "playful", "curious",
     "calm",
     "sad", "embarrassed", "bored", "sulking",
 ]

@@ -6,7 +6,7 @@ from enum import Enum
 
 
 class Mood(str, Enum):
-    NEUTRAL = "neutral"
+    NEUTRAL = "calm"
     HAPPY = "happy"
     EXCITED = "excited"
     SULKING = "sulking"
@@ -15,6 +15,24 @@ class Mood(str, Enum):
     ANNOYED = "annoyed"
 
 
+
+#: 历史取值 → 现取值。3D 统一词表时 ``neutral`` 并入 ``calm``（attention 侧唯一的
+#: 零点），但旧 SQLite 行与旧配置里仍可能存着 ``neutral``。
+LEGACY_MOOD_ALIASES: dict[str, str] = {"neutral": Mood.NEUTRAL.value}
+
+
+def coerce_mood(value: object) -> Mood:
+    """把（可能是历史取值的）值转成 :class:`Mood`；未知值退回 ``NEUTRAL``。
+
+    为什么不用 ``Mood(value)``：存量库里写着 ``neutral`` 的行会让它抛 ValueError，
+    而情绪是「读不到就按默认」的软状态——宁可归一化，也不要让一次读取炸掉回复链路。
+    """
+    text = str(value or "").strip()
+    text = LEGACY_MOOD_ALIASES.get(text, text)
+    try:
+        return Mood(text)
+    except ValueError:
+        return Mood.NEUTRAL
 @dataclass(slots=True)
 class MoodState:
     valence: float = 0.0
