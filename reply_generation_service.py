@@ -8,6 +8,7 @@ from main_logic.tool_calling import ToolResult
 from utils.llm_client import AIMessage, SystemMessage, create_chat_llm_async
 from utils.token_tracker import set_call_type
 
+from .gallery_service import AVATAR_TOOL_NAME, BROWSE_TOOL_NAME
 from .memory_tool_service import RECALL_TOOL_HTTP_TIMEOUT_SECONDS, RECALL_TOOL_NAME
 from .pipeline_models import (
     QQModelResult,
@@ -575,7 +576,23 @@ class QQReplyGenerationService:
                 self.plugin.logger.warning("插件工具桥构建失败（本轮不挂插件工具）", exc_info=True)
                 mounted, bridge_tools = [], []
 
-        if not bridge_tools:
+        # 图库两条工具跟 recall / 插件工具是三条独立线：不管有没有插件工具，
+        # 只要图库在，她就该能翻自己的图。所以先构造，再决定走哪条路。
+        gallery_tools: list[Any] = []
+        gallery_handlers: dict[str, Any] = {}
+        gallery = getattr(self.plugin, "gallery_service", None)
+        if gallery is not None:
+            try:
+                gallery_handlers = self._build_gallery_handlers(gallery, context)
+                gallery_tools = [
+                    gallery.build_browse_definition(),
+                    gallery.build_avatar_definition(),
+                ]
+            except Exception as exc:
+                self.plugin.logger.warning(f"图库工具构建失败（这轮没有图库）: {exc}")
+                gallery_tools, gallery_handlers = [], {}
+
+        if not bridge_tools and not gallery_tools:
             armed = self._arm_recall_tool(
                 context=context,
                 user_session=user_session,
@@ -600,16 +617,31 @@ class QQReplyGenerationService:
                 context=context, consent_before=consent_before,
             )
         definitions.extend(bridge_tools)
-        bridge_handler = bridge.build_handler(
-            mounted,
-            session_key=session_key,
-            conversation=self._bridge_conversation(context),
-        )
+        if gallery_tools:
+            definitions.extend(gallery_tools)
+        bridge_handler = None
+        if bridge_tools and bridge is not None:
+            bridge_handler = bridge.build_handler(
+                mounted,
+                session_key=session_key,
+                conversation=self._bridge_conversation(context),
+            )
 
         async def _dispatch(tool_call: Any) -> Any:
             name = str(getattr(tool_call, "name", "") or "")
             if recall_handler is not None and name == RECALL_TOOL_NAME:
                 return await recall_handler(tool_call)
+            gallery_handler = gallery_handlers.get(name)
+            if gallery_handler is not None:
+                return await gallery_handler(tool_call)
+            if bridge_handler is None:
+                # 只挂了图库、没挂插件工具时不该叫到别的名字。真叫了也别抛，
+                # 回个空结果让她接着说——抛出去整轮就没了。
+                return ToolResult(
+                    call_id=getattr(tool_call, "call_id", "") or "",
+                    name=name,
+                    output="没有这个工具。",
+                )
             audit = user_session._qq_tool_audit
             audit["started"] += 1
             audit["names"].append(name)
@@ -638,6 +670,7 @@ class QQReplyGenerationService:
         emit_bridge_log(self.plugin, 
             "INFO",
             f"[PluginTool] 本轮挂载 {len(bridge_tools)} 个插件工具"
+            f" + {len(gallery_tools)} 个内置工具"
             f"（权限 {getattr(context, 'permission_level', '') or 'unknown'}）: "
             + "、".join(row["plugin_id"] for row, _tier in mounted),
         )
@@ -751,6 +784,81 @@ class QQReplyGenerationService:
                     # 单个槽位拒绝复位也不能阻止另一槽位继续清理。
                     pass
             return False
+
+    def _build_gallery_handlers(self, gallery: Any, context: Any) -> dict[str, Any]:
+        """图库两个工具的闭包：``browse_gallery`` / ``set_avatar``。
+
+        两个工具是**两步走**（先看有什么，再挑一个换上），所以这一轮必须给够
+        工具轮数——`max_tool_iterations` 是 1 的时候，她只能翻到一半，
+        然后把 ``set_avatar`` 当成普通文字吐出来（实测就是这样：她自己编了
+        一个 index 参数，头像当然没换）。
+        """
+
+        async def _handle_browse(tool_call: Any) -> ToolResult:
+            arguments = getattr(tool_call, "arguments", None) or {}
+            query = str(arguments.get("query") or "").strip()
+            try:
+                limit = int(arguments.get("limit") or 8)
+            except (TypeError, ValueError):
+                limit = 8
+            limit = max(1, min(limit, 20))
+            try:
+                items = await asyncio.to_thread(
+                    gallery.list_items, query=query, limit=limit
+                )
+            except Exception:
+                self.plugin.logger.warning("浏览图库失败", exc_info=True)
+                items = []
+            if not items:
+                output = (
+                    "图库里没有符合条件的图。" if query
+                    else "图库还是空的：她还没收过图，也没人往里放过。"
+                )
+            else:
+                lines = [
+                    f"{item.get('id')}　{item.get('desc') or '（这张还没描述）'}"
+                    for item in items
+                ]
+                output = "图库里有这些（编号 描述）：\n" + "\n".join(lines)
+            return ToolResult(
+                call_id=getattr(tool_call, "call_id", "") or "",
+                name=getattr(tool_call, "name", "") or BROWSE_TOOL_NAME,
+                output=output,
+            )
+
+        async def _handle_avatar(tool_call: Any) -> ToolResult:
+            arguments = getattr(tool_call, "arguments", None) or {}
+            key = str(arguments.get("id") or "").strip()
+            if not key:
+                output = "没给编号。先用 browse_gallery 看一眼有哪些图。"
+            else:
+                try:
+                    result = await gallery.set_avatar(key)
+                except Exception:
+                    self.plugin.logger.warning("换头像失败", exc_info=True)
+                    result = {"ok": False, "reason": "调用出错了"}
+                if not result.get("ok"):
+                    output = (
+                        "没换成："
+                        + str(result.get("reason") or result.get("message") or "原因不明")
+                    )
+                else:
+                    verified = result.get("verified")
+                    if verified is True:
+                        tail = "，已经确认换上了"
+                    elif verified is False:
+                        # 回执成功但反查没变：说清楚，别让她以为换成了还去邀功
+                        tail = "，但重新拉头像看还是原来那张，可能过一会儿才生效"
+                    else:
+                        tail = "（回执成功，但这会儿查不到头像，没法确认）"
+                    output = f"头像换成 {result.get('id')} 了{tail}"
+            return ToolResult(
+                call_id=getattr(tool_call, "call_id", "") or "",
+                name=getattr(tool_call, "name", "") or AVATAR_TOOL_NAME,
+                output=output,
+            )
+
+        return {BROWSE_TOOL_NAME: _handle_browse, AVATAR_TOOL_NAME: _handle_avatar}
 
     def _build_recall_tool_handler(
         self, *, context: Any, consent_before: dict,

@@ -63,6 +63,7 @@ from .deploy_service import QQDeployService
 from .display_name_service import QQDisplayNameService
 from .enrichment import QQMessageEnricher
 from .feedback_classifier import QQFeedbackClassifier as QQFeedbackClassifier
+from .gallery_service import QQGalleryService
 from .group_permission import DEFAULT_GROUP_LEVEL, GroupPermissionManager
 from .handler_runtime_service import QQHandlerRuntimeService
 from .memory_bridge import QQMemoryBridge
@@ -191,6 +192,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         )
         self.deploy_service = QQDeployService(self)
         self.backlog_service = QQBacklogService(self)
+        # 图库：她见过的图（含拿来当头像的那种）。跟 sticker 是两张表——
+        # 表情包是按情绪找一张甩出去，图库是素材本身，生命周期不一样。
+        self.gallery_service = QQGalleryService(self)
         self.attention_service = QQAttentionService(self)
         self.prompt_builder = QQPromptBuilder(self)
         self.memory_bridge = QQMemoryBridge(self)
