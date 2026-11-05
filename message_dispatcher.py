@@ -849,6 +849,13 @@ class QQMessageDispatcher:
             return False
 
     async def handle_message(self, message: dict[str, Any]):
+        # 游标推进放在**最前面**，比黑名单还早：黑名单用户的消息也是"处理过了"
+        # （决定不回），游标不推的话每次重连都会把它翻出来重新判一遍。
+        #
+        # 这一步是同步的、只动内存（落盘有独立循环），在收消息热路径上，绝不能 await。
+        catchup = getattr(self.plugin, "catchup_service", None)
+        if catchup is not None:
+            catchup.note_message(message)
         # 用户黑名单：这个人发的消息 / 戳一戳 / 入群通知一律不处理，**绝不进管线**。
         # 必须放在最前面，三个理由：
         #   ① 下面戳一戳分支会在更早的位置直接 send_group_poke 并 return ——

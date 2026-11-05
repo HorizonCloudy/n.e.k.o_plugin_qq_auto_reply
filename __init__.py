@@ -57,6 +57,7 @@ from .attention_gate_service import QQAttentionGateService
 from .attention_service import QQAttentionService
 from .backlog_models import QQBacklogMessage as QQBacklogMessage
 from .backlog_service import QQBacklogService
+from .catchup_service import QQMessageCatchupService
 from .config_store import QQAutoReplyConfigStore
 from .dashboard_service import QQDashboardService
 from .deploy_service import QQDeployService
@@ -191,6 +192,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         )
         self.deploy_service = QQDeployService(self)
         self.backlog_service = QQBacklogService(self)
+        # 断线补消息：跟 backlog 是两件事。backlog 记的是"推过来的消息"，
+        # 断线期间推不过来，它一样空着；补消息得主动去服务端翻历史。
+        self.catchup_service = QQMessageCatchupService(self)
         self.attention_service = QQAttentionService(self)
         self.prompt_builder = QQPromptBuilder(self)
         self.memory_bridge = QQMemoryBridge(self)
