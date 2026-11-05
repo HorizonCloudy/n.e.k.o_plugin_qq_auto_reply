@@ -175,6 +175,20 @@ class QQReplyGenerationService:
                         )
             stage_trace.metadata["recalled_memory_used"] = context.recalled_memory_used
             stage_trace.metadata["recalled_memory_length"] = len(context.recalled_memory_text)
+            if synthetic_hist_before is not None:
+                # 合成控制轮（主动搭话等）的 human 行是捏造的指令，不是任何
+                # 人真说过的话。写记忆之前先登记进排除名单——否则私聊 /cache
+                # 会把"[系统] 现在你去主动找他说话……"整段当成主人说的话落库，
+                # 下一轮她自己会接着念这段指令。超时分支另有一处调用（抢救要
+                # 先排除再结算），两处都按对象身份去重，重复调用无副作用。
+                try:
+                    self.plugin.session_memory_service.record_synthetic_prompt_rows(
+                        session_key, synthetic_hist_before,
+                    )
+                except Exception as exclude_error:
+                    self.plugin.logger.warning(
+                        f"合成轮 prompt 行排除失败（不影响回复）: {exclude_error}"
+                    )
             if not ai_reply:
                 self.plugin.logger.warning("AI 未生成回复，准备进入 fallback")
                 stage_trace.status = "empty"
@@ -1114,7 +1128,16 @@ class QQReplyGenerationService:
             try:
                 # member turn 已在主生成完成点单点记录（含空回复轮）；此处
                 # 只做 cache 同步，避免同一发言重复入 bucket。
-                count = await self.plugin._cache_session_delta(session_key, user_data)
+                count = await self.plugin._cache_session_delta(
+                    session_key, user_data,
+                    # 合成轮（主动搭话等）的回复是直接发出去的、不经 buffer，
+                    # 尾部 ai 行不会随后被 summary 取代，当轮就该入库。否则
+                    # 她说完之后用户不回消息，这条要等下一轮才进记忆库，中途
+                    # 宿主重启就永久丢了。
+                    sync_tail_ai=is_synthetic_source(
+                        getattr(context, "source_kind", "")
+                    ),
+                )
                 if count:
                     self.plugin.logger.info(f"[管理员] 成功同步 {count} 条消息到 Memory Server (会话: {session_key})")
             except Exception as e:
