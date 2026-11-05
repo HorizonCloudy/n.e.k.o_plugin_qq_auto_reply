@@ -318,6 +318,24 @@ OUTBOUND = (
                 floor=1, description="save：短于此长度的文本不参与重复过滤（嗯嗯/？这类应答豁免）"),
 )
 
+#: 表情包收集范围。
+#:
+#: 库本身（``data/sticker.json`` + ``data/sticker/``）以前只有「用户手动上传」一条
+#: 入口，猫娘手上有什么全看用户传了什么。加上「她自己在聊天里收」之后必须给个闸：
+#: 群聊里什么图都有（别人的自拍、工作截图、二维码），她判断不了哪些"算表情包"，
+#: 收进来就会在别的群里发出去。
+#:
+#: 三档而不是布尔，是因为「只收当前这个群里看到的」是实际最常用的口径 ——
+#: 在 A 群看到的表情用在 A 群，不跨群搬运；真要跨群共享才显式打开 ``any``。
+STICKER = (
+    SettingSpec("sticker_collect_policy", "str", "current", saveable=True,
+                enum=("off", "current", "any"),
+                description="save：表情包收集范围（off=不收 / current=只收当前会话 / any=任何群都收）",
+                ui=UIInput("cfg-sticker-collect", kind="select",
+                           label="ui.napcat.config.sticker_collect",
+                           hint="ui.napcat.config.sticker_collect.hint")),
+)
+
 #: 其余全部键。``saveable`` 决定是否进白名单/参数页；``handler`` 决定是否走通用路径。
 MISC = (
     # ── 连接 ──
@@ -591,7 +609,7 @@ MISC = (
     SettingSpec("group_prompts", "dict", {}, description="按群自定义提示词"),
 )
 
-SETTINGS: tuple[SettingSpec, ...] = ATTENTION + ATTENTION_NEW + PACING + OUTBOUND + MISC
+SETTINGS: tuple[SettingSpec, ...] = ATTENTION + ATTENTION_NEW + PACING + OUTBOUND + STICKER + MISC
 
 BY_KEY: dict[str, SettingSpec] = {spec.key: spec for spec in SETTINGS}
 
