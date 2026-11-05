@@ -318,6 +318,30 @@ OUTBOUND = (
                 floor=1, description="save：短于此长度的文本不参与重复过滤（嗯嗯/？这类应答豁免）"),
 )
 
+#: 断线补消息。
+#:
+#: 这条链路**只在 NapCat 系通道下真的能用**：开放平台的 `get_friend_msg_history`
+#: / `get_group_msg_history` 是同名空实现（直接返回 ``{}``），补消息会一直失败。
+#: 所以默认开，但失败按"通道不支持"计数，不刷屏。
+#:
+#: 窗口 12 小时是个折中：一夜断网（路由器重启、电脑睡眠）能全覆盖，再往前补
+#: 就是翻陈年老账，她对着昨天下午的话回一句反而怪。
+CATCHUP = (
+    SettingSpec("catchup_enabled", "bool", True, saveable=True,
+                description="save：断线重连后补消息",
+                ui=UIInput("cfg-catchup-enabled", kind="checkbox",
+                           label="ui.napcat.config.catchup_enabled",
+                           hint="ui.napcat.config.catchup_enabled.hint")),
+    SettingSpec("catchup_window_hours", "int", 12, saveable=True,
+                description="save：只补这个时间窗内的消息（小时）"),
+    SettingSpec("catchup_max_per_conversation", "int", 12, saveable=True,
+                description="save：单会话最多补几条"),
+    SettingSpec("catchup_max_total", "int", 30, saveable=True,
+                description="save：一次重连总共最多补几条"),
+    SettingSpec("catchup_sweep_seconds", "int", 30, saveable=True,
+                description="save：检查连接状态的间隔（秒）"),
+)
+
 #: 其余全部键。``saveable`` 决定是否进白名单/参数页；``handler`` 决定是否走通用路径。
 MISC = (
     # ── 连接 ──
@@ -591,7 +615,7 @@ MISC = (
     SettingSpec("group_prompts", "dict", {}, description="按群自定义提示词"),
 )
 
-SETTINGS: tuple[SettingSpec, ...] = ATTENTION + ATTENTION_NEW + PACING + OUTBOUND + MISC
+SETTINGS: tuple[SettingSpec, ...] = ATTENTION + ATTENTION_NEW + PACING + OUTBOUND + CATCHUP + MISC
 
 BY_KEY: dict[str, SettingSpec] = {spec.key: spec for spec in SETTINGS}
 
