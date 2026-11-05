@@ -105,6 +105,7 @@ from .session_instruction_service import (
 from .session_memory_service import QQSessionMemoryService
 from .session_runtime_service import QQSessionRuntimeService
 from .settings_service import QQSettingsService
+from .sticker_lab_service import QQStickerLab
 from .targets import QQAutoReplyTargetsMixin
 from .targets import QQAutoReplyValidationError as QQAutoReplyValidationError
 from .time_context import build_time_context
@@ -222,6 +223,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self.session_instruction_service = QQSessionInstructionService(self)
         self.session_memory_service = QQSessionMemoryService(self)
         self.session_runtime_service = QQSessionRuntimeService(self)
+        # 表情包的收集侧：她自己在聊天里收（上游只有手动上传那一条入口）。
+        # 收多少、从哪个群收，归 settings 的 sticker_collect_policy 三档闸管。
+        self.sticker_lab = QQStickerLab(self)
         self.qq_client: Optional[OneBotConnector] = None
         self.enricher: Optional[QQMessageEnricher] = None
         self.attention_gate_service = QQAttentionGateService(self)

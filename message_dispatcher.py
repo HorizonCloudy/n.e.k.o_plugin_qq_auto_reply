@@ -1005,6 +1005,12 @@ class QQMessageDispatcher:
                     f"黑名单过滤(附件解析后): text={str(message.get('content') or '')[:40]}",
                 )
                 return
+        # 表情包：把这条消息里的图/表情记进环形缓冲（同步、不下载、不调模型）。
+        # 必须放在 backlog 之前——纯图消息没有文本，record_message 会直接丢弃，
+        # 而"她要不要收这张图"恰恰只跟图有关。observe 内部自己兜异常，这里不设 if。
+        sticker_lab = getattr(self.plugin, "sticker_lab", None)
+        if sticker_lab is not None:
+            sticker_lab.observe(message)
         await self.plugin.backlog_service.record_message(message)
         # 注意力的逐条更新统一由 attention_gate_service.evaluate() 负责（消息进管线时
         # 调用），这里不再自己更新一次 —— 历史上那条分支只在非 neko_dynamic 模式下跑，
