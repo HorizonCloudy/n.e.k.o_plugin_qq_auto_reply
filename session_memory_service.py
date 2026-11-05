@@ -7,6 +7,7 @@ import time
 from typing import Any
 
 from .display_name_service import QQDisplayNameService
+from .dsml_markers import strip_dsml_markers
 from .pipeline_models import is_synthetic_source
 
 _CURRENT_TURN_AI_ROW = object()
@@ -57,6 +58,10 @@ def _strip_internal_markup(text: str) -> str:
     cleaned = _MEMORY_DROP_WITH_CONTENT.sub("", text)
     cleaned = _MEMORY_DROP_SHELL.sub("", cleaned)
     cleaned = _MEMORY_UNWRAP.sub("", cleaned)
+    # 漏进正文的 DSML 工具调用标记也在这层清掉：发送侧已经剥过一次，但
+    # 会话历史里存的是**模型原始输出**，那才是记忆的输入。不剥的话她"记得"
+    # 的自己发言是一串 `<｜｜DSML｜｜ invoke ...>`，下一轮接不上自己说过什么。
+    cleaned = strip_dsml_markers(cleaned)
     return cleaned.strip()
 
 
