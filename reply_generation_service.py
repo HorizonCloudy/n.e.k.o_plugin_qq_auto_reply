@@ -21,6 +21,15 @@ from .plugin_tool_turn_guard import (
     UNEXECUTED_SEARCH_REPLY,
     unexecuted_search_promise,
 )
+from .session_bootstrap_service import MAX_TOOL_ITERATIONS
+
+# 工具轮超时预算里，LLM 流那部分最多折算几段。
+#
+# 额度是 MAX_TOOL_ITERATIONS，理论上最坏是 1 + 5 段流。但一段流正常只有
+# 10~20 秒，六段也就两分钟；真按 6×单轮预算给，卡死的那一轮会把会话锁占满
+# 七分钟（群里就是全群停摆），比直接判超时丢一轮更难收拾。所以只折算到这个
+# 上限为止——撞上它说明模型在空转，不是工具慢。
+TOOL_TURN_STREAM_CAP = 4
 
 
 class QQReplyGenerationService:
@@ -332,21 +341,28 @@ class QQReplyGenerationService:
             try:
                 turn_timeout = self.plugin._ai_turn_timeout_seconds
                 if armed_recall_tool:
-                    # 工具轮的最坏路径是 2 次完整 LLM 流（初始流 + 封顶后的
-                    # forced-finalize；插件会话 max_tool_iterations=1）加一次
-                    # 召回 HTTP。沿用单流预算会把"慢但会成功"的工具轮变成
-                    # 超时——而这条路径超时的代价不是丢一轮，是丢弃整个共享
-                    # 群会话再打粘性标记。
+                    # 工具轮的最坏路径是「初始流 + 每次工具迭代各一段流」，
+                    # 额度 MAX_TOOL_ITERATIONS 时理论上是 6 段，再加一次召回
+                    # HTTP。沿用单流预算会把"慢但会成功"的工具轮变成超时——
+                    # 而这条路径超时的代价不是丢一轮，是丢弃整个共享群会话
+                    # 再打粘性标记。LLM 那部分按 TOOL_TURN_STREAM_CAP 折算，
+                    # 理由见该常量上的说明。
                     turn_timeout = (
-                        turn_timeout * 2 + RECALL_TOOL_HTTP_TIMEOUT_SECONDS
+                        turn_timeout
+                        * min(MAX_TOOL_ITERATIONS + 1, TOOL_TURN_STREAM_CAP)
+                        + RECALL_TOOL_HTTP_TIMEOUT_SECONDS
                     )
                 if armed_bridge_tools:
                     # 插件工具那条更慢：跨插件是一次 IPC 往返，而且结果多半还要
                     # 再进一轮 LLM。按调用超时加预算，别让"慢但会成功"变成超时
                     # （超时会丢弃共享群会话，代价同上）。
+                    #
+                    # 按两次调用给预算，不是按 MAX_TOOL_ITERATIONS：一次交互里
+                    # 连查两三个跨插件工具很正常（先列列表、再取详情），但连
+                    # 调五次以上基本是模型在空转，给满会让最坏路径白拉长 100 秒。
                     from .plugin_tool_service import CALL_TIMEOUT_SECONDS
 
-                    turn_timeout += CALL_TIMEOUT_SECONDS
+                    turn_timeout += CALL_TIMEOUT_SECONDS * 2
                 turn_message = context.prompt_message
                 if armed_bridge_tools:
                     turn_message += TOOL_TURN_INSTRUCTION
