@@ -28,6 +28,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+if __package__:
+    from .deepchat.emotion import EMOTION_MULTIPLIER
+else:  # Standalone schema tools and DeepChat's stdlib test runner.
+    from deepchat.emotion import EMOTION_MULTIPLIER
+
 
 @dataclass(frozen=True)
 class UIInput:
@@ -74,26 +79,7 @@ class SettingSpec:
     not_in_defaults: bool = False
 
 
-#: 情绪 → 注意力升/降速率倍率。原先硬编码在 ``attention_service._EMOTION_MULTIPLIER``。
-#: 注意 ``attention_service`` 另有两个**按名字**匹配的集合（抢焦点 `arguing`/`proud`、
-#: 让焦点 `sulking`/`embarrassed`/`bored`），它们不随这张表配置化 —— 用户往表里加新情绪时，
-#: 新情绪不会自动获得抢/让焦点的行为。
-#: 这张表与 ``attention_service._EMOTION_MULTIPLIER`` 必须逐键一致，由
-#: ``tests/test_qq_emotion_vocabulary.py`` 强制。
-DEFAULT_EMOTION_MULTIPLIERS: dict[str, float] = {
-    "arguing": 1.2,      # 上头死磕，涨得快跌得慢
-    "proud": 0.8,        # 赢了要炫耀，猛拉注意力
-    "excited": 0.6,      # 兴奋：比"不爽"更往外冲，但没到炫耀
-    "annoyed": 0.5,      # 不爽，比正常更专注
-    "happy": 0.4,        # 开心：比玩闹更稳，比不爽更轻
-    "playful": 0.3,      # 玩闹中，微微挂住
-    "curious": 0.2,      # 被勾起兴趣
-    "calm": 0.0,         # 正常
-    "sad": -0.4,         # 难过，不太想说话
-    "embarrassed": -0.6,  # 尴尬想溜
-    "bored": -0.7,       # 没兴趣的话题，主动掉注意力去找别的群
-    "sulking": -0.9,     # 赌气——基本清零，主动让出焦点
-}
+DEFAULT_EMOTION_MULTIPLIERS: dict[str, float] = dict(EMOTION_MULTIPLIER)
 
 #: 默认的关键词标签表。原先硬编码在 ``config_store.default_backlog_labels``。
 DEFAULT_BACKLOG_LABELS: list[dict[str, Any]] = [

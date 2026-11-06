@@ -434,7 +434,13 @@ def main() -> int:
             sender_name="小明",
         )
         _assert(prompt.startswith("BASE PROMPT"), "base prompt must be preserved")
-        _assert("当前情绪" in prompt, "mood fragment missing")
+        _assert("当前情绪" not in prompt, "legacy enrichment must not inject mood")
+        from plugin.plugins.qq_auto_reply.emotion_service import build_emotion_section
+
+        prompt += asyncio.run(build_emotion_section(
+            plugin, is_group=False, group_id=None, sender_id="10001",
+        ))
+        _assert(prompt.count("当前情绪") == 1, "unified mood outlet must inject once")
         _assert("关系" in prompt, "relationship fragment missing")
         _assert("小明" in prompt, "display name missing from relationship fragment")
 

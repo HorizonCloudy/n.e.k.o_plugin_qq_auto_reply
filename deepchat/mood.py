@@ -3,57 +3,9 @@ from __future__ import annotations
 import sqlite3
 import time
 
+from .emotion import MOOD_ANCHORS, decay_affect, emotion_fragment, update_affect
 from .models import Mood, MoodState, coerce_mood
 from .store import DeepChatStore
-
-#: Keyword signals mapped to a (valence, arousal) delta. This is a cheap
-#: heuristic on purpose: the deep-chat layer must not add an LLM call per turn.
-SIGNAL_DELTAS: dict[str, tuple[float, float]] = {
-    "praise": (0.18, 0.06),
-    "thank": (0.12, 0.04),
-    "funny": (0.10, 0.10),
-    "insult": (-0.22, 0.12),
-    "bored": (-0.04, -0.20),
-    "serious": (0.0, -0.06),
-}
-
-MOOD_ANCHORS: dict[Mood, tuple[float, float]] = {
-    Mood.NEUTRAL: (0.0, 0.5),
-    Mood.HAPPY: (0.35, 0.55),
-    Mood.EXCITED: (0.6, 0.8),
-    Mood.SULKING: (-0.35, 0.4),
-    Mood.EMBARRASSED: (0.1, 0.6),
-    Mood.BORED: (-0.05, 0.15),
-    Mood.ANNOYED: (-0.55, 0.65),
-}
-
-MOOD_LABELS: dict[Mood, str] = {
-    Mood.NEUTRAL: "平静",
-    Mood.HAPPY: "开心",
-    Mood.EXCITED: "兴奋",
-    Mood.SULKING: "有点闹别扭",
-    Mood.EMBARRASSED: "有点不好意思",
-    Mood.BORED: "有点无聊",
-    Mood.ANNOYED: "有点烦",
-}
-
-
-def _clamp(value: float, low: float, high: float) -> float:
-    return max(low, min(high, value))
-
-
-def classify(valence: float, arousal: float) -> Mood:
-    if valence >= 0.5 and arousal >= 0.6:
-        return Mood.EXCITED
-    if valence >= 0.15:
-        return Mood.HAPPY
-    if valence <= -0.5:
-        return Mood.ANNOYED
-    if valence <= -0.15:
-        return Mood.SULKING
-    if arousal <= 0.3:
-        return Mood.BORED
-    return Mood.NEUTRAL
 
 
 class MoodStateMachine:
@@ -106,11 +58,7 @@ class MoodStateMachine:
     def update(self, user_key: str, signal: str, *, now: float | None = None) -> MoodState:
         now = time.time() if now is None else float(now)
         state = self.get(user_key, now=now)
-        dv, da = SIGNAL_DELTAS.get(signal, (0.0, 0.0))
-        state.valence = _clamp(state.valence + dv, -1.0, 1.0)
-        state.arousal = _clamp(state.arousal + da, 0.0, 1.0)
-        state.current = classify(state.valence, state.arousal)
-        state.updated_at = now
+        state = update_affect(state, signal, now)
         self._save(user_key, state)
         return state
 
@@ -146,26 +94,10 @@ class MoodStateMachine:
         return changed
 
     def fragment(self, state: MoodState) -> str:
-        label = MOOD_LABELS.get(state.current, "平静")
-        return (
-            "## 当前情绪（Mood）\n"
-            f"你现在的心情是「{label}」（valence {state.valence:+.2f}, arousal {state.arousal:.2f}）。"
-            "回复时自然体现这种心情，不要直接说出数值或情绪标签。"
-        )
+        return emotion_fragment(state.current, is_group=False)
 
     def _decay(self, state: MoodState, now: float) -> MoodState:
-        minutes = max(0.0, (now - state.updated_at) / 60.0)
-        if minutes <= 0.0:
-            return state
-        factor = max(0.0, 1.0 - self.decay_rate * minutes)
-        valence = _clamp(state.valence * factor, -1.0, 1.0)
-        arousal = _clamp(0.5 + (state.arousal - 0.5) * factor, 0.0, 1.0)
-        return MoodState(
-            valence=valence,
-            arousal=arousal,
-            current=classify(valence, arousal),
-            updated_at=now,
-        )
+        return decay_affect(state, now, self.decay_rate)
 
     def _save(
         self,

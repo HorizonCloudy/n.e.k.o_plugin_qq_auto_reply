@@ -14,46 +14,24 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any
 
+from .deepchat.emotion import (
+    EMOTION_DECAY_ORDER,
+    EMOTION_DECAY_SECONDS,
+    EMOTION_DROP_FOCUS,
+    EMOTION_FORCE_FOCUS,
+    EMOTION_MULTIPLIER,
+    LEGACY_MOOD_ALIASES,
+    decay_group,
+    update_group,
+)
 from .feedback_classifier import QQFeedbackClassifier
 
-# ── 情绪 → 注意力速率偏移（rise 加速 / fall 减速）──
-#
-# 这张表是情绪的**唯一真源**：倍率符号决定该情绪属于上升侧还是回落侧，
-# `_EMOTION_DECAY_ORDER` 必须按倍率单调递减排列（从最猛到最丧，中间是 calm）。
-# `tests/test_qq_emotion_vocabulary.py` 强制这三条不变量，并强制它和
-# `settings_schema.DEFAULT_EMOTION_MULTIPLIERS` 逐键一致。
-_EMOTION_MULTIPLIER: dict[str, float] = {
-    "arguing": 1.2,      # 上头死磕，涨得快跌得慢
-    "proud": 0.8,        # 赢了要炫耀，猛拉注意力
-    "excited": 0.6,      # 兴奋：比"不爽"更往外冲，但没到炫耀
-    "annoyed": 0.5,      # 不爽，比正常更专注
-    "happy": 0.4,        # 开心：比玩闹更稳，比不爽更轻
-    "playful": 0.3,      # 玩闹中，微微挂住
-    "curious": 0.2,      # 被勾起兴趣
-    "calm": 0.0,         # 正常
-    "sad": -0.4,         # 难过，不太想说话
-    "embarrassed": -0.6,  # 尴尬想溜
-    "bored": -0.7,       # 没兴趣的话题，主动掉注意力去找别的群
-    "sulking": -0.9,     # 赌气——基本清零，主动让出焦点
-}
-# 强情绪直接触发焦点切换。
-#
-# ⚠️ 这两个集合与 `_EMOTION_MULTIPLIER` 是**分开维护**的：往倍率表加新情绪不会
-# 自动让它获得抢/让焦点行为。新增情绪时必须同时决定它属于哪一档（或都不属于），
-# 否则该情绪会「能配置但无行为」。`tests/test_qq_emotion_vocabulary.py` 盯着这条
-# 一致性 —— 新情绪若既不在抢焦点也不在让焦点集合里，必须显式登记到该测试的
-# `_NEUTRAL_EMOTIONS` 白名单，逼作者做一次有意识的选择。
-_EMOTION_FORCE_FOCUS = {"arguing", "proud"}     # 立刻抢焦点
-_EMOTION_DROP_FOCUS = {"sulking", "embarrassed", "bored"}  # 立刻让出焦点
-# 情绪降温阶梯：30 秒无新情绪就朝 calm 方向走一级。顺序 = 倍率从高到低，
-# 于是「上升侧 = calm 之前」「回落侧 = calm 之后」与倍率符号自动一致。
-_EMOTION_DECAY_ORDER = [
-    "arguing", "proud", "excited", "annoyed", "happy",
-    "playful", "curious",
-    "calm",
-    "sad", "embarrassed", "bored", "sulking",
-]
-_EMOTION_DECAY_SECONDS = 30
+# Compatibility names; all defaults and transition policies live in emotion.
+_EMOTION_MULTIPLIER = EMOTION_MULTIPLIER
+_EMOTION_FORCE_FOCUS = EMOTION_FORCE_FOCUS
+_EMOTION_DROP_FOCUS = EMOTION_DROP_FOCUS
+_EMOTION_DECAY_ORDER = EMOTION_DECAY_ORDER
+_EMOTION_DECAY_SECONDS = EMOTION_DECAY_SECONDS
 
 
 @dataclass(slots=True)
@@ -1506,15 +1484,12 @@ class QQAttentionService:
         normalized_group_id = str(group_id or "").strip()
         if not normalized_group_id:
             return
+        emotion = LEGACY_MOOD_ALIASES.get(emotion, emotion)
         if emotion not in self._emotion_multipliers():
             return
         state = self._load_state(normalized_group_id)
         now = self._current_time()
-        state.emotion = emotion
-        state.emotion_updated_at = now
-        # emotion_display 供前端展示，停留 120s 比逻辑衰减更久
-        state.emotion_display = emotion
-        state.emotion_display_until = now + 120
+        update_group(state, emotion, now)
 
         if emotion in _EMOTION_FORCE_FOCUS:
             # 抬分：把注意力顶到档位线上（跨群取舍删除后不再有"抢焦点"这回事 ——
@@ -1537,31 +1512,7 @@ class QQAttentionService:
         getattr(self.plugin, "_maybe_push_status_event", lambda: None)()  # 情绪变更 → SSE 通知前端
 
     def _decay_emotion(self, state: QQGroupAttentionState, now: int) -> None:
-        """情绪自然衰减：30秒无新情绪则向 calm 方向降温一级。
-
-        上升侧/回落侧的判定来自 ``_EMOTION_MULTIPLIER`` 的符号，不另抄一份名单 ——
-        以前这里硬编码了 ``("arguing", "annoyed", "playful", "curious")``，导致任何
-        新加的正倍率情绪都会走回落侧分支、越衰减越强。
-        """
-        if state.emotion == "calm":
-            return
-        elapsed = now - state.emotion_updated_at
-        if elapsed < _EMOTION_DECAY_SECONDS:
-            return
-        order = _EMOTION_DECAY_ORDER
-        calm_idx = order.index("calm")
-        idx = order.index(state.emotion) if state.emotion in order else -1
-        if idx < 0:
-            # 表外情绪（LLM 可能自造标签）直接归位到 calm
-            state.emotion = "calm"
-        elif _EMOTION_MULTIPLIER.get(state.emotion, 0.0) > 0:
-            # 上升侧：朝 calm 走一级，不越界
-            state.emotion = order[idx + 1] if idx + 1 < calm_idx else "calm"
-        else:
-            # 回落侧：同样朝 calm 走一级
-            state.emotion = order[idx - 1] if idx - 1 > calm_idx else "calm"
-        state.emotion_updated_at = now
-        state.emotion_display = state.emotion
+        decay_group(state, now)
 
     # ── 手动增减注意力 ──
 

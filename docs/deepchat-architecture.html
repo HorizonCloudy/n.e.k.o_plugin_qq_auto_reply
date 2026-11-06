@@ -83,7 +83,7 @@
 
   <p class="lead">
     结论：本框架不重造插件已有的注意力门、接话判定、防抖缓冲与记忆桥，
-    只补两块真正缺失的持久状态——<b>情绪状态机</b>与<b>关系图谱</b>；
+    扩展用户维度的<b>持久情绪</b>与<b>关系图谱</b>；情绪规则复用公共模块，见 <a href="emotion-integration.md">情绪整合说明</a>；
     在上下文构建时注入提示词，在生成成功后异步写回。默认走宿主 session，
     可切换 <code>direct</code> 模式获得逐轮提示词注入。后续三项里，自主调度与人格一致性守卫已落地（自主调度默认关闭）；
     记忆反思<b>已停用</b>——Phase 0 起不再把用户原话写成里程碑，见第 9/10 节。
@@ -97,13 +97,13 @@
     <div class="arrow">↓</div>
     <div class="stage"><div class="num">3</div><div class="stage-body"><b>上下文组装</b><span class="badge b-reuse">复用</span><p>reply_context_node.build() 组装 character / core memory / 场景 / 成员标签。</p></div></div>
     <div class="arrow">↓</div>
-    <div class="stage new"><div class="num">4</div><div class="stage-body"><b>DeepChat 注入</b><span class="badge b-new">新增</span><p>enrich_system_prompt()：追加「当前情绪」与「与对话者关系」两段；合成轮（主动/通知/回投）跳过。</p></div></div>
+    <div class="stage new"><div class="num">4</div><div class="stage-body"><b>状态注入</b><span class="badge b-new">整合</span><p>enrich_system_prompt() 追加关系与表达；上下文统一调用 build_emotion_section()，群聊取群情绪、私聊取用户情绪。合成轮跳过用户状态，群状态按原规则保留。</p></div></div>
     <div class="arrow">↓</div>
     <div class="stage"><div class="num">5</div><div class="stage-body"><b>生成</b><span class="badge b-reuse">复用</span><span class="badge b-new">新增分支</span><p>host（默认）：user_session.stream_text()；direct：ctx/raw LLM 每轮读取 system_prompt。403/409 等失败沿用既有 fallback。</p></div></div>
     <div class="arrow">↓</div>
     <div class="stage"><div class="num">6</div><div class="stage-body"><b>投递</b><span class="badge b-reuse">复用</span><p>reply_delivery_node：停顿、同意门、语音降级、戳一戳、表情包。</p></div></div>
     <div class="arrow">↓</div>
-    <div class="stage hook"><div class="num">7</div><div class="stage-body"><b>DeepChat 写回</b><span class="badge b-new">新增</span><p>writeback()：关键词信号 → 情绪 valence/arousal + 关系 affinity/trust + interactions；各写本地 SQLite。</p></div></div>
+    <div class="stage hook"><div class="num">7</div><div class="stage-body"><b>DeepChat 写回</b><span class="badge b-new">新增</span><p>writeback()：关键词信号更新关系 affinity/trust 与 interactions；仅私聊更新用户情绪 valence/arousal。群情绪由 feeling 标签更新。</p></div></div>
     <div class="arrow">↓</div>
     <div class="stage"><div class="num">8</div><div class="stage-body"><b>长期记忆</b><span class="badge b-reuse">复用</span><p>memory_bridge / session_memory_service 原有 scoped 记忆与召回；DeepChat 不另建第二套记忆库。</p></div></div>
   </div>
@@ -273,9 +273,9 @@
       </li>
       <li>
         <b>Phase 0 已做的三条隔离（本轮）</b>：① 群聊不再注入她的情绪句——
-        <code>enrich_system_prompt</code> 的 <code>mood.fragment</code> 只在私聊加入，
-        群情绪由 <code>session_instruction_service._append_emotion_section</code> 唯一提供，
-        避免两个来源互相打脸；② 深聊自主联系改为<b>双开关 AND</b>
+        现已整合为 <code>emotion_service.build_emotion_section</code> 单出口，
+        群聊只取 attention 群状态、私聊只取用户状态，公共词表与衰减策略位于 <code>deepchat/emotion.py</code>；
+        ② 深聊自主联系改为<b>双开关 AND</b>
         （<code>deepchat_autonomy_enabled</code> 且 <code>proactive_initiative_enabled</code>），
         并在开口前读 <code>proactive_initiative_service.remaining_today()</code>
         做日限 gate，两个主动私聊功能共用 <code>proactive_initiative_max_per_day</code>；

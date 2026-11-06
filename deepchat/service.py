@@ -272,8 +272,8 @@ class DeepChatService:
     ) -> str:
         """异步外壳：同步 SQLite 读写丢到线程里跑（与 ``writeback_deepchat`` 同一理由）。
 
-        调用方在 async 的 context 节点里，直接跑同步读会拖住事件循环；而 enrich 恰好会
-        触发两处**写**（mood 衰减、relationship 跨结算边界），锁争用下最明显。
+        关系读取跨结算边界会触发写入，必须离开事件循环。
+        用户情绪的读取与衰减由 emotion_service 的统一出口单独处理。
         同步内核保留为 ``_enrich_sync``，便于测试直接调用。
         """
         return await asyncio.to_thread(
@@ -294,23 +294,16 @@ class DeepChatService:
         is_group: bool = False,
         sender_name: str = "",
     ) -> str:
-        """同步内核：两次读 + 可能的两次衰减写，全程共用**一个**连接。"""
+        """读取关系和表达；情绪由回复上下文的统一出口注入。"""
         if not self.enabled or not self.fragments_enabled:
             return system_prompt
         sender_id = str(sender_id or "").strip()
         if not sender_id:
             return system_prompt
-        # 一个 session 一个连接：读两张表 + 可能的两次衰减写都在同一连接上完成；
-        # 少开连接 = 少一次拿锁的机会（enrich 在回复主链路上）。
+        # 关系读取可能触发惰性衰减写，继续复用连接。
         with self.store.session() as conn:
-            state = self.mood.get(self._mood_key(sender_id), conn=conn)
             edge = self.relationship.get(sender_id, conn=conn)
         candidates: list[str] = []
-        if not is_group:
-            # 群聊不注入"她自己的情绪"：群是多人语境，情绪句会让她的心情变成
-            # 公开发言；群情绪由 session_instruction_service._append_emotion_section
-            # 唯一提供，这里再加一份就是两个来源互相打脸。
-            candidates.append(self.mood.fragment(state))
         candidates.append(
             # 群聊也不注入私聊里程碑（跨语境泄露），只保留数值派生的好感/信任/互动次数。
             self.relationship.fragment(
@@ -372,7 +365,7 @@ class DeepChatService:
         """``writeback`` 的本体：调用方必须已持有 ``_writeback_lock``。"""
         now = time.time()
         signal = classify_signal(text)
-        state = self.mood.update(self._mood_key(sender_id), signal, now=now)
+        state = None if is_group else self.mood.update(self._mood_key(sender_id), signal, now=now)
         if signal in NEGATIVE_SIGNALS:
             edge = self.relationship.weaken(sender_id, 0.03, now=now)
         else:
@@ -385,7 +378,7 @@ class DeepChatService:
         learned = self.learn_expressions_if_due(sender_id, edge=edge, now=now)
         result = {
             "signal": signal,
-            "mood": state.current.value,
+            "mood": state.current.value if state is not None else None,
             "affinity": round(edge.affinity, 4),
             "trust": round(edge.trust, 4),
         }

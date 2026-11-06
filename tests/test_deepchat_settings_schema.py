@@ -12,7 +12,6 @@ dashboard_service.save_settings 与前端字段还没有这四个键；若贸然
 
 from __future__ import annotations
 
-import ast
 import pathlib
 import unittest
 
@@ -104,123 +103,23 @@ class RetiredTuningKeyTests(unittest.TestCase):
 
 
 class EmotionVocabularyTests(unittest.TestCase):
-    """P2-⑤：DeepChat 的 Mood 与 attention 情绪词表必须显式对齐。
+    def test_every_mood_uses_shared_vocabulary(self) -> None:
+        from deepchat.emotion import EMOTION_MULTIPLIER, Mood
+        from deepchat.models import Mood as LegacyMood
 
-    两侧词表**目前不共享**（DeepChat: neutral/happy/excited/...；attention:
-    calm/playful/proud/...），交集只有 4 个。这里不硬编码"必须完全统一"，
-    而是要求：**每个 Mood 要么出现在共享词表里，要么被显式登记为 deepchat 专有**。
-
-    想加新 mood 的人，必须在这里做一次有意识的选择（登记，或先去统一词表）——
-    仓库里 attention 侧已有同样惯例（`test_qq_emotion_vocabulary.py` 的白名单）。
-    """
-
-    #: 显式登记：这些 mood 只在 DeepChat 内部使用，不入 attention 词表。
-    #: 空集合 = 目前一个都没登记（所以本用例现在是红的，见 docstring）。
-    DEEPCHAT_ONLY_MOODS: frozenset[str] = frozenset()
-
-    @staticmethod
-    def _mood_values() -> set[str]:
-        source = (_REPO_ROOT / "deepchat" / "models.py").read_text(encoding="utf-8")
-        for node in ast.walk(ast.parse(source)):
-            if isinstance(node, ast.ClassDef) and node.name == "Mood":
-                values = {
-                    stmt.value.value
-                    for stmt in node.body
-                    if isinstance(stmt, ast.Assign)
-                    and isinstance(stmt.value, ast.Constant)
-                    and isinstance(stmt.value.value, str)
-                }
-                if values:
-                    return values
-        raise AssertionError("解析不到 Mood 枚举取值")
-
-    @staticmethod
-    def _attention_emotions() -> set[str]:
-        source = (_REPO_ROOT / "attention_service.py").read_text(encoding="utf-8")
-        for node in ast.walk(ast.parse(source)):
-            # 带类型注解的写法是 AnnAssign（`_EMOTION_MULTIPLIER: dict[str, float] = {...}`），
-            # 不带注解才是 Assign —— 只认 Assign 会误报"解析不到词表"，让 3D 的红变成假信号。
-            if isinstance(node, ast.AnnAssign):
-                target, value = node.target, node.value
-            elif isinstance(node, ast.Assign):
-                target, value = (node.targets[0] if node.targets else None), node.value
-            else:
-                continue
-            if not (
-                isinstance(target, ast.Name)
-                and target.id == "_EMOTION_MULTIPLIER"
-                and isinstance(value, ast.Dict)
-            ):
-                continue
-            return {
-                key.value
-                for key in value.keys
-                if isinstance(key, ast.Constant) and isinstance(key.value, str)
-            }
-        raise AssertionError("解析不到 attention 的 _EMOTION_MULTIPLIER 词表")
-
-    def test_every_mood_is_shared_or_explicitly_registered(self) -> None:
-        moods = self._mood_values()
-        shared = self._attention_emotions()
-
-        unregistered = sorted(
-            mood for mood in moods if mood not in shared and mood not in self.DEEPCHAT_ONLY_MOODS
-        )
-        self.assertEqual(
-            unregistered,
-            [],
-            "这些 Mood 既不在共享情绪词表里，也没登记为 deepchat 专有："
-            f"{unregistered}（共享词表：{sorted(shared)}）",
-        )
+        self.assertIs(LegacyMood, Mood)
+        self.assertEqual({m.value for m in Mood}, set(EMOTION_MULTIPLIER))
+        self.assertEqual(settings_schema.DEFAULT_EMOTION_MULTIPLIERS, EMOTION_MULTIPLIER)
 
 
 class EmotionDecayOrderMirrorTests(unittest.TestCase):
-    """`_EMOTION_DECAY_ORDER` 的本地镜像护栏（pytest 那套在本机跑不了）。
-
-    `tests/test_qq_emotion_vocabulary.py` 是 pytest 风格且需宿主包路径，本机没有 pytest，
-    所以 3D 改动（`neutral → calm` 别名 + 新增 happy/excited）一旦把降温阶梯改坏，
-    **在 CI 之前无人可见**。这三条是那套里最容易被改坏、且改坏后表现为"情绪标记没反应"
-    的约束（表外情绪会被 `_decay_emotion` 当未知标签直接归零）。
-
-    合成一条用例：阶梯覆盖全部情绪 + 严格单调递减 + 单一零点（calm）。
-    """
+    """The shared policy is importable without the host or AST mirrors."""
 
     @staticmethod
-    def _num(node: ast.AST) -> float:
-        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
-            return float(node.value)
-        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
-            return -EmotionDecayOrderMirrorTests._num(node.operand)
-        raise AssertionError(f"无法解析数值节点 {type(node).__name__}")
+    def _tables() -> tuple[dict[str, float], list[str]]:
+        from deepchat.emotion import EMOTION_DECAY_ORDER, EMOTION_MULTIPLIER
 
-    @classmethod
-    def _tables(cls) -> tuple[dict[str, float], list[str]]:
-        source = (_REPO_ROOT / "attention_service.py").read_text(encoding="utf-8")
-        multipliers: dict[str, float] | None = None
-        order: list[str] | None = None
-        for node in ast.walk(ast.parse(source)):
-            if (
-                isinstance(node, ast.AnnAssign)
-                and isinstance(node.target, ast.Name)
-                and node.target.id == "_EMOTION_MULTIPLIER"
-                and isinstance(node.value, ast.Dict)
-            ):
-                multipliers = {
-                    key.value: cls._num(value)
-                    for key, value in zip(node.value.keys, node.value.values)
-                }
-            elif (
-                isinstance(node, ast.Assign)
-                and any(
-                    isinstance(target, ast.Name) and target.id == "_EMOTION_DECAY_ORDER"
-                    for target in node.targets
-                )
-                and isinstance(node.value, ast.List)
-            ):
-                order = [element.value for element in node.value.elts]
-        assert multipliers is not None, "解析不到 _EMOTION_MULTIPLIER"
-        assert order is not None, "解析不到 _EMOTION_DECAY_ORDER"
-        return multipliers, order
+        return EMOTION_MULTIPLIER, EMOTION_DECAY_ORDER
 
     def test_decay_order_stays_consistent_with_the_multiplier_table(self) -> None:
         multipliers, order = self._tables()
