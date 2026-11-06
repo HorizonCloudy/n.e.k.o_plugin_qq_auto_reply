@@ -116,6 +116,25 @@ class QQDeployService:
             self._emit(emit, "config", f"Token 已生成，但保存失败: {e}")
         return token
 
+    async def _record_deployment(self, backend: str, directory: Path | None = None) -> None:
+        """Remember completion per backend/path, independently of QQ login state."""
+        def update(settings):
+            records = dict(settings.get("backend_deployments") or {})
+            # An empty entry suppresses legacy running-process detection after a failed attempt.
+            records[backend] = str(directory.resolve()) if directory is not None else ""
+            settings["backend_deployments"] = records
+            return True
+
+        try:
+            if await self.plugin.settings_service.mutate_business_config(update) is False:
+                raise RuntimeError("部署状态保存失败，请检查存档目录权限后重试")
+        except Exception:
+            # Do not publish a successful completion if the final write failed.
+            records = dict(self._settings().get("backend_deployments") or {})
+            records[backend] = ""
+            self._settings()["backend_deployments"] = records
+            raise
+
     # ── 主流程 ──────────────────────────────────────────────
 
     async def deploy(self, *, uin: str = "", force: bool = False,
@@ -133,6 +152,7 @@ class QQDeployService:
         # 节流表是实例状态、跨次部署不清零：第二次跑到某个百分比时，若它恰好等于
         # 上次留下的最后值，那一行会被当成"重复"整行吞掉（表现为进度凭空少一格）。
         self._progress_last.clear()
+        await self._record_deployment("napcat")
 
         svc = self.plugin.napcat_service
         await svc.migrate_napcat_storage()
@@ -206,6 +226,7 @@ class QQDeployService:
             else "尚未确认登录，页面将自动检测登录状态并更新二维码"
         ), ready=ready, logged_in=bool(login_uin))
 
+        await self._record_deployment("napcat", napcat_dir)
         return {
             "ok": True,
             "napcat_directory": str(napcat_dir),

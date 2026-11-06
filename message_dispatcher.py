@@ -973,6 +973,9 @@ class QQMessageDispatcher:
 
         # 后台拉取引用/转发/语音/文件内容 + VLM 描述（在独立 handler task 中
         # await，避免 WS handler 死锁）。已移入连接层的 ``enrich_message``。
+        # Keep original segments before enrichment overwrites raw_message/content.
+        # VLM descriptions are context, not the sender's authored reply intent.
+        original_segments = addressing.segments_of(message, getattr(self.plugin, "enricher", None))
         if self.plugin.qq_client and self.plugin.qq_client.needs_attention and self.plugin.enricher:
             enricher = self.plugin.enricher
             # 连接器不再打 _pending_* 标记（只管收发/归一）；由插件 enricher 识别需增强的段
@@ -1062,7 +1065,7 @@ class QQMessageDispatcher:
             quoted_sender_id = str(message.get("quoted_sender_id") or "").strip()
             # 原始段（数组或 CQ 串）：判"首段 @ 的是谁"要用段序，而连接器给的是布尔量。
             # 取段的办法复用 QQMessageEnricher._message_segments（"段在哪个键下"的唯一真相）。
-            segments = addressing.segments_of(message, getattr(self.plugin, "enricher", None))
+            segments = original_segments
             mentioned_user_ids = [
                 str(user_id or "").strip()
                 for user_id in list(message.get("mentioned_user_ids") or [])
@@ -1318,7 +1321,13 @@ class QQMessageDispatcher:
             # **之前**（她要不要跟一句复读，与"这条消息本身放不放行给 LLM"
             # 是两件事：回复频率闸拦的是普通回复，不该顺带把复读也拦掉；
             # 而"整批都是复读"时缓冲那边的总结会被抑制，不会变成两条）。
-            if self.plugin.repeat_echo_service is not None:
+            if gate_decision.reason == "passive_media_context":
+                # It was understood and retained by backlog, not left pending
+                # for retro-review to reply to each image later. No repeat echo.
+                store = getattr(self.plugin, "backlog_store", None)
+                if current_message_id and store is not None:
+                    await store.mark_message_reviewed(current_message_id)
+            elif self.plugin.repeat_echo_service is not None:
                 await self.plugin.repeat_echo_service.maybe_echo(
                     group_id=group_id, sender_id=sender_id, text=message_text,
                 )

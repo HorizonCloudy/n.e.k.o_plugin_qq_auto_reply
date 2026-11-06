@@ -21,6 +21,7 @@ from .prompt_fragment_templates import (
     DETAIL_CONSTRAINTS_SECTION,
     FORMAT_PROMPT_SECTION_NEKO_DYNAMIC,
     FORMAT_PROMPT_SECTION_OPEN_PLATFORM,
+    GROUP_ATTENTION_PROMPT_SECTION,
     OUTPUT_PROMPT_SECTION,
     PENDING_COMMITMENTS_SECTION,
     RECALL_TRIGGER_HINT,
@@ -96,6 +97,7 @@ class QQSessionInstructionService:
         # === 静态层（可编辑） ===
         {"id": "init",                  "i18n_key": "",                      "required_placeholders": ["{name}"],                       "format_after": True},
         {"id": "attention",             "i18n_key": "attention_prompt_section", "required_placeholders": [],                            "format_after": False},
+        {"id": "group_attention",       "i18n_key": "group_attention_prompt_section", "required_placeholders": [],                        "format_after": False},
         {"id": "format_neko_dynamic",   "i18n_key": "format_prompt_section_neko_dynamic", "required_placeholders": ["{emoji_catalog}", "{sticker_catalog}"],  "format_after": True},
         {"id": "format_open_platform",  "i18n_key": "format_prompt_section_open_platform", "required_placeholders": ["{sticker_catalog}"], "format_after": True},
         {"id": "persona_wrapper",       "i18n_key": "character_prompt_section", "required_placeholders": ["{character_prompt}"],       "format_after": True},
@@ -436,7 +438,11 @@ class QQSessionInstructionService:
             self._resolve_init_template(user_language).format(name=her_name),
             # 「角色设定（Role）」段已删除：她是谁由本体的角色扮演前言与人设决定，
             # 插件再声明一次「你是 AI 数字生命」会与人设直接冲突（§25）。
-            self._resolve_static_layer("attention_prompt_section", ATTENTION_PROMPT_SECTION, user_language),
+            self._resolve_static_layer(
+                "group_attention_prompt_section" if is_group else "attention_prompt_section",
+                GROUP_ATTENTION_PROMPT_SECTION if is_group else ATTENTION_PROMPT_SECTION,
+                user_language,
+            ),
             format_section,
             self._build_accounts_section(
                 her_name=her_name,
@@ -531,7 +537,6 @@ class QQSessionInstructionService:
             sections, group_id, is_group,
         )
         self._append_attention_context_section(sections, group_id, is_group)
-        self._append_emotion_section(sections, group_id, is_group)
         sections.append(self._resolve_static_layer("detail_constraints_section", DETAIL_CONSTRAINTS_SECTION, user_language))
         sections.append(self._resolve_static_layer("output_prompt_section", OUTPUT_PROMPT_SECTION, user_language))
 
@@ -700,7 +705,10 @@ class QQSessionInstructionService:
         profile_lines = [
             f"- 当前用户称呼：{user_title}",
             f"- 当前用户 QQ：{sender_id}",
-            f"- 当前关系/权限：{relationship}",
+            (
+                f"- 当前群访问权限（不代表发言人身份）：{permission_level}"
+                if is_group else f"- 当前关系/权限：{relationship}"
+            ),
         ]
         if custom_nickname:
             profile_lines.append(f"- 已保存备注昵称：{custom_nickname}")
@@ -1064,18 +1072,6 @@ class QQSessionInstructionService:
         if context:
             sections.append(context)
 
-    def _append_emotion_section(self, sections: list[str], group_id: Optional[str], is_group: bool) -> None:
-        """注入当前情绪状态（<feeling> 标签驱动的内部状态）。"""
-        if not is_group or not group_id:
-            return
-        attention = getattr(self.plugin, "attention_service", None)
-        if not attention or not attention._enabled():
-            return
-        state = attention.get_state(str(group_id))
-        emo = getattr(state, "emotion", "calm") or "calm"
-        if emo != "calm":
-            sections.append(f"[内部状态] 你现在的情绪: {emo}。用 <feeling>情绪</feeling> 更新状态（不发给对方），人设自然流露不要直接对用户说\"我很生气\"之类的话。")
-
     def _append_group_custom_prompt_section(self, sections: list[str], group_id: Optional[str], is_group: bool) -> None:
         """追加按群自定义提示词（仅在群聊场景生效）。"""
         if not is_group or not group_id:
@@ -1160,13 +1156,12 @@ class QQSessionInstructionService:
         shared_group_session: bool,
         group_scene_mode: str,
     ) -> str:
-        admin_line = ""
-        if permission_level == "admin":
-            admin_line = f"\n## 身份确认（Identity Confirmation）\n当前发言人 {user_title}（QQ: {sender_id}）**就是主人/管理员本人**。请使用对主人的称呼和态度来回应，不要怀疑对方的身份。\n"
+        # Group permission is not speaker identity. The context node appends
+        # verified per-turn identity (and excludes synthetic sender placeholders).
         # 群聊场景段只有这一条路：统一的软指令（「该不该说话」的判定交给注意力门控，
         # 场景段只描述环境）。原来的「退级策略」四套硬模板随策略模式一起删除，
         # 见 docs/SESSION-HANDOFF.md §13/§24。
-        return admin_line + self._resolve_static_layer(
+        return self._resolve_static_layer(
             "prompts.group.kira_unified", SCENE_KIRA_UNIFIED_GROUP,
             her_name=her_name, master_name=master_title, group_id=group_id or "",
         )

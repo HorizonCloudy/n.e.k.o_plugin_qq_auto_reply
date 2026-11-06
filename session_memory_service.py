@@ -99,8 +99,8 @@ class QQSessionMemoryService:
     # MEMBER_FLUSH_CONCURRENCY，每批发一次 scoped history segments 请求
     # （那是一次 LLM 抽取，所以超时给得很宽）。批的单请求输入工作量上界
     # 与旧的逐成员单发同口径（200 条）。每趟最多尝试“名额数”个批，且
-    # 每条有序链最多尝试“波数”个批；剩余内容留桶重试，所以下面按
-    # "波数 × 单发超时"推导的等待上限仍覆盖一趟排空。
+    # 有序链在“波数 × 单发超时”的时间预算内继续处理；快速批次不再
+    # 固定两批就停，剩余预算不足一次完整请求时留桶供下轮结算。
     # 别写死——这些数任何一个改了，等待上限必须跟着走。
     MEMBER_FLUSH_CONCURRENCY = 4
     # speaker_label 的长度上限，与 /scoped_history 路由的校验同一个数。
@@ -1796,44 +1796,39 @@ class QQSessionMemoryService:
             # keeps the session-lock wait bounded; leftovers stay retryable.
             chains: list[list[list[dict]]] = [batches]
 
-            def _chain_attempt_limit(chain: list[list[dict]]) -> int:
-                if isolate_segments:
-                    # Terminal opt-out/orphan settlement has no next sweep.
-                    # Every isolated request must be attempted even if an
-                    # earlier request fails; isolation bounds each failure to
-                    # one sender, and no retry remains whose chronology could
-                    # be overtaken.
-                    return len(chain)
-                return -(
-                    -self.GROUP_MEMBER_MAX_PARTICIPANTS
-                    // self.MEMBER_FLUSH_CONCURRENCY
-                )
+            # Spend the existing two-request time budget rather than stopping
+            # after two requests even when extraction completes immediately.
+            deadline = time.monotonic() + self.SCOPED_HISTORY_TIMEOUT_SECONDS * (
+                -(-self.GROUP_MEMBER_MAX_PARTICIPANTS // self.MEMBER_FLUSH_CONCURRENCY)
+            )
+            time_deferred = 0
 
             async def _flush_chain(chain: list[list[dict]]) -> list[str]:
+                nonlocal time_deferred
                 failed: list[str] = []
-                serial_attempt_limit = _chain_attempt_limit(chain)
-                attempted = chain[:serial_attempt_limit]
-                for batch_index, batch in enumerate(attempted):
+                for batch_index, batch in enumerate(chain):
+                    # Only start a request if its full timeout fits. No outer
+                    # cancellation of a successful-but-not-yet-accounted batch.
+                    if (not isolate_segments and batch_index > 0
+                            and deadline - time.monotonic() < self.SCOPED_HISTORY_TIMEOUT_SECONDS):
+                        time_deferred += len(chain) - batch_index
+                        failed.extend(
+                            str(spec.get("sender_id") or "")
+                            for later in chain[batch_index:]
+                            for spec in later if spec.get("sender_id")
+                        )
+                        break
                     batch_failed = await _flush_one_batch(batch)
                     failed.extend(batch_failed)
                     if batch_failed and not isolate_segments:
-                        # Later chronological work must not overtake a failed
-                        # predecessor. Report its still-buffered senders too,
-                        # so callers do not mistake "not attempted" for ok.
+                        # Preserve chronology: no later facts may overtake a
+                        # failed predecessor. All remaining buckets stay intact.
                         failed.extend(
                             str(spec.get("sender_id") or "")
                             for later in chain[batch_index + 1:]
                             for spec in later if spec.get("sender_id")
                         )
                         break
-                else:
-                    deferred_in_chain = chain[serial_attempt_limit:]
-                    if deferred_in_chain:
-                        failed.extend(
-                            str(spec.get("sender_id") or "")
-                            for later in deferred_in_chain
-                            for spec in later if spec.get("sender_id")
-                        )
                 return list(dict.fromkeys(failed))
 
             failed_lists = await asyncio.gather(
@@ -1844,10 +1839,7 @@ class QQSessionMemoryService:
                 for batch in deferred_batches for spec in batch
                 if spec.get("sender_id")
             ]
-            deferred_count = len(deferred_batches) + sum(
-                max(0, len(chain) - _chain_attempt_limit(chain))
-                for chain in chains
-            )
+            deferred_count = len(deferred_batches) + time_deferred
             if deferred_count:
                 self.plugin.logger.info(
                     f"[{reason}] 群 {group_id} 为保持排空等待上限，"
@@ -2476,9 +2468,11 @@ class QQSessionMemoryService:
                         reason=reason,
                     )
                 if failed_member_ids:
-                    self.plugin.logger.error(
+                    # Real request failures are logged at their source above.
+                    # Remaining buckets may simply be outside this sweep's budget.
+                    self.plugin.logger.info(
                         f"[{reason}] 群 {group_id} 仍有 "
-                        f"{len(failed_member_ids)} 个成员记忆待重试"
+                        f"{len(set(failed_member_ids))} 个成员记忆待后续结算（保留队列）"
                     )
                     return False
                 if not group_settled:

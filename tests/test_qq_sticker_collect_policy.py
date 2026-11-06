@@ -119,7 +119,38 @@ def test_current_refuses_group_item_inside_private_session(tmp_path: Path) -> No
 
 def test_current_allows_private_item_in_private_session(tmp_path: Path) -> None:
     lab = _lab(tmp_path, POLICY_CURRENT)
-    assert lab.check(item_group="", current_group="") == ""
+    assert lab.check(item_group="", current_group="", item_sender="u1", current_sender="u1") == ""
+
+
+@pytest.mark.parametrize("sender", ["u2", ""])
+def test_current_refuses_other_or_unknown_private_peer(tmp_path, sender):
+    lab = _lab(tmp_path, POLICY_CURRENT)
+    assert lab.check(item_group="", current_group="", item_sender="u1", current_sender=sender)
+
+
+@pytest.mark.parametrize("policy,expected", [(POLICY_CURRENT, 0), (POLICY_ANY, 1)])
+def test_private_save_never_falls_back_to_another_peer_by_default(tmp_path, monkeypatch, policy, expected):
+    from unittest.mock import AsyncMock
+
+    lab = _lab(tmp_path, policy)
+    lab.observe(_face_message(group_id="", sender_id="u2"))
+    save = AsyncMock(return_value={"desc": "private picture"})
+    monkeypatch.setattr(lab, "save", save)
+    asyncio.run(lab.execute_save({}, sender_id="u1", group_id=""))
+    assert save.await_count == expected
+
+
+def test_private_save_skips_newer_group_image_from_same_sender(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    lab = _lab(tmp_path, POLICY_CURRENT)
+    lab.observe(_face_message(group_id="", sender_id="u1"))
+    lab.observe(_face_message(group_id="111", sender_id="u1"))
+    save = AsyncMock(return_value={"desc": "private picture"})
+    monkeypatch.setattr(lab, "save", save)
+    asyncio.run(lab.execute_save({}, sender_id="u1", group_id=""))
+    save.assert_awaited_once()
+    assert save.call_args.kwargs["group_id"] == ""
 
 
 def test_any_allows_other_group(tmp_path: Path) -> None:

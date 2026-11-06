@@ -219,7 +219,10 @@ class QQStickerLab:
         raw = raw.strip().lower()
         return raw if raw in _POLICIES else DEFAULT_POLICY
 
-    def check(self, *, item_group: str, current_group: str) -> str:
+    def check(
+        self, *, item_group: str, current_group: str,
+        item_sender: str = "", current_sender: str = "",
+    ) -> str:
         """能不能收这一张。允许返回空串；拒绝返回**给模型看的一句话**。
 
         返回话而不是布尔：模型收到"这张不是这个群里的，我不拿别处的东西"会照实
@@ -234,6 +237,9 @@ class QQStickerLab:
         if str(item_group or "") != str(current_group or ""):
             self.diag["policy_block"] += 1
             return "这张不是这个群里的，我不拿别处的东西。"
+        if not current_group and (not current_sender or item_sender != current_sender):
+            self.diag["policy_block"] += 1
+            return "这张不是这段私聊里的，我不拿别人的私聊图片。"
         return ""
 
     # ── 收流：只记，不下载不识别 ────────────────────────────
@@ -283,14 +289,16 @@ class QQStickerLab:
         *,
         limit: int = 1,
         sender_id: str = "",
-        group_id: str = "",
+        group_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """取最近收到的媒体，最新的在前。空字符串表示不限。"""
+        """取最近媒体。group_id=None 不限会话，空串只匹配私聊。"""
         out: list[dict[str, Any]] = []
         for item in reversed(self._recent):
             if sender_id and item["sender_id"] != sender_id:
                 continue
-            if group_id and item["group_id"] != group_id:
+            if group_id is not None and item["group_id"] != group_id:
+                continue
+            if item["at"] < time.time() - _FRESH_SECONDS:
                 continue
             out.append(item)
             if len(out) >= limit:
@@ -505,6 +513,8 @@ class QQStickerLab:
                 "把聊天里刚收到的图收进自己的表情包库，以后能当表情包发出去。"
                 "适合「这个好玩，存了」这种场面。收之前不用问对方。"
                 "存的时候可以顺手给它起个名字（note），起过名字的更好找。"
+                "不收自拍、工作截图、二维码、聊天记录或广告图。"
+                "可以静默收藏；收到纯表情包时仍无需回复。"
             ),
             parameters={
                 "type": "object",
@@ -547,7 +557,7 @@ class QQStickerLab:
         # 找"要收哪一张"：先在当前会话里按人找，找不到再退到当前会话任何人。
         # 群聊里"这张存下来"经常指的不是当前发言者那张（A 发图、B 说这图好玩）。
         items = self.recent(limit=count, sender_id=sender_id, group_id=group_id)
-        if not items:
+        if not items and group_id:
             items = self.recent(limit=count, group_id=group_id)
         if not items and policy == POLICY_ANY:
             items = self.recent(limit=count)
@@ -560,6 +570,8 @@ class QQStickerLab:
             refusal = self.check(
                 item_group=str(item.get("group_id") or ""),
                 current_group=group_id,
+                item_sender=str(item.get("sender_id") or ""),
+                current_sender=sender_id,
             )
             if refusal:
                 return refusal

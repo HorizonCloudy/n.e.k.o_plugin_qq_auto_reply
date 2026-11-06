@@ -47,6 +47,9 @@ import re
 import time
 from typing import Any, Callable
 
+from .plugin_authorization import normalize_plugin_tiers
+from .plugin_context_providers import capability_hints
+
 #: 分级取值。``all`` = 所有人都能用；``admin`` = 只有管理员能用。
 TIER_ALL = "all"
 TIER_ADMIN = "admin"
@@ -371,6 +374,9 @@ class QQPluginToolService:
                 #: 只有 True 的那些会进提示词（见 :meth:`select_mounted`）。
                 "running": status == "running",
             })
+            hints = capability_hints(plugin_id, item.get("entries") or [])
+            if hints:
+                candidates[-1]["context_capabilities"] = hints
         candidates.sort(key=lambda row: row["plugin_id"])
         running = sum(1 for row in candidates if row["running"])
         self.plugin.logger.info(
@@ -397,6 +403,8 @@ class QQPluginToolService:
                 value = str(entry.get("id") or entry.get("event_id") or "").strip()
             else:
                 value = str(entry or "").strip()
+            if value == "get_emotion_snapshot":
+                continue  # Reserved read-only binding path; never a user-selectable LLM tool.
             if value:
                 ids.append(value)
         return ids
@@ -471,16 +479,7 @@ class QQPluginToolService:
 
     def tiers(self) -> dict[str, str]:
         """``{plugin_id: "all"|"admin"}``；非法项直接丢掉（配置手改坏了不该炸会话）。"""
-        raw = (self.plugin._qq_settings or {}).get("qq_open_plugin_tools") or {}
-        if not isinstance(raw, dict):
-            return {}
-        clean: dict[str, str] = {}
-        for key, value in raw.items():
-            plugin_id = str(key or "").strip()
-            tier = str(value or "").strip().lower()
-            if plugin_id and tier in VALID_TIERS:
-                clean[plugin_id] = tier
-        return clean
+        return normalize_plugin_tiers((self.plugin._qq_settings or {}).get("qq_open_plugin_tools"))
 
     def allowed_tiers_for(self, permission_level: Any) -> set[str]:
         """这一轮这个说话人能用的档位。

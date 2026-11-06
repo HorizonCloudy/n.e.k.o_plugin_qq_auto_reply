@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import pytest
 from plugin.plugins.qq_auto_reply.pipeline_models import QQDeliveryPlan, QQMessageBlock
 from plugin.plugins.qq_auto_reply.reply_delivery_node import QQReplyDeliveryNode
 from plugin.plugins.qq_auto_reply.reply_postprocess_node import QQReplyPostprocessNode
@@ -120,6 +121,7 @@ def test_other_template_tags_are_still_stripped():
     node, client = _delivery_node()
     asyncio.run(node.deliver(_plan("<text>正文</text><feeling>calm</feeling>")))
     _kind, _target, sent = client.sent[0]
+    assert sent == "正文", "内部情绪值不能随标签脱壳后发出去"
     for tag in ("<text>", "</text>", "<feeling>", "</feeling>"):
         assert tag not in sent, f"{tag} 没被剥掉: {sent!r}"
 
@@ -366,3 +368,92 @@ def test_pipeline_targets_the_triggering_message():
         )
 
 
+
+
+@pytest.mark.parametrize("raw", [
+    "<feeling> curious </feeling><msg>是九晴做的小剧场视频呀</msg>",
+    "<feeling>\ncurious\n</feeling><msg>是九晴做的小剧场视频呀</msg>",
+    '<FEELING source="mood"> Curious </FEELING ><msg>是九晴做的小剧场视频呀</msg>',
+    "<feeling>curious</feeling><feeling>happy</feeling><msg>是九晴做的小剧场视频呀</msg>",
+    "<msg><feeling>happy</feeling>是九晴做的小剧场视频呀</msg><feeling>curious</feeling>",
+])
+def test_feeling_metadata_never_becomes_a_separate_message(raw):
+    outcome = _finalize(needs_attention=True, raw=raw)
+    assert outcome.feeling == "curious"
+    assert [block.text for block in outcome.blocks] == ["是九晴做的小剧场视频呀"]
+    node, client = _delivery_node()
+    plan = _plan("")
+    plan.blocks = outcome.blocks
+    asyncio.run(node.deliver(plan))
+    assert [text for _, _, text in client.sent] == ["是九晴做的小剧场视频呀"]
+
+
+def test_whitespace_feeling_only_is_silent_but_updates_mood():
+    outcome = _finalize(needs_attention=True, raw="<feeling>\n curious \n</feeling>")
+    assert outcome.feeling == "curious"
+    assert outcome.postprocess_reason == "llm_skip"
+    assert not outcome.blocks and not outcome.reply_text
+
+
+def test_feeling_is_removed_before_malformed_xml_falls_back_to_text():
+    blocks = QQReplyPostprocessNode._parse_blocks("<msg>正文 & <feeling>curious</feeling></msg>")
+    assert [block.text for block in blocks] == ["正文 &"]
+
+
+def test_feeling_only_delivery_does_not_send_orphan_reply_or_at():
+    node, client = _delivery_node()
+    plan = _plan("<feeling>curious</feeling>")
+    plan.blocks[0].reply_to = "123"
+    plan.blocks[0].at_user = "456"
+    result = asyncio.run(node.deliver(plan))
+    assert not client.sent
+    assert result is not None and not result.delivered
+
+
+@pytest.mark.parametrize("text", ["curious", "I'm curious about this video.", "curious 的意思是好奇。"])
+def test_ordinary_emotion_words_are_not_filtered(text):
+    outcome = _finalize(needs_attention=True, raw=f"<msg>{text}</msg>")
+    assert outcome.blocks[0].text == text
+    node, client = _delivery_node()
+    asyncio.run(node.deliver(_plan(text)))
+    assert client.sent[0][2] == text
+
+
+def test_feeling_cleanup_preserves_real_tool_prefix_and_final_message():
+    node = _postprocess_node(needs_attention=True)
+    prefix = "<feeling> curious </feeling>我看看这个视频\n"
+    context = SimpleNamespace(ephemeral_session=False, force_reply=False, permission_level="trusted")
+    result = SimpleNamespace(reply_text=prefix + "<msg>是配音类的内容</msg>", pre_tool_text=prefix)
+    outcome = asyncio.run(node.finalize(context, result))
+    assert outcome.feeling == "curious"
+    assert [block.text for block in outcome.blocks] == ["我看看这个视频", "是配音类的内容"]
+    assert "curious" not in outcome.post_tool_text
+
+
+def test_repaired_xml_cannot_reintroduce_feeling_into_blocks():
+    node = _postprocess_node(needs_attention=True)
+
+    async def repair(_):
+        return "<feeling> curious </feeling><msg>正文</msg>"
+
+    node._repair_xml = repair
+    context = SimpleNamespace(ephemeral_session=False, force_reply=False, permission_level="trusted")
+    outcome = asyncio.run(node.finalize(context, SimpleNamespace(reply_text="<msg>正文")))
+    assert [block.text for block in outcome.blocks] == ["正文"]
+
+
+@pytest.mark.parametrize("only_metadata", [False, True])
+def test_record_delivery_cleans_metadata_before_tts(only_metadata):
+    node, client = _delivery_node()
+    spoken = []
+
+    async def synth(text):
+        spoken.append(text)
+        return ("file://voice.wav", None)
+
+    node.plugin.voice_reply_service.synthesize_reply_voice_file = synth
+    record = "<feeling> curious </feeling>" + ("" if only_metadata else "正文")
+    result = asyncio.run(node.deliver(_record_plan(record=record)))
+    assert spoken == ([] if only_metadata else ["正文"])
+    assert bool(client.sent) is not only_metadata
+    assert result.delivered is not only_metadata
