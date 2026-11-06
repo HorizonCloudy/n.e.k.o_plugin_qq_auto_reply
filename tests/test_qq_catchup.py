@@ -449,3 +449,97 @@ def test_state_snapshot_exposes_diag(tmp_path: Path) -> None:
     assert state["enabled"] is True
     assert state["conversations"] == 1
     assert "conv_failed" in state["diag"]
+
+
+@_sync
+async def test_live_message_after_reconnect_does_not_hide_the_gap(tmp_path):
+    plugin, client, dispatcher = _plugin(tmp_path, settings={"catchup_stagger_ms": 0})
+    svc = QQMessageCatchupService(plugin)
+    svc.note_message(_msg(10))
+    svc.note_message(_msg(12))
+    client.history["group:500"] = [_msg(10), _msg(11), _msg(12)]
+    await svc.catch_up(force=True)
+    assert [m["message_seq"] for m in dispatcher.injected] == [11]
+    assert svc._cursors["group:500"]["seq"] == 12
+    assert "pending_seq" not in svc._cursors["group:500"]
+
+
+@_sync
+async def test_short_disconnect_gap_is_repaired_without_a_false_poll(tmp_path):
+    plugin, client, dispatcher = _plugin(tmp_path, settings={"catchup_stagger_ms": 0})
+    svc = QQMessageCatchupService(plugin)
+    await svc._watch_tick()
+    svc.note_message(_msg(10))
+    svc.note_message(_msg(12))
+    client.history["group:500"] = [_msg(11), _msg(12)]
+    await svc._watch_tick()
+    assert [m["message_seq"] for m in dispatcher.injected] == [11]
+
+
+@_sync
+async def test_gap_survives_restart(tmp_path):
+    plugin, client, dispatcher = _plugin(tmp_path, settings={"catchup_stagger_ms": 0})
+    svc = QQMessageCatchupService(plugin)
+    svc.note_message(_msg(10))
+    svc.note_message(_msg(12))
+    await svc._flush(force=True)
+    fresh = QQMessageCatchupService(plugin)
+    client.history["group:500"] = [_msg(11), _msg(12)]
+    await fresh.catch_up(force=True)
+    assert [m["message_seq"] for m in dispatcher.injected] == [11]
+
+
+@_sync
+async def test_failed_injection_is_retried_even_if_dispatcher_noted_it(tmp_path):
+    plugin, client, dispatcher = _plugin(tmp_path, settings={"catchup_stagger_ms": 0})
+    svc = QQMessageCatchupService(plugin)
+    svc.note_message(_msg(10))
+    client.history["group:500"] = [_msg(11), _msg(12)]
+    original = dispatcher.handle_message
+
+    async def fail(message):
+        svc.note_message(message)
+        raise RuntimeError("temporary failure")
+
+    dispatcher.handle_message = fail
+    first = await svc.catch_up(force=True)
+    assert first["details"][0]["status"] == "failed"
+    dispatcher.handle_message = original
+    await svc.catch_up(force=True)
+    assert [m["message_seq"] for m in dispatcher.injected] == [11, 12]
+
+
+@_sync
+async def test_live_gap_during_fetch_is_kept_for_the_next_sweep(tmp_path):
+    plugin, client, dispatcher = _plugin(tmp_path, settings={"catchup_stagger_ms": 0})
+    svc = QQMessageCatchupService(plugin)
+    svc.note_message(_msg(10))
+    original = client.get_group_msg_history
+
+    async def fetch(*args, **kwargs):
+        svc.note_message(_msg(14))
+        return {"messages": [_msg(11), _msg(12)]}
+
+    client.get_group_msg_history = fetch
+    await svc.catch_up(force=True)
+    assert svc._cursors["group:500"]["seq"] == 14
+    assert svc._cursors["group:500"]["pending_seq"] == 12
+    client.get_group_msg_history = original
+    client.history["group:500"] = [_msg(13), _msg(14)]
+    await svc.catch_up(force=True)
+    assert [m["message_seq"] for m in dispatcher.injected] == [11, 12, 13]
+
+
+@_sync
+async def test_overlapping_history_pages_do_not_replay_a_message_twice(tmp_path):
+    plugin, client, dispatcher = _plugin(tmp_path, settings={"catchup_stagger_ms": 0})
+    svc = QQMessageCatchupService(plugin)
+    svc.note_message(_msg(10))
+
+    async def fetch(peer, message_seq=0, **kwargs):
+        seqs = [12, 13] if not message_seq else [11, 12]
+        return {"messages": [_msg(n, ts=0) for n in seqs]}
+
+    client.get_group_msg_history = fetch
+    await svc.catch_up(force=True)
+    assert [m["message_seq"] for m in dispatcher.injected] == [11, 12, 13]

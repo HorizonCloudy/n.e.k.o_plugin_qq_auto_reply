@@ -7,6 +7,7 @@ import time
 from typing import Any
 
 from .display_name_service import QQDisplayNameService
+from .dsml_markers import strip_dsml_markers
 from .pipeline_models import is_synthetic_source
 
 _CURRENT_TURN_AI_ROW = object()
@@ -57,6 +58,10 @@ def _strip_internal_markup(text: str) -> str:
     cleaned = _MEMORY_DROP_WITH_CONTENT.sub("", text)
     cleaned = _MEMORY_DROP_SHELL.sub("", cleaned)
     cleaned = _MEMORY_UNWRAP.sub("", cleaned)
+    # 漏进正文的 DSML 工具调用标记也在这层清掉：发送侧已经剥过一次，但
+    # 会话历史里存的是**模型原始输出**，那才是记忆的输入。不剥的话她"记得"
+    # 的自己发言是一串 `<｜｜DSML｜｜ invoke ...>`，下一轮接不上自己说过什么。
+    cleaned = strip_dsml_markers(cleaned)
     return cleaned.strip()
 
 
@@ -94,8 +99,8 @@ class QQSessionMemoryService:
     # MEMBER_FLUSH_CONCURRENCY，每批发一次 scoped history segments 请求
     # （那是一次 LLM 抽取，所以超时给得很宽）。批的单请求输入工作量上界
     # 与旧的逐成员单发同口径（200 条）。每趟最多尝试“名额数”个批，且
-    # 每条有序链最多尝试“波数”个批；剩余内容留桶重试，所以下面按
-    # "波数 × 单发超时"推导的等待上限仍覆盖一趟排空。
+    # 有序链在“波数 × 单发超时”的时间预算内继续处理；快速批次不再
+    # 固定两批就停，剩余预算不足一次完整请求时留桶供下轮结算。
     # 别写死——这些数任何一个改了，等待上限必须跟着走。
     MEMBER_FLUSH_CONCURRENCY = 4
     # speaker_label 的长度上限，与 /scoped_history 路由的校验同一个数。
@@ -523,7 +528,13 @@ class QQSessionMemoryService:
             return inserted
 
         if not user_data.get("is_group"):
-            return 0
+            # 私聊 legacy（admin 主人语料）走的是同一份
+            # conversation_slice_to_memory_messages，排除名单对它同样生效。
+            # 主动搭话现在按真实对话入库（persist_memory=True），塞给她的
+            # "[系统] 你去主动找他说话…" 是捏造的指令行——不排除掉，长期
+            # 记忆里就成了"主人让他主动搭话"，下一轮她自己会接着念这段指令。
+            # participant 模式在上面已经单独处理过，这里只接住 legacy。
+            pass
         rows = user_data.setdefault("undelivered_draft_rows", [])
         for msg in history[max(0, baseline):]:
             msg_type = getattr(msg, "type", "")
@@ -758,7 +769,10 @@ class QQSessionMemoryService:
             )
             del messages[:-self.GROUP_MEMBER_HARD_LIMIT]
 
-    async def cache_session_delta(self, session_key: str, user_data: dict[str, Any]) -> int:
+    async def cache_session_delta(
+        self, session_key: str, user_data: dict[str, Any], *,
+        sync_tail_ai: bool = False,
+    ) -> int:
         # Busy group chats use one scoped extraction at session finalization.
         # Feeding each group turn into the legacy /cache pipeline would both
         # increase LLM cost and contaminate legacy-private memory.
@@ -836,12 +850,18 @@ class QQSessionMemoryService:
         # 随后被 buffer 合并成 summary 取代（打标发生在 schedule_reply，
         # 晚于此处）。滞后一拍——本轮回复留给下一次 cache/finalize，那时
         # 排除名单已定型；用户消息照常先落库。
+        #
+        # sync_tail_ai 例外：主动搭话这类合成轮没有 buffer 在等（回复是直接
+        # 发出去的），尾部 ai 行不可能随后被 summary 取代，当轮就可以入库。
+        # 不这么做的话，她说完之后用户不回消息，这条回复要等到下一轮才进
+        # 记忆库，中途宿主重启就永久丢了——刚说过的话，重启完就成了没说过。
         history_upper = len(conversation_history)
-        while (
-            history_upper > start_index
-            and getattr(conversation_history[history_upper - 1], "type", "") == "ai"
-        ):
-            history_upper -= 1
+        if not sync_tail_ai:
+            while (
+                history_upper > start_index
+                and getattr(conversation_history[history_upper - 1], "type", "") == "ai"
+            ):
+                history_upper -= 1
         delta_messages = self.conversation_slice_to_memory_messages(
             conversation_history[:history_upper], start_index, user_data=user_data,
         )
@@ -1776,44 +1796,39 @@ class QQSessionMemoryService:
             # keeps the session-lock wait bounded; leftovers stay retryable.
             chains: list[list[list[dict]]] = [batches]
 
-            def _chain_attempt_limit(chain: list[list[dict]]) -> int:
-                if isolate_segments:
-                    # Terminal opt-out/orphan settlement has no next sweep.
-                    # Every isolated request must be attempted even if an
-                    # earlier request fails; isolation bounds each failure to
-                    # one sender, and no retry remains whose chronology could
-                    # be overtaken.
-                    return len(chain)
-                return -(
-                    -self.GROUP_MEMBER_MAX_PARTICIPANTS
-                    // self.MEMBER_FLUSH_CONCURRENCY
-                )
+            # Spend the existing two-request time budget rather than stopping
+            # after two requests even when extraction completes immediately.
+            deadline = time.monotonic() + self.SCOPED_HISTORY_TIMEOUT_SECONDS * (
+                -(-self.GROUP_MEMBER_MAX_PARTICIPANTS // self.MEMBER_FLUSH_CONCURRENCY)
+            )
+            time_deferred = 0
 
             async def _flush_chain(chain: list[list[dict]]) -> list[str]:
+                nonlocal time_deferred
                 failed: list[str] = []
-                serial_attempt_limit = _chain_attempt_limit(chain)
-                attempted = chain[:serial_attempt_limit]
-                for batch_index, batch in enumerate(attempted):
+                for batch_index, batch in enumerate(chain):
+                    # Only start a request if its full timeout fits. No outer
+                    # cancellation of a successful-but-not-yet-accounted batch.
+                    if (not isolate_segments and batch_index > 0
+                            and deadline - time.monotonic() < self.SCOPED_HISTORY_TIMEOUT_SECONDS):
+                        time_deferred += len(chain) - batch_index
+                        failed.extend(
+                            str(spec.get("sender_id") or "")
+                            for later in chain[batch_index:]
+                            for spec in later if spec.get("sender_id")
+                        )
+                        break
                     batch_failed = await _flush_one_batch(batch)
                     failed.extend(batch_failed)
                     if batch_failed and not isolate_segments:
-                        # Later chronological work must not overtake a failed
-                        # predecessor. Report its still-buffered senders too,
-                        # so callers do not mistake "not attempted" for ok.
+                        # Preserve chronology: no later facts may overtake a
+                        # failed predecessor. All remaining buckets stay intact.
                         failed.extend(
                             str(spec.get("sender_id") or "")
                             for later in chain[batch_index + 1:]
                             for spec in later if spec.get("sender_id")
                         )
                         break
-                else:
-                    deferred_in_chain = chain[serial_attempt_limit:]
-                    if deferred_in_chain:
-                        failed.extend(
-                            str(spec.get("sender_id") or "")
-                            for later in deferred_in_chain
-                            for spec in later if spec.get("sender_id")
-                        )
                 return list(dict.fromkeys(failed))
 
             failed_lists = await asyncio.gather(
@@ -1824,10 +1839,7 @@ class QQSessionMemoryService:
                 for batch in deferred_batches for spec in batch
                 if spec.get("sender_id")
             ]
-            deferred_count = len(deferred_batches) + sum(
-                max(0, len(chain) - _chain_attempt_limit(chain))
-                for chain in chains
-            )
+            deferred_count = len(deferred_batches) + time_deferred
             if deferred_count:
                 self.plugin.logger.info(
                     f"[{reason}] 群 {group_id} 为保持排空等待上限，"
@@ -2456,9 +2468,11 @@ class QQSessionMemoryService:
                         reason=reason,
                     )
                 if failed_member_ids:
-                    self.plugin.logger.error(
+                    # Real request failures are logged at their source above.
+                    # Remaining buckets may simply be outside this sweep's budget.
+                    self.plugin.logger.info(
                         f"[{reason}] 群 {group_id} 仍有 "
-                        f"{len(failed_member_ids)} 个成员记忆待重试"
+                        f"{len(set(failed_member_ids))} 个成员记忆待后续结算（保留队列）"
                     )
                     return False
                 if not group_settled:

@@ -22,6 +22,11 @@ from utils.config_manager import get_reserved
 GSV_VOICE_PREFIX = "gsv:"
 
 try:
+    from utils.api_config_loader import get_new_character_default_voice_id
+except (ImportError, ModuleNotFoundError):
+    get_new_character_default_voice_id = None
+
+try:
     from utils.tts.native_voice_registry import get_active_realtime_native_provider_for_ui
 except (ImportError, ModuleNotFoundError):
     get_active_realtime_native_provider_for_ui = None
@@ -96,7 +101,7 @@ class QQVoiceReplyService:
             if not base_url or (not base_url.startswith("ws://") and not base_url.startswith("wss://")):
                 return None
 
-            voice_id = await self.get_current_voice_id() or "default"
+            voice_id = str(await self.get_current_voice_id() or "").strip() or "default"
             voice_name = str(tts_config.get("voice_name") or voice_id)
 
             import io
@@ -175,7 +180,7 @@ class QQVoiceReplyService:
                 return local_result
 
             voices = config_manager.get_voices_for_current_api()
-            voice_id = await self.get_current_voice_id()
+            voice_id = str(await self.get_current_voice_id() or "").strip()
             if voice_id.startswith(GSV_VOICE_PREFIX):
                 # 走到这里说明本地那条 ws 线路没产出音频（没配端点或合成失败），而
                 # GPT-SoVITS 只存在于宿主自己的 TTS 里 —— 插件这条链上没有它。
@@ -184,10 +189,29 @@ class QQVoiceReplyService:
                     "要么把 tts_custom 指向 ws://… 用本地合成，要么在角色上换成插件支持的音色"
                     "（百炼 / MiniMax / MiMo / Gemini / 免费音色）"
                 )
-            if not voice_id and get_active_realtime_native_provider_for_ui:
-                active_native = get_active_realtime_native_provider_for_ui(config_manager)
-                if active_native:
-                    voice_id = active_native
+            active_native_provider = (
+                get_active_realtime_native_provider_for_ui(config_manager)
+                if get_active_realtime_native_provider_for_ui else None
+            )
+            default_free_voice = False
+            if not voice_id:
+                # 服务名不是音色 ID。仅为空配置补默认值，不覆盖用户已选的音色，
+                # 也不写回角色配置；区域判定和本地 TTS 已在上面处理。
+                if active_native_provider == "gemini" and normalize_gemini_tts_voice:
+                    voice_id, _ = normalize_gemini_tts_voice("")
+                else:
+                    if get_new_character_default_voice_id:
+                        voice_id = get_new_character_default_voice_id()
+                    else:
+                        # 兼容尚未提供默认角色音色 helper 的宿主。
+                        free_voices = get_free_voices() or {}
+                        voice_id = (
+                            free_voices.get("cuteGirl")
+                            or next((value for value in free_voices.values() if value), "")
+                            or STEPFUN_TTS_DEFAULT_VOICE
+                        )
+                    # 默认值可能不在展示目录里，仍须走免费 TTS，不能误投百炼。
+                    default_free_voice = True
             voice_data = voices.get(voice_id) if isinstance(voices, dict) else None
             provider = (voice_data or {}).get("provider", "")
             text = normalized_text
@@ -239,10 +263,6 @@ class QQVoiceReplyService:
                 audio_data = await minimax_client.synthesize_preview(voice_id=voice_id, text=text)
                 return audio_data, "audio/mpeg"
 
-            if not audio_api_key:
-                raise RuntimeError("TTS_AUDIO_API_KEY_MISSING")
-
-            active_native_provider = get_active_realtime_native_provider_for_ui(config_manager) if get_active_realtime_native_provider_for_ui else None
             if active_native_provider and normalize_gemini_tts_voice:
                 native_voice_id, recognized = normalize_gemini_tts_voice(voice_id)
                 if active_native_provider == "gemini" and recognized:
@@ -258,6 +278,9 @@ class QQVoiceReplyService:
                     )
                     return audio_data, "audio/wav"
 
+            if not audio_api_key:
+                raise RuntimeError("TTS_AUDIO_API_KEY_MISSING")
+
             free_voice_ids = set((get_free_voices() or {}).values())
             # free_voices 是当前区域的展示目录，不包含所有仍可用的旧版音色。
             # 旧 StepFun 预置音色仍走免费协议，不能落入默认的百炼分支。
@@ -266,7 +289,7 @@ class QQVoiceReplyService:
                 and bool(voice_id)
                 and is_stepfun_tts_voice(voice_id)
             )
-            if voice_id in free_voice_ids or legacy_free_voice:
+            if default_free_voice or voice_id in free_voice_ids or legacy_free_voice:
                 tts_url = _adjust_free_tts_url("wss://www.lanlan.tech/tts")
                 headers = {"Authorization": f"Bearer {audio_api_key or ''}"}
                 lang_hint = None
@@ -558,6 +581,7 @@ class QQVoiceReplyService:
                 group_id, text_segments, normalized_text,
                 mode=mode, fallback=fallback_to_text_on_voice_failure, keyboard=keyboard,
             )
+        # 语音只发独立 record；引用和 @ 留在 text_segments，供文字及失败回退使用。
         # both 模式：LLM 自主决定 → 有 <record> 则语音，否则纯文字
         if mode == "both":
             voice_content = (voice_text or "").strip()
@@ -572,7 +596,7 @@ class QQVoiceReplyService:
                     if await safety.blocked(group_id, created_at=started_at, force=True):
                         return text_ok
                     return self._confirm_send(
-                        await self.plugin.qq_client.send_group_record(group_id, file_uri, reply_message_id=reply_message_id, at_user_id=at_user_id),
+                        await self.plugin.qq_client.send_group_record(group_id, file_uri),
                     ) or text_ok
                 except Exception:
                     self.plugin.logger.warning("QQ both-语音群聊发送失败，已保留文本", exc_info=True)
@@ -586,7 +610,7 @@ class QQVoiceReplyService:
             if await safety.blocked(group_id, created_at=started_at, force=True):
                 return False
             voice_ok = self._confirm_send(
-                await self.plugin.qq_client.send_group_record(group_id, file_uri, reply_message_id=reply_message_id, at_user_id=at_user_id),
+                await self.plugin.qq_client.send_group_record(group_id, file_uri),
             )
             if voice_ok:
                 return True

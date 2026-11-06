@@ -11,6 +11,20 @@ from utils.llm_client import AIMessage
 
 from .pipeline_models import QQReplyContext
 
+# 一轮对话里允许几轮工具调用。
+#
+# 原来是 1，理由是"压住工具轮的最坏超时"（每多一次迭代就多一整段 LLM 流，
+# 而超时的代价是丢弃整个共享群会话）。但 1 次根本不够用：所有"先看再动手"
+# 的流程都要两次调用——典型的是图库（先 browse_gallery 挑，再 set_avatar 换），
+# 或者先 search_web 看结果、再 open_url 打开具体那条。第一次把额度用光之后，
+# 模型想再调就只能把调用当成正文吐出来：DeepSeek-V4.1 会直接输出
+# `<｜｜DSML｜｜ invoke name="...">` 这种原生标记，宿主不认为那是工具调用，
+# 于是既不执行、又被后处理当标记剥成空串——现象就是"她答应了，但什么都没做"。
+#
+# 改成 5 次：够"查 → 看 → 做"这种三步链，也不至于让模型把工具当聊天刷。
+# 超时预算在 reply_generation_service 里按这个常量重新算过，不是白给。
+MAX_TOOL_ITERATIONS = 5
+
 
 def generation_session_is_reusable(
     entry: Optional[dict[str, Any]],
@@ -234,11 +248,12 @@ class QQSessionBootstrapService:
                 model=model,
                 on_text_delta=on_text_delta,
                 on_response_discarded=on_response_discarded,
-                # 一轮只允许一次召回：给这轮的检索定死一次的预算，也压住
-                # 工具轮的最坏超时（每多一次迭代就多一整段 LLM 流，而这里
-                # 超时的代价是丢弃整个共享群会话）。封顶后 forced-finalize
-                # 会摘掉 tools 逼出最终文本，召回结果不会白拿。
-                max_tool_iterations=1,
+                # 额度见 MAX_TOOL_ITERATIONS：原来是 1（"压住最坏超时"），但
+                # 一步的预算走不完"先查再动手"的两步工具链，超时预算已在
+                # reply_generation_service 里按这个常量重算。跑到顶之后
+                # forced-finalize 会摘掉 tools 逼出最终文本，已拿到的工具
+                # 结果不会白费。
+                max_tool_iterations=MAX_TOOL_ITERATIONS,
             )
             # 接续摘要：上一次会话被回收时留下的"刚才聊到哪儿"，拼进这次会话的
             # 启动上下文（用完即弃，见 session_handoff_service）。放在这里而不是
@@ -246,6 +261,11 @@ class QQSessionBootstrapService:
             # instructions（兜底路径也用），在那里注入会让同一段摘要在多轮里反复出现。
             handoff = getattr(self.plugin, "session_handoff_service", None)
             instructions = context.system_prompt
+            # External companion facts are turn-local. Never freeze them into a reusable
+            # session's base instructions (or restore/persist them after the turn).
+            companion_section = getattr(context, "companion_section", "")
+            if companion_section:
+                instructions = instructions.replace(companion_section, "", 1)
             handoff_section = ""
             if handoff is not None:
                 try:

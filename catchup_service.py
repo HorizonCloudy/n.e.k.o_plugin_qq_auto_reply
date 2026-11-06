@@ -156,6 +156,8 @@ class QQMessageCatchupService:
                     "updated": int(rec.get("updated") or 0),
                     "seq_unknown": bool(rec.get("seq_unknown")),
                 }
+                if rec.get("pending_seq") is not None:
+                    self._cursors[str(key)]["pending_seq"] = max(0, int(rec["pending_seq"]))
         ids = (payload or {}).get("recent_ids") if isinstance(payload, dict) else None
         if isinstance(ids, dict):
             for mid, ts in ids.items():
@@ -238,6 +240,11 @@ class QQMessageCatchupService:
                 # 只在**没被标脏**的时候用 seq 推进。标脏说明之前混进过
                 # 不可比的数，得等下次对账重新对齐，否则会跳到一个错误的位置。
                 if not rec.get("seq_unknown") and seq > int(rec.get("seq") or 0):
+                    previous_seq = int(rec.get("seq") or 0)
+                    if previous_seq and seq > previous_seq + 1 and not message.get("_catchup"):
+                        # 实时事件可能先于轮询到达。另存缺口起点，不能让最新
+                        # 消息的高水位覆盖尚未补回的断线消息。
+                        rec.setdefault("pending_seq", previous_seq)
                     rec["seq"] = seq
             else:
                 # 拿不到 message_seq 时**绝对不能拿时间戳凑**。
@@ -315,8 +322,12 @@ class QQMessageCatchupService:
             # 那时候游标是上次运行留下的，本来就该对齐，但没有"漏的消息"
             # 这个概念——真断了之后的重连才是要补的。
             return
-        if connected and not previous:
-            await self.catch_up(reason="reconnect")
+        if not connected and previous:
+            for rec in self._cursors.values():
+                rec.setdefault("pending_seq", int(rec.get("seq") or 0))
+            self._dirty = True
+        if connected and (not previous or any("pending_seq" in rec for rec in self._cursors.values())):
+            await self.catch_up(reason="reconnect" if not previous else "sequence_gap")
 
     # ── 主流程 ──────────────────────────────────────────────
 
@@ -401,7 +412,7 @@ class QQMessageCatchupService:
         force: bool = False,
     ) -> dict[str, Any]:
         kind, peer = key.split(":", 1)
-        cursor_seq = int(rec.get("seq") or 0)
+        cursor_seq = int(rec.get("pending_seq", rec.get("seq")) or 0)
         self_id = self._self_id()
         now = time.time()
 
@@ -444,10 +455,9 @@ class QQMessageCatchupService:
                 break
             # 用这一页最老的 seq 当下一页的锚点（get_*_msg_history 的
             # message_seq 是"从这条往前翻"，传 0 表示最新一页）
-            anchor = oldest
-            times_all = [int(m.get("time") or 0) for m in fetched]
-            if times_all and min(t for t in times_all if t or 0) < now - window:
+            if anchor and oldest >= anchor:
                 break
+            anchor = oldest
 
         if align_only and not force:
             max_seq = max((self._seq_of(m) for m in collected), default=0)
@@ -456,6 +466,7 @@ class QQMessageCatchupService:
                 rec["updated"] = int(now)
             # 对齐完要把脏标记清掉：位置已经重新锚定了
             rec.pop("seq_unknown", None)
+            rec.pop("pending_seq", None)
             self._dirty = True
             self._diag["conv_ok"] += 1
             return {"status": "aligned", "injected": 0, "skipped": 0, "pages": pages}
@@ -468,6 +479,7 @@ class QQMessageCatchupService:
         candidates = sorted(collected, key=lambda m: self._seq_of(m))
         skipped_capped = skipped_old = skipped_self = skipped_dup = 0
         missed: list[dict[str, Any]] = []
+        batch_ids: set[str] = set()
         for msg in candidates:
             seq = self._seq_of(msg)
             mid = str(msg.get("message_id") or "").strip()
@@ -479,9 +491,11 @@ class QQMessageCatchupService:
             ts = int(msg.get("time") or 0)
             if seq and cursor_seq and seq <= cursor_seq:
                 continue
-            if mid and mid in self._recent_ids:
+            if mid and (mid in self._recent_ids or mid in batch_ids):
                 skipped_dup += 1
                 continue
+            if mid:
+                batch_ids.add(mid)
             if self_id and sender == self_id:
                 # 她自己发的不补：那不是"漏掉的消息"，补进去等于让她自问自答
                 skipped_self += 1
@@ -512,9 +526,13 @@ class QQMessageCatchupService:
                 self._remember_id(msg)
             except Exception:
                 self._note_failure(key)
+                # 入口 note_message 可能已经记下失败消息；允许下次重新注入。
+                self._recent_ids.pop(str(msg.get("message_id") or ""), None)
+                rec["pending_seq"] = cursor_seq
+                self._dirty = True
                 if self.logger:
                     self.logger.warning(f"[Catchup] 注入 {key} 消息失败", exc_info=True)
-                break
+                return {"status": "failed", "injected": injected, "skipped": 0, "pages": pages}
             if stagger:
                 await asyncio.sleep(stagger)
 
@@ -526,8 +544,15 @@ class QQMessageCatchupService:
         # 游标推到"见过的最大 seq"，包括没注入的（她自己发的、太老的、被限流的）。
         # 不推的话下次重连还会把它们翻出来，白白多打一轮接口。
         max_seq = max((self._seq_of(m) for m in collected), default=0)
+        # 翻页/投递期间仍会收到实时消息，不能把高水位倒退，也不能清掉
+        # 本次历史快照之后的新缺口；下一次轮询继续补那一段。
+        live_seq = int(rec.get("seq") or 0)
+        if live_seq > max_seq:
+            rec["pending_seq"] = max(cursor_seq, max_seq)
+        else:
+            rec.pop("pending_seq", None)
         if max_seq > cursor_seq:
-            rec["seq"] = max_seq
+            rec["seq"] = max(live_seq, max_seq)
             rec["kind"] = kind
             rec["peer"] = peer
             rec["updated"] = int(now)

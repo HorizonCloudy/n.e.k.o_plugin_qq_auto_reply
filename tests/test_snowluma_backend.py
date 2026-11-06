@@ -183,7 +183,13 @@ async def test_snowluma_deploy_config_before_listener_before_process(tmp_path, m
                              settings_service=SimpleNamespace(persist_business_config=AsyncMock()),
                              _restart_auto_reply_runtime=start_runtime, _auto_start_fields=lambda a: {},
                              runtime_service=SimpleNamespace(fetch_login_status_payload=AsyncMock(return_value={"status": "offline"})))
+    async def mutate_settings(mutation):
+        mutation(settings)
+        return True
+
+    plugin.settings_service.mutate_business_config = mutate_settings
     result = await QQDeployService(plugin).deploy(uin="123")
+    assert settings["backend_deployments"]["snowluma"] == str((tmp_path / "SnowLuma").resolve())
     assert events == ["runtime", "process"]
     assert result["qrcode_ready"] is False and result["logged_in"] is False
     assert "napcat_directory" not in settings

@@ -113,8 +113,10 @@ class QQAutoReplySessionMixin:
     async def _post_memory_history(self, endpoint: str, her_name: str, messages: list[dict[str, Any]], timeout: float = 5.0) -> dict[str, Any]:
         return await self.session_memory_service.post_memory_history(endpoint, her_name, messages, timeout=timeout)
 
-    async def _cache_session_delta(self, session_key: str, user_data: dict[str, Any]) -> int:
-        return await self.session_memory_service.cache_session_delta(session_key, user_data)
+    async def _cache_session_delta(self, session_key: str, user_data: dict[str, Any], *, sync_tail_ai: bool = False) -> int:
+        return await self.session_memory_service.cache_session_delta(
+            session_key, user_data, sync_tail_ai=sync_tail_ai,
+        )
 
     async def _finalize_user_memory_session(self, session_key: str, reason: str) -> bool:
         return await self.session_memory_service.finalize_user_memory_session(session_key, reason)

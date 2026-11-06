@@ -4,6 +4,8 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from utils.config_manager import get_config_manager
 
+from .emotion_service import build_emotion_section
+from .group_identity import build_group_identity_section, speaker_permission
 from .pipeline_models import QQPipelineStageTrace, QQReplyContext, is_synthetic_source
 
 if TYPE_CHECKING:
@@ -139,6 +141,20 @@ class QQReplyContextNode:
         private_permission_level_at_receipt: str | None = None,
         inherited_consent_snapshot: dict[str, bool] | None = None,
     ) -> QQReplyContext:
+        # Group decision.permission_level describes the GROUP, not its speaker.
+        # Freeze the user identity before any awaits; recheck it when rendering.
+        if is_group and group_speaker_permission_level_at_receipt is None:
+            group_speaker_permission_level_at_receipt = (
+                "none" if is_synthetic_source(source_kind)
+                else speaker_permission(self.plugin, sender_id)
+            )
+        companion = getattr(self.plugin, "companion_context_service", None)
+        companion_token = companion.capture(
+            sender_id=sender_id,
+            permission_level=private_permission_level_at_receipt or permission_level,
+            is_group=is_group, synthetic=is_synthetic_source(source_kind),
+        ) if companion is not None else ""
+        companion_result: dict = {}
         # member 记忆 consent 快照优先取消息接收边界（process_messages 在
         # task 创建前盖章——handler 排队期间 OFF→ON 不得让收到时无授权的
         # 发言被收集）；旁路调用者无消息级快照时至少在 build 第一个 await
@@ -462,9 +478,42 @@ class QQReplyContextNode:
             system_prompt,
             getattr(instruction_bundle, "cross_session_section", ""),
         )
+        deepchat = getattr(self.plugin, "deepchat_service", None)
+        if deepchat is not None and not is_synthetic_source(source_kind):
+            try:
+                system_prompt = await deepchat.enrich_system_prompt(
+                    system_prompt=system_prompt,
+                    sender_id=sender_id,
+                    group_id=group_id,
+                    is_group=is_group,
+                    sender_name=user_title,
+                )
+            except Exception as exc:  # noqa: BLE001 —— 状态注入失败不应阻断回复
+                self.plugin.logger.warning(f"[DeepChat] 情绪/关系片段注入失败: {exc}")
+        try:
+            emotion_section = await build_emotion_section(
+                self.plugin, is_group=is_group, group_id=group_id, sender_id=sender_id,
+                synthetic=is_synthetic_source(source_kind),
+                companion_token=companion_token, character=her_name, companion_result=companion_result,
+            )
+            if emotion_section:
+                system_prompt += "\n\n" + emotion_section
+        except Exception as exc:  # noqa: BLE001
+            self.plugin.logger.warning(f"[Emotion] 状态读取失败: {type(exc).__name__}")
+        if is_group:
+            # Per-turn system instructions are replaced even for a shared group
+            # session. Never promote context.permission_level to speaker admin:
+            # that would also widen tool/memory authorization for the whole group.
+            system_prompt += "\n\n" + build_group_identity_section(
+                self.plugin, sender_id=sender_id,
+                permission_at_receipt=group_speaker_permission_level_at_receipt,
+                synthetic=is_synthetic_source(source_kind),
+            )
         self.plugin._emit_log("INFO", f"[UserMsg] (system {len(system_prompt)}字) {prompt_message[:200]}")
 
         return QQReplyContext(
+            companion_section=companion_result.get("section", ""),
+            companion_token=companion_result.get("token", ""),
             consent_snapshot=dict(inherited_consent_snapshot or {}) or None,
             message=message,
             attachments=attachments,

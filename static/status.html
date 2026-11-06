@@ -118,7 +118,7 @@ ul.list .empty { color:var(--text-secondary); font-size:12px; padding:4px 0; }
     <span class="action-caption" data-i18n="ui.layout.setup_hint">接入 → 部署 → 登录确认</span>
     <label class="auto"><input type="checkbox" id="auto" checked><span data-i18n="ui.status.auto">自动刷新</span></label>
     <button class="ghost" id="btn-refresh" data-i18n="ui.status.refresh">刷新</button>
-    <button class="ghost" id="btn-qr" data-i18n="ui.status.refresh_qr">刷新二维码</button>
+    <button class="ghost" id="btn-qr" style="display:none" data-i18n="ui.status.refresh_qr">刷新二维码</button>
     <a class="btn" href="index.html" data-nav="index.html" style="text-decoration:none" data-i18n="ui.status.back">返回</a>
   </div>
 
@@ -173,7 +173,7 @@ ul.list .empty { color:var(--text-secondary); font-size:12px; padding:4px 0; }
     <div id="deploy-log"><span class="muted" data-i18n="ui.status.deploy_idle">尚未执行</span></div>
   </div>
 
-  <div class="card">
+  <div class="card" id="backend-login-card" style="display:none">
     <div class="backend-card-heading"><h2 id="backend-login-heading">登录二维码</h2><a id="backend-webui" class="backend-console-link" target="_blank" rel="noopener noreferrer" style="display:none">后端控制台</a></div>
     <div id="backend-process-controls" class="backend-process-controls"></div>
     <div id="snowluma-setup" style="display:none"></div>
@@ -222,14 +222,14 @@ ul.list .empty { color:var(--text-secondary); font-size:12px; padding:4px 0; }
     <label class="auto"><input type="checkbox" id="autostart"><span id="autostart-label">启动插件时自动拉起所选后端并开启自动回复</span></label>
   </div>
 
-  <div class="card">
+  <div class="card" id="trust-list-card" style="display:none">
     <h2 data-i18n="ui.status.lists">信任名单</h2>
 
     <div class="row">
       <input id="u-qq" inputmode="numeric" placeholder="QQ 号" data-i18n-placeholder="ui.status.qq_ph">
       <select id="u-level">
         <option value="trusted" data-i18n="ui.status.u_trusted">信任用户（私聊回复）</option>
-        <option value="admin" data-i18n="ui.status.u_admin">管理员</option>
+        <option value="admin" selected data-i18n="ui.status.u_admin">管理员</option>
         <option value="normal" data-i18n="ui.status.u_normal">普通（仅转发）</option>
         <option value="blacklist" data-i18n="ui.status.u_blacklist">黑名单（不处理其消息）</option>
       </select>
@@ -252,7 +252,7 @@ ul.list .empty { color:var(--text-secondary); font-size:12px; padding:4px 0; }
        （asset / upload_sticker）。注意后端那三个参数 filename / data_base64 / desc
        **都是必填**，desc 为空会直接报 INVALID_INPUT —— 所以下面留空时用文件名兜底。
        文案键全部复用已有的 ui.shared.* 键，不新增语言包条目。 -->
-  <div class="card">
+  <div class="card" id="sticker-upload-card" style="display:none">
     <h2 data-i18n="ui.shared.card.sticker_upload">上传新表情包</h2>
     <div class="drop-zone" id="sk-drop" onclick="document.getElementById('sk-file').click()">
       <div style="font-size:14px;margin-bottom:6px;color:var(--primary-on-tint)" data-i18n="ui.shared.sticker.drop_text">[ 拖拽图片到此处 ]</div>
@@ -387,7 +387,7 @@ function applyMode(mode) {
   lastMode = mode;
   document.getElementById('sec-napcat').style.display = openplat ? 'none' : '';
   document.getElementById('sec-openplat').style.display = openplat ? '' : 'none';
-  document.getElementById('btn-qr').style.display = openplat ? 'none' : '';
+  document.getElementById('btn-qr').style.display = 'none';
   document.getElementById('title').textContent = openplat ? 'QQ 开放平台接入' : 'QQ 一键部署';
   /* 切走时停掉绑定轮询 —— 别在后台空转着打接口 */
   if (!openplat) stopBindPoll();
@@ -396,6 +396,41 @@ function applyMode(mode) {
 
 /* 只读区：二维码 + 启动异常 —— 一键流程需要它们判断下一步（扫码/排错） */
 let dashboardLoad = null;
+let deploymentTransition = false;
+let dashboardRevision = 0;
+function deploymentReady(d) {
+  if (deploymentTransition) return false;
+  const st = d.settings || {}, rt = d.runtime || {}, login = d.login || {};
+  if (st.qq_connection_mode === 'open_platform') {
+    return rt.onebot_connected === true || (login.status === 'online' && !!String(login.self_id || '').trim());
+  }
+  return rt.deployment_complete === true;
+}
+function renderDeploymentVisibility(d = {}) {
+  const ready = deploymentReady(d);
+  const st = d.settings || {};
+  const openplat = st.qq_connection_mode === 'open_platform';
+  document.getElementById('backend-login-card').style.display = ready && !openplat ? '' : 'none';
+  document.getElementById('trust-list-card').style.display = ready ? '' : 'none';
+  document.getElementById('sticker-upload-card').style.display = ready ? '' : 'none';
+  document.getElementById('btn-qr').style.display = ready && !openplat && st.onebot_backend !== 'snowluma' ? '' : 'none';
+  if (!ready) {
+    document.getElementById('qr').removeAttribute('src');
+    document.getElementById('qr').style.display = 'none';
+  }
+}
+function beginDeploymentTransition() {
+  deploymentTransition = true;
+  dashboardRevision++;
+  renderDeploymentVisibility();
+}
+async function endDeploymentTransition() {
+  deploymentTransition = false;
+  dashboardRevision++;
+  // Discard a poll started before the transition, then fetch a fresh snapshot.
+  await dashboardLoad;
+  await load();
+}
 function load() {
   if (!dashboardLoad) dashboardLoad = loadDashboardState().finally(() => { dashboardLoad = null; });
   return dashboardLoad;
@@ -432,23 +467,28 @@ function renderNapcatLogin(rt, login, syncError = '') {
   }
 }
 async function loadDashboardState() {
+  const revision = dashboardRevision;
   let d;
   try { d = await call('query', {action:'dashboard'}); }
   catch (e) {
+    if (revision !== dashboardRevision) return;
     renderNapcatLogin({}, {status:'error', last_error:'连接检查失败，将自动重试。'});
     document.getElementById('napcat-login-title').textContent = '登录状态暂时无法获取';
     document.getElementById('napcat-login-detail').textContent = '连接检查失败，将自动重试。';
     document.getElementById('napcat-account-state').textContent = 'QQ 登录：状态未知';
     document.getElementById('napcat-connection-state').textContent = '插件连接：状态未知';
     document.getElementById('napcat-reply-state').textContent = '自动回复：状态未知';
+    renderDeploymentVisibility();
     showErr('读取状态失败：' + ((e && e.message) ? e.message : e)); return;
   }
+  if (revision !== dashboardRevision) return;
   let syncError = '';
-  if ((d.settings || {}).onebot_backend !== 'snowluma' && (d.settings || {}).qq_connection_mode !== 'open_platform'
+  if (deploymentReady(d) && (d.settings || {}).onebot_backend !== 'snowluma' && (d.settings || {}).qq_connection_mode !== 'open_platform'
       && !((d.login || {}).status === 'online' && (d.login || {}).self_id)) {
     try { d = await call('deploy', {action:'qrcode_sync'}); }
     catch (e) { syncError = '二维码同步失败，将自动重试：' + (e.message || e); }
   }
+  if (revision !== dashboardRevision) return;
   /* 每一段各自 try：页面刚打开时任何一段抛了都不该把后面全带下去 ——
      那种"开页空白、点一下刷新才出来"的现象就是这么来的。 */
   const st = d.settings || {};
@@ -476,9 +516,10 @@ async function loadDashboardState() {
   renderBackendControls(document.getElementById('backend-process-controls'),st,rt,st.onebot_backend,call,load);
   try {
     if (!openplat) {
-      renderNapcatLogin(rt, d.login || {}, syncError);
+      renderNapcatLogin(deploymentReady(d) ? rt : {...rt, qrcode_url:''}, d.login || {}, syncError);
     }
   } catch (e) { /* 二维码区失败不该挡住下面的名单 */ }
+  renderDeploymentVisibility(d);
   try { renderLists(d.permissions || {}); } catch (e) { /* 同上 */ }
   const err = rt.startup_error;
   if (err) showErr(err); else showErr('');
@@ -553,6 +594,7 @@ document.getElementById('autostart').addEventListener('change', async (e) => {
    服务端在运行中会按新模式停掉重连；只存设置的话，跑着的连接仍是旧模式建的，
    看着配置对了却不生效。所以把结果如实报出来，失败不让卡片停在假的高亮上。 */
 async function switchMode(mode) {
+  beginDeploymentTransition();
   const btns = Array.from(document.querySelectorAll('#modes .mode'));
   btns.forEach(b => { b.disabled = true; });
   try {
@@ -564,7 +606,7 @@ async function switchMode(mode) {
   } finally {
     btns.forEach(b => { b.disabled = false; });
     /* 无论成败都按服务端真实值重画 —— 失败时高亮会退回原模式 */
-    await load();
+    await endDeploymentTransition();
   }
 }
 
@@ -578,6 +620,7 @@ document.querySelectorAll('#modes .mode').forEach(btn => {
 
 document.getElementById('onebot-backend').addEventListener('change', async e => {
   const select = e.target;
+  beginDeploymentTransition();
   select.disabled = true;
   stopLoginPoll();
   try {
@@ -586,7 +629,7 @@ document.getElementById('onebot-backend').addEventListener('change', async e => 
     showErr('');
     deployLog('已切换到 ' + onebotBackend(select.value).label + '，请执行一键部署或启动。');
   } catch (error) { showErr('切换后端失败：' + error.message); }
-  finally { select.disabled = false; await load(); }
+  finally { select.disabled = false; await endDeploymentTransition(); }
 });
 let timer = null;
 function setAuto(on) {
@@ -681,6 +724,7 @@ document.getElementById('btn-deploy').addEventListener('click', async () => {
     return;
   }
   stopLoginPoll();
+  beginDeploymentTransition();
   busy('btn-deploy', true);
   document.getElementById('deploy-log').innerHTML = '';
   deployLog('开始部署 ' + onebotBackend(document.getElementById('onebot-backend').value).label + '（先检查运行环境；需要下载时可能要几分钟）…');
@@ -697,7 +741,7 @@ document.getElementById('btn-deploy').addEventListener('click', async () => {
        所以此刻报"未启动"多半只是正向模式还没登录，不是部署失败。 */
     if (r.auto_started === true) deployLog('自动回复已启动（' + (r.auto_start_status || 'ok') + '）');
     else if (r.auto_start_error) deployLog('自动回复暂未启动：' + r.auto_start_error);
-    await load();
+    await endDeploymentTransition();
     if (r.backend === 'snowluma' && !r.logged_in) {
       document.getElementById('snowluma-setup').scrollIntoView({behavior:'smooth',block:'center'});
       document.getElementById('backend-webui').focus({preventScroll:true});
@@ -707,7 +751,11 @@ document.getElementById('btn-deploy').addEventListener('click', async () => {
     const m = (e && e.message) ? e.message : e;
     deployLog('失败：' + m);
     showErr('一键部署失败：' + m);
-  } finally { busy('btn-deploy', false); document.getElementById('onebot-backend').disabled = false; }
+  } finally {
+    if (deploymentTransition) { deploymentTransition = false; dashboardRevision++; }
+    busy('btn-deploy', false);
+    document.getElementById('onebot-backend').disabled = false;
+  }
 });
 
 document.getElementById('btn-apply').addEventListener('click', async () => {

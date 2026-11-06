@@ -844,11 +844,11 @@ def test_without_configuration_the_old_path_runs_verbatim():
     service = _generation_service(plugin)
     session = _Session()
 
-    armed, bridge = asyncio.run(service._arm_turn_tools(
+    armed, bridge, builtin = asyncio.run(service._arm_turn_tools(
         context=_context(), user_session=session, consent_before={},
     ))
 
-    assert (armed, bridge) == (True, False)
+    assert (armed, bridge, builtin) == (True, False, False)
     assert session.tools is None, "空配置不该走合并挂载那条路"
 
 
@@ -857,11 +857,11 @@ def test_configured_on_the_open_platform_arms_recall_plus_bridge():
     service = _generation_service(plugin)
     session = _Session()
 
-    armed, bridge = asyncio.run(service._arm_turn_tools(
+    armed, bridge, builtin = asyncio.run(service._arm_turn_tools(
         context=_context(), user_session=session, consent_before={},
     ))
 
-    assert (armed, bridge) == (True, True)
+    assert (armed, bridge, builtin) == (True, True, False)
     assert [tool.name for tool in session.tools] == ["recall_memory", "plugin_web_search"]
     assert any("[PluginTool]" in msg for _lvl, msg in plugin.emitted)
 
@@ -877,11 +877,11 @@ def test_the_bridge_also_arms_on_the_onebot_channel():
     service = _generation_service(plugin)
     session = _Session()
 
-    armed, bridge = asyncio.run(service._arm_turn_tools(
+    armed, bridge, builtin = asyncio.run(service._arm_turn_tools(
         context=_context(), user_session=session, consent_before={},
     ))
 
-    assert (armed, bridge) == (True, True)
+    assert (armed, bridge, builtin) == (True, True, False)
     assert [tool.name for tool in session.tools] == ["recall_memory", "plugin_web_search"]
 
 
@@ -892,7 +892,7 @@ def test_no_channel_object_means_no_bridge():
     service = _generation_service(plugin)
     session = _Session()
 
-    armed, bridge = asyncio.run(service._arm_turn_tools(
+    armed, bridge, builtin = asyncio.run(service._arm_turn_tools(
         context=_context(), user_session=session, consent_before={},
     ))
 
@@ -918,12 +918,12 @@ def test_an_unrecognised_speaker_gets_no_tools_at_all():
     service = _generation_service(plugin)
     session = _Session()
 
-    armed, bridge = asyncio.run(service._arm_turn_tools(
+    armed, bridge, builtin = asyncio.run(service._arm_turn_tools(
         context=_context(permission_level="none", use_memory_context=False),
         user_session=session, consent_before={},
     ))
 
-    assert (armed, bridge) == (False, False)
+    assert (armed, bridge, builtin) == (False, False, False)
     assert session.tools is None
 
 
@@ -953,7 +953,7 @@ def test_a_stopped_plugin_is_reported_but_not_mounted():
     service = _generation_service(plugin)
     session = _Session()
 
-    armed, bridge = asyncio.run(service._arm_turn_tools(
+    armed, bridge, builtin = asyncio.run(service._arm_turn_tools(
         context=_context(), user_session=session, consent_before={},
     ))
 
@@ -1002,10 +1002,10 @@ def test_arming_failure_clears_the_slots():
             raise RuntimeError("session gone")
 
     session = _Boom()
-    armed, bridge = asyncio.run(service._arm_turn_tools(
+    armed, bridge, builtin = asyncio.run(service._arm_turn_tools(
         context=_context(), user_session=session, consent_before={},
     ))
-    assert (armed, bridge) == (False, False)
+    assert (armed, bridge, builtin) == (False, False, False)
 
 
 def test_the_candidate_ids_are_never_qq_plugins():

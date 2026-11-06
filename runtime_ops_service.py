@@ -357,8 +357,24 @@ class QQProactiveMessageService:
                 is_group=False,
                 user_nickname=matched_nickname,
                 use_memory_context=permission_level == "admin",
-                persist_memory=False,
-                ephemeral_session=True,
+                # 主动搭话也是真实对话，必须落记忆。
+                #
+                # 原来这里是 persist_memory=False + ephemeral_session=True，
+                # 本意是"她可以拒绝"：那一轮走一次性会话，空回复就当没说，
+                # 整轮不留痕。问题是"她说了"和"她没说"走的是同一个会话对象，
+                # 于是真说出口的话也一起被扔了——她下一轮只记得用户问过什么，
+                # 完全不记得自己答过什么（2026-11-05：她刚分享过的视频，隔
+                # 两分钟被问到就当成新话题反问回去）。
+                #
+                # 顺带还有个副作用：一次性会话的键带纳秒
+                # （private:xxx:ephemeral:1793886132640449500），每次都是全新
+                # 会话，所以主动开口那一刻她看不见刚才在聊什么，只能靠长期
+                # 记忆捞一点，接不上话。
+                #
+                # 拒绝能力不靠这个开关保：回空照样不发（postprocess 的 empty
+                # 分支），只是那一轮现在会安静地留在历史里。
+                persist_memory=True,
+                ephemeral_session=False,
                 fallback_to_text_on_voice_failure=False,
                 permission_level_override=permission_level,
                 force_reply=True,

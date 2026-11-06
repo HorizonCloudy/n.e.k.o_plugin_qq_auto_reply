@@ -13,6 +13,7 @@ from .pipeline_models import (
     QQReplyContext,
     QQReplyOutcome,
 )
+from .reply_protocol import extract_feeling, strip_feeling_tags
 
 
 class QQReplyPostprocessNode:
@@ -58,7 +59,7 @@ class QQReplyPostprocessNode:
           <msg><record>语音文本</record></msg>
         纯文本（无 <msg> 标签）回退为单块纯文本。
         """
-        text = (raw_text or "").strip()
+        text = strip_feeling_tags(raw_text or "").strip()
         if not text:
             return []
 
@@ -330,9 +331,12 @@ class QQReplyPostprocessNode:
     async def finalize(self, context: QQReplyContext, model_result: QQModelResult) -> QQReplyOutcome:
         raw_reply_text = model_result.reply_text or ""
         reply_text = self.plugin._sanitize_generated_reply(raw_reply_text)
-        known_pre_tool = str(
+        # Consume metadata before splitting messages or recording tool-prefix offsets.
+        # Formatting variants and duplicate tags must never become visible text blocks.
+        reply_text, feeling = extract_feeling(reply_text)
+        known_pre_tool = strip_feeling_tags(str(
             getattr(model_result, "pre_tool_text", "") or ""
-        )
+        )).strip()
         structural_pre_tool = (
             known_pre_tool
             if known_pre_tool and reply_text.startswith(known_pre_tool)
@@ -349,7 +353,6 @@ class QQReplyPostprocessNode:
 
         blocks: list[QQMessageBlock] = []
         emoji_reaction_id = ""
-        feeling = ""
         forward_content = ""
         forward_target = ""
         forward_count = 0
@@ -377,12 +380,6 @@ class QQReplyPostprocessNode:
                 reply_text = reply_text[:mk.start()] + reply_text[mk.end():]
                 reply_text = reply_text.strip()
                 mark_flag = True
-            # extract <feeling>emotion</feeling> (mood tag)
-            fm = re.search(r"<feeling>(\w+)</feeling>", reply_text, re.IGNORECASE)
-            if fm and _outside_msg(fm.start()):
-                feeling = fm.group(1).strip().lower()
-                reply_text = reply_text[:fm.start()] + reply_text[fm.end():]
-                reply_text = reply_text.strip()
             # extract <forward to="群号" count="30">content</forward>
             fw = re.search(r"<forward(\s+to\s*=\s*\"(\d+)\")?(\s+count\s*=\s*\"(\d+)\")?\s*>(.*?)</forward>", reply_text, re.DOTALL | re.IGNORECASE)
             if fw and _outside_msg(fw.start()):
