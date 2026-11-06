@@ -548,7 +548,8 @@ def test_the_panel_has_the_initiative_card():
 def test_the_panel_saves_exactly_the_five_keys():
     """界面提交的键必须就是 schema 里那五个 —— 少一个就是"能改但存不下去"。"""
     text = _page()
-    block = text[text.index("async function saveInitiativeSettings"):]
+    assert text.count("...initiativeSettingsPayload()") == 2, "两个保存入口必须共用载荷"
+    block = text[text.index("function initiativeSettingsPayload"):]
     block = block[: block.index("\n}")]
     for key in (
         "proactive_initiative_enabled",
