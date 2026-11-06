@@ -14,6 +14,7 @@ from .pipeline_models import (
     QQMessageBlock,
     backlog_sender_label,
 )
+from .reply_protocol import strip_feeling_tags
 
 
 class QQReplyDeliveryNode:
@@ -38,7 +39,9 @@ class QQReplyDeliveryNode:
                 self.plugin.logger.warning("[Mute/Pace] 群 %s 禁言、旧回复或发送过密，丢弃本轮，不补发", plan.target_id)
                 return QQDeliveryResult(False, plan.target_type, plan.target_id, None)
 
-        blocks = plan.blocks
+        # Also protect record/TTS and its text fallback when a plan bypasses postprocessing.
+        blocks = [replace(block, record=strip_feeling_tags(block.record).strip())
+                  if block.record else block for block in plan.blocks]
         if self.plugin._get_reply_mode() == "text":
             blocks = [self._record_as_text(block) if block.record else block for block in blocks]
         first_text = ""
@@ -241,7 +244,14 @@ class QQReplyDeliveryNode:
         """
         import re as _re
 
-        body = str(getattr(block, "text", "") or "").strip()
+        # Drop internal payloads before removing remaining template shells. Doing
+        # this in the other order turns <feeling>curious</feeling> into "curious".
+        body = strip_feeling_tags(str(getattr(block, "text", "") or ""))
+        # Visible containers (including unsupported Ark cards) retain their body.
+        body = _re.sub(
+            r"</?(?:reply|msg|at|poke|sticker|record|keyboard|text|emoji|think|feeling|forward|mark|ark)(?:\s[^>]*)?\s*/?>",
+            "", body, flags=_re.IGNORECASE,
+        ).strip()
         face = str(getattr(block, "emoji", "") or "").strip()
         if not body and not face:
             return ""
@@ -250,20 +260,10 @@ class QQReplyDeliveryNode:
             parts.append(f"[CQ:reply,id={block.reply_to}]")
         if block.at_user:
             parts.append(f"[CQ:at,qq={block.at_user}]")
-        if block.text:
-            # 兜底：清除 prompt 模板 XML 标签残留（模型偶有输出未进 msg 包裹的裸标签，
-            # 后处理器移除后仍可能因格式变体留下漏网之鱼）
-            #
-            # `ark` 也在这里，而且它是**内容泄漏**而不是内容丢失：Ark 卡片没有投递
-            # 实现（下面 `if block.ark:` 分支只记一条 warning），于是块外/旧式写法里的
-            # `<ark title="…" desc="…">正文</ark>` 会原样发给用户。开放平台格式段明文
-            # 教模型用这个标签，用户就会在群里看到一整段 XML。剥掉标签壳、留下正文
-            # 是这里唯一合理的降级。
-            clean = block.text
-            clean = _re.sub(r"</?(?:reply|msg|at|poke|sticker|record|keyboard|text|emoji|think|feeling|forward|mark|ark)(?:\s[^>]*)?\s*/?>", "", clean, flags=_re.IGNORECASE)
-            parts.append(clean.strip())
-        if block.emoji:
-            parts.append(f"[CQ:face,id={block.emoji}]")
+        if body:
+            parts.append(body)
+        if face:
+            parts.append(f"[CQ:face,id={face}]")
         return "".join(parts)
 
     def _outbound_allowed(self, target_type: str, target_id: str, text: str, *, kind: str = "reply") -> bool:
