@@ -849,6 +849,13 @@ class QQMessageDispatcher:
             return False
 
     async def handle_message(self, message: dict[str, Any]):
+        # 游标推进放在**最前面**，比黑名单还早：黑名单用户的消息也是"处理过了"
+        # （决定不回），游标不推的话每次重连都会把它翻出来重新判一遍。
+        #
+        # 这一步是同步的、只动内存（落盘有独立循环），在收消息热路径上，绝不能 await。
+        catchup = getattr(self.plugin, "catchup_service", None)
+        if catchup is not None:
+            catchup.note_message(message)
         # 用户黑名单：这个人发的消息 / 戳一戳 / 入群通知一律不处理，**绝不进管线**。
         # 必须放在最前面，三个理由：
         #   ① 下面戳一戳分支会在更早的位置直接 send_group_poke 并 return ——
@@ -1008,6 +1015,18 @@ class QQMessageDispatcher:
                     f"黑名单过滤(附件解析后): text={str(message.get('content') or '')[:40]}",
                 )
                 return
+        # 表情包：把这条消息里的图/表情记进环形缓冲（同步、不下载、不调模型）。
+        # 必须放在 backlog 之前——纯图消息没有文本，record_message 会直接丢弃，
+        # 而"她要不要收这张图"恰恰只跟图有关。observe 内部自己兜异常，这里不设 if。
+        sticker_lab = getattr(self.plugin, "sticker_lab", None)
+        if sticker_lab is not None:
+            sticker_lab.observe(message)
+        gallery = getattr(self.plugin, "gallery_service", None)
+        if gallery is not None:
+            try:
+                await gallery.remember_message(message, segments=original_segments)
+            except Exception:
+                self.plugin.logger.warning("图库收图失败，继续处理消息", exc_info=True)
         await self.plugin.backlog_service.record_message(message)
         # 注意力的逐条更新统一由 attention_gate_service.evaluate() 负责（消息进管线时
         # 调用），这里不再自己更新一次 —— 历史上那条分支只在非 neko_dynamic 模式下跑，

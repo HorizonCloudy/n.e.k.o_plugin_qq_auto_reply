@@ -57,6 +57,7 @@ from .attention_gate_service import QQAttentionGateService
 from .attention_service import QQAttentionService
 from .backlog_models import QQBacklogMessage as QQBacklogMessage
 from .backlog_service import QQBacklogService
+from .catchup_service import QQMessageCatchupService
 from .config_store import QQAutoReplyConfigStore
 from .dashboard_service import QQDashboardService
 from .deepchat import RETIRED_TUNING_KEYS as DEEPCHAT_RETIRED_TUNING_KEYS
@@ -66,6 +67,7 @@ from .deploy_service import QQDeployService
 from .display_name_service import QQDisplayNameService
 from .enrichment import QQMessageEnricher
 from .feedback_classifier import QQFeedbackClassifier as QQFeedbackClassifier
+from .gallery_service import QQGalleryService
 from .group_permission import DEFAULT_GROUP_LEVEL, GroupPermissionManager
 from .handler_runtime_service import QQHandlerRuntimeService
 from .memory_bridge import QQMemoryBridge
@@ -108,6 +110,7 @@ from .session_instruction_service import (
 from .session_memory_service import QQSessionMemoryService
 from .session_runtime_service import QQSessionRuntimeService
 from .settings_service import QQSettingsService
+from .sticker_lab_service import QQStickerLab
 from .targets import QQAutoReplyTargetsMixin
 from .targets import QQAutoReplyValidationError as QQAutoReplyValidationError
 from .time_context import build_time_context
@@ -194,6 +197,12 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         )
         self.deploy_service = QQDeployService(self)
         self.backlog_service = QQBacklogService(self)
+        # 图库：她见过的图（含拿来当头像的那种）。跟 sticker 是两张表——
+        # 表情包是按情绪找一张甩出去，图库是素材本身，生命周期不一样。
+        self.gallery_service = QQGalleryService(self)
+        # 断线补消息：跟 backlog 是两件事。backlog 记的是"推过来的消息"，
+        # 断线期间推不过来，它一样空着；补消息得主动去服务端翻历史。
+        self.catchup_service = QQMessageCatchupService(self)
         self.attention_service = QQAttentionService(self)
         self.prompt_builder = QQPromptBuilder(self)
         self.memory_bridge = QQMemoryBridge(self)
@@ -232,6 +241,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self.session_instruction_service = QQSessionInstructionService(self)
         self.session_memory_service = QQSessionMemoryService(self)
         self.session_runtime_service = QQSessionRuntimeService(self)
+        # 表情包的收集侧：她自己在聊天里收（上游只有手动上传那一条入口）。
+        # 收多少、从哪个群收，归 settings 的 sticker_collect_policy 三档闸管。
+        self.sticker_lab = QQStickerLab(self)
         self.qq_client: Optional[OneBotConnector] = None
         self.enricher: Optional[QQMessageEnricher] = None
         self.attention_gate_service = QQAttentionGateService(self)
@@ -1132,9 +1144,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     async def _sync_napcat_qrcode_into_static(self) -> bool:
         return await self.napcat_service.sync_napcat_qrcode_into_static()
 
-    def _resolve_sticker_path(self, sticker_id: str) -> str:
+    def _resolve_sticker_path(self, sticker_id: str, *, target_type: str = "", target_id: str = "") -> str:
         """解析表情包 ID 到文件路径（供 delivery_node 使用）。"""
-        return self.reply_pipeline._resolve_sticker_path(sticker_id)
+        return self.reply_pipeline._resolve_sticker_path(sticker_id, target_type=target_type, target_id=target_id)
 
     def _find_napcat_launcher(self) -> Path | None:
         return self.napcat_service.find_napcat_launcher()

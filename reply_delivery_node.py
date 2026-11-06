@@ -457,7 +457,9 @@ class QQReplyDeliveryNode:
         私聊以前第一行就是 `return False`（表情包是装饰，不发就不发）；"群里能发、私聊
         静默不发"并不是谁定的规矩，只是这条路没写。
         """
-        sticker_path = self.plugin._resolve_sticker_path(block.sticker)
+        sticker_path = self.plugin._resolve_sticker_path(
+            block.sticker, target_type=plan.target_type, target_id=str(plan.target_id),
+        )
         if not sticker_path:
             return False
         if not self._admit_message(plan, sticker=True):

@@ -13,6 +13,7 @@ from utils.llm_client import strip_thinking_segments
 from utils.screenshot_utils import compress_screenshot
 
 from . import addressing
+from .dsml_markers import strip_dsml_markers
 from .pipeline_models import QQInstructionBundle
 from .prompt_fragment_templates import LOGIN_IDENTITY_PROMPT
 
@@ -114,7 +115,12 @@ class QQAutoReplyPromptingMixin:
                 continue
             cleaned = _THINK_TAG_VARIANT_CLOSE_RE.sub("", cleaned)
             break
+        cleaned = QQAutoReplyPromptingMixin._strip_dsml_markers(cleaned)
         return cleaned.strip()
+
+    # 剥 DSML 的实现放在 `dsml_markers` 模块里：记忆侧也要用同一套，
+    # 两处各写一份正则必然会漂移（一处修了变体、另一处没修）。
+    _strip_dsml_markers = staticmethod(strip_dsml_markers)
 
     @staticmethod
     def _normalize_login_identity(login_payload: dict[str, Any] | None) -> tuple[str, str | None, str | None]:

@@ -165,3 +165,30 @@ def test_catalogs_stay_within_budget(tmp_path):
     assert total <= CATALOG_BUDGET, (
         f"两个目录合计 {total} 字符（上限 {CATALOG_BUDGET}）——它们是提示词里最贵的一块之一"
     )
+
+
+def test_scoped_catalog_cache_and_send_resolver(tmp_path):
+    from plugin.plugins.qq_auto_reply.reply_pipeline import QQReplyPipelineRunner
+
+    entries = {
+        "group_a": {"desc": "group secret", "path": "a.png", "scope": "group:a"},
+        "private_a": {"desc": "private secret", "path": "b.png", "scope": "private:a"},
+        "legacy_auto": {"desc": "old secret", "path": "c.png", "group": "b", "origin": "u1"},
+        "manual": {"desc": "shared", "path": "d.png"},
+    }
+    service = _service(tmp_path, entries)
+    runner = QQReplyPipelineRunner.__new__(QQReplyPipelineRunner)
+    runner.plugin = service.plugin
+    (tmp_path / "sticker").mkdir()
+    for entry in entries.values():
+        (tmp_path / "sticker" / entry["path"]).write_bytes(b"image")
+    for kind, target, allowed in [
+        ("group", "a", "group_a"), ("private", "a", "private_a"),
+        ("group", "b", "legacy_auto"), ("private", "b", ""),
+        ("", "", ""), ("group", "a", "group_a"),
+    ]:
+        catalog = service._load_sticker_catalog(target_type=kind, target_id=target)
+        for sid in entries:
+            expected = sid in ("manual", allowed)
+            assert (f"[{sid}]" in catalog) is expected
+            assert bool(runner._resolve_sticker_path(sid, target_type=kind, target_id=target)) is expected

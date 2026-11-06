@@ -34,6 +34,7 @@ from .scene_prompt_templates import (
     SCENE_KIRA_UNIFIED_GROUP,
     SCENE_PRIVATE_CHAT,
 )
+from .sticker_scope import sticker_allowed
 from .time_context import build_time_context  # noqa: E402  (由 ruff --fix 归位)
 
 
@@ -296,16 +297,21 @@ class QQSessionInstructionService:
     MAX_STICKER_CATALOG_ENTRIES = 60
     MAX_EMOJI_CATALOG_ENTRIES = 40
 
-    def _load_sticker_catalog(self) -> str:
+    def _load_sticker_catalog(self, *, target_type: str = "", target_id: str = "") -> str:
         """加载自定义表情包目录，格式化为 Kira 风格的列表"""
-        if self._sticker_catalog_cache:
+        cache_key = (target_type, str(target_id or ""))
+        if self._sticker_catalog_cache and getattr(self, "_sticker_catalog_cache_key", None) == cache_key:
             return self._sticker_catalog_cache
+        self._sticker_catalog_cache_key = cache_key
         import json
         try:
             with open(self._sticker_data_path(), "r", encoding="utf-8") as f:
                 data = json.loads(f.read())
             if isinstance(data, dict) and data:
-                items = list(data.items())
+                items = [
+                    (sid, info) for sid, info in data.items()
+                    if sticker_allowed(info, target_type=target_type, target_id=str(target_id or ""))
+                ]
                 if len(items) > self.MAX_STICKER_CATALOG_ENTRIES:
                     # 截断必须留痕：否则用户"传了却挑不到"只会表现为"模型不选它"，
                     # 而目录本身在界面上看不出来少了一截。
@@ -319,7 +325,7 @@ class QQSessionInstructionService:
                 for sid, info in items:
                     desc = info.get("desc", "") if isinstance(info, dict) else str(info)
                     lines.append(f"    [{sid}] {desc}")
-                self._sticker_catalog_cache = "\n".join(lines)
+                self._sticker_catalog_cache = "\n".join(lines) or "    (暂无可用表情包)"
                 return self._sticker_catalog_cache
         except Exception as e:
             self.plugin.logger.warning(f"加载sticker.json失败: {e}")
@@ -417,7 +423,10 @@ class QQSessionInstructionService:
             format_section = self._resolve_static_layer("format_prompt_section_neko_dynamic", FORMAT_PROMPT_SECTION_NEKO_DYNAMIC, user_language)
         format_section = format_section.format(
             emoji_catalog=self._load_emoji_catalog(),
-            sticker_catalog=self._load_sticker_catalog(),
+            sticker_catalog=self._load_sticker_catalog(
+                target_type="group" if is_group else "private",
+                target_id=str(group_id or "") if is_group else str(sender_id or ""),
+            ),
         )
 
         sessions_section = self._build_sessions_section(

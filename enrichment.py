@@ -808,6 +808,7 @@ class QQMessageEnricher:
                 desc = await asyncio.wait_for(self._image_describer(img_url), timeout=8.0)
                 if desc:
                     descriptions.append(f"[Image {desc}]")
+                    message.setdefault("_image_descriptions", {})[img_url] = desc
                     self._emit_log("INFO", f"[VLM] 图片描述: {desc[:40]}")
                 else:
                     self._emit_log("DEBUG", "[VLM] 图片描述返回为空")

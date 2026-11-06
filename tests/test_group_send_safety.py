@@ -132,7 +132,7 @@ async def test_two_text_sticker_replies_send_two_texts_and_only_one_sticker(monk
     plugin.qq_client.get_group_member_info.return_value = {"shut_up_timestamp": 0}
     plugin.qq_client.send_group_message = AsyncMock(return_value="text-id")
     plugin.qq_client.send_group_image = AsyncMock(return_value="image-id")
-    plugin._resolve_sticker_path = lambda _: "file:///sticker.png"
+    plugin._resolve_sticker_path = lambda _, **kw: "file:///sticker.png"
     node = QQReplyDeliveryNode(plugin)
     node._outbound_allowed = lambda *a: True
     sleep = AsyncMock()

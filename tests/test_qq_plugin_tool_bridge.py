@@ -809,6 +809,7 @@ def _context(*, permission_level="admin", use_memory_context=True):
         permission_level=permission_level,
         use_memory_context=use_memory_context,
         session_key="private:u1",
+        sender_id="u1",
     )
 
 
@@ -844,12 +845,49 @@ def test_without_configuration_the_old_path_runs_verbatim():
     service = _generation_service(plugin)
     session = _Session()
 
-    armed, bridge = asyncio.run(service._arm_turn_tools(
+    armed, bridge, builtin = asyncio.run(service._arm_turn_tools(
         context=_context(), user_session=session, consent_before={},
     ))
 
-    assert (armed, bridge) == (True, False)
+    assert (armed, bridge, builtin) == (True, False, False)
     assert session.tools is None, "空配置不该走合并挂载那条路"
+
+
+def test_gallery_and_sticker_dispatch_without_a_plugin_bridge():
+    from unittest.mock import AsyncMock
+
+    plugin = _configured_plugin(tiers={})
+    plugin._admin_qq = "u1"
+    plugin.gallery_service = SimpleNamespace(
+        build_browse_definition=lambda: SimpleNamespace(name="browse_gallery"),
+        build_avatar_definition=lambda: SimpleNamespace(name="set_avatar"),
+        start=AsyncMock(), list_items=lambda **kw: [{"id": "g1", "desc": "cat"}],
+        set_avatar=AsyncMock(return_value={"ok": True, "verified": True, "id": "g1"}),
+    )
+    plugin.sticker_lab = SimpleNamespace(
+        should_offer_save=lambda: True,
+        build_save_definition=lambda: SimpleNamespace(name="save_sticker"),
+        execute_save=AsyncMock(return_value="saved sticker"),
+    )
+    service = _generation_service(plugin)
+    session = _Session()
+
+    async def run():
+        armed = await service._arm_turn_tools(
+            context=_context(use_memory_context=False), user_session=session, consent_before={},
+        )
+        assert armed == (True, False, True)
+        assert {t.name for t in session.tools} == {"browse_gallery", "set_avatar", "save_sticker"}
+        outputs = []
+        for name in ("browse_gallery", "set_avatar", "save_sticker"):
+            result = await session.handler(SimpleNamespace(name=name, arguments={"id": "g1"}, call_id=name))
+            outputs.append(result.output)
+        assert "g1" in outputs[0]
+        assert "g1" in outputs[1]
+        assert outputs[2] == "saved sticker"
+        assert session._qq_tool_audit["returned"] == 3
+
+    asyncio.run(run())
 
 
 def test_configured_on_the_open_platform_arms_recall_plus_bridge():
@@ -857,11 +895,11 @@ def test_configured_on_the_open_platform_arms_recall_plus_bridge():
     service = _generation_service(plugin)
     session = _Session()
 
-    armed, bridge = asyncio.run(service._arm_turn_tools(
+    armed, bridge, builtin = asyncio.run(service._arm_turn_tools(
         context=_context(), user_session=session, consent_before={},
     ))
 
-    assert (armed, bridge) == (True, True)
+    assert (armed, bridge, builtin) == (True, True, False)
     assert [tool.name for tool in session.tools] == ["recall_memory", "plugin_web_search"]
     assert any("[PluginTool]" in msg for _lvl, msg in plugin.emitted)
 
@@ -877,11 +915,11 @@ def test_the_bridge_also_arms_on_the_onebot_channel():
     service = _generation_service(plugin)
     session = _Session()
 
-    armed, bridge = asyncio.run(service._arm_turn_tools(
+    armed, bridge, builtin = asyncio.run(service._arm_turn_tools(
         context=_context(), user_session=session, consent_before={},
     ))
 
-    assert (armed, bridge) == (True, True)
+    assert (armed, bridge, builtin) == (True, True, False)
     assert [tool.name for tool in session.tools] == ["recall_memory", "plugin_web_search"]
 
 
@@ -892,7 +930,7 @@ def test_no_channel_object_means_no_bridge():
     service = _generation_service(plugin)
     session = _Session()
 
-    armed, bridge = asyncio.run(service._arm_turn_tools(
+    armed, bridge, builtin = asyncio.run(service._arm_turn_tools(
         context=_context(), user_session=session, consent_before={},
     ))
 
@@ -918,12 +956,12 @@ def test_an_unrecognised_speaker_gets_no_tools_at_all():
     service = _generation_service(plugin)
     session = _Session()
 
-    armed, bridge = asyncio.run(service._arm_turn_tools(
+    armed, bridge, builtin = asyncio.run(service._arm_turn_tools(
         context=_context(permission_level="none", use_memory_context=False),
         user_session=session, consent_before={},
     ))
 
-    assert (armed, bridge) == (False, False)
+    assert (armed, bridge, builtin) == (False, False, False)
     assert session.tools is None
 
 
@@ -953,7 +991,7 @@ def test_a_stopped_plugin_is_reported_but_not_mounted():
     service = _generation_service(plugin)
     session = _Session()
 
-    armed, bridge = asyncio.run(service._arm_turn_tools(
+    armed, bridge, builtin = asyncio.run(service._arm_turn_tools(
         context=_context(), user_session=session, consent_before={},
     ))
 
@@ -1002,10 +1040,10 @@ def test_arming_failure_clears_the_slots():
             raise RuntimeError("session gone")
 
     session = _Boom()
-    armed, bridge = asyncio.run(service._arm_turn_tools(
+    armed, bridge, builtin = asyncio.run(service._arm_turn_tools(
         context=_context(), user_session=session, consent_before={},
     ))
-    assert (armed, bridge) == (False, False)
+    assert (armed, bridge, builtin) == (False, False, False)
 
 
 def test_the_candidate_ids_are_never_qq_plugins():
@@ -1158,3 +1196,53 @@ def test_every_plugin_tools_label_exists_in_both_bundles():
     for required in ("title", "tier_all", "tier_admin", "tier_all_short", "tier_admin_short",
                      "search_placeholder", "btn_remove", "saved"):
         assert f"ui.openplat.plugintools.{required}" in zh, f"缺键 {required}"
+
+
+@pytest.mark.parametrize("level", ["user", "blacklist", "admin"])
+def test_gallery_tools_require_live_account_permission(level):
+    from unittest.mock import AsyncMock, Mock
+
+    plugin = _configured_plugin(tiers={})
+    plugin.permission_mgr = SimpleNamespace(get_permission_level=Mock(return_value=level))
+    gallery = SimpleNamespace(
+        build_browse_definition=lambda: SimpleNamespace(name="browse_gallery"),
+        build_avatar_definition=lambda: SimpleNamespace(name="set_avatar"),
+        start=AsyncMock(), list_items=Mock(return_value=[{"id": "secret"}]),
+        set_avatar=AsyncMock(return_value={"ok": True}),
+    )
+    plugin.gallery_service = gallery
+    service = _generation_service(plugin)
+    session = _Session()
+    context = _context(permission_level="admin", use_memory_context=False)
+
+    async def run():
+        armed = await service._arm_turn_tools(
+            context=context, user_session=session, consent_before={},
+        )
+        assert armed[2] is (level == "admin")
+        # Direct invocation and permission revocation must also be denied.
+        handlers = service._build_gallery_handlers(gallery, context)
+        plugin.permission_mgr.get_permission_level.return_value = "user"
+        for name, handler in handlers.items():
+            result = await handler(SimpleNamespace(name=name, arguments={"id": "secret"}, call_id=name))
+            assert "管理员" in result.output
+        gallery.start.assert_not_awaited()
+        gallery.list_items.assert_not_called()
+        gallery.set_avatar.assert_not_awaited()
+
+    asyncio.run(run())
+
+
+def test_gallery_owner_blacklist_and_unknown_sender():
+    from unittest.mock import Mock
+
+    plugin = _configured_plugin(tiers={})
+    plugin._admin_qq = "u1"
+    service = _generation_service(plugin)
+    context = _context()
+    assert service._gallery_tools_allowed(context)
+    plugin.permission_mgr = SimpleNamespace(get_permission_level=Mock(return_value="blacklist"))
+    assert not service._gallery_tools_allowed(context)
+    plugin.permission_mgr.get_permission_level.side_effect = RuntimeError("roster unavailable")
+    assert not service._gallery_tools_allowed(context)
+    assert not service._gallery_tools_allowed(SimpleNamespace(permission_level="admin"))
