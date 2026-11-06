@@ -337,6 +337,43 @@ def test_at_prefix_on_plain_text_still_triggers():
 
 # ── 发送侧 ──────────────────────────────────────────────────────
 
+def test_echo_respects_shared_budget():
+    from plugin.plugins.qq_auto_reply.group_send_safety import group_send_safety
+    service = _service()
+    safety = group_send_safety(service.plugin)
+    for _ in range(3):
+        assert safety.admit(GROUP)
+    assert not asyncio.run(service._send(group_id=GROUP, text=LINE))
+    assert not service.fakes.client.sent
+
+
+def test_muted_echo_discards_episode():
+    service = _service()
+    _repeat(service, senders=6)
+    service.fakes.client.is_group_muted = lambda gid: True
+    assert not asyncio.run(service._send(group_id=GROUP, text=LINE))
+    assert not service.fakes.client.sent
+    assert not service._episodes
+
+
+def test_unconfirmed_echo_does_not_write_history():
+    from unittest.mock import AsyncMock
+    service = _service()
+    service.fakes.client.send_group_message = AsyncMock(return_value=None)
+    assert not asyncio.run(service._send(group_id=GROUP, text=LINE))
+    assert not service.fakes.session._conversation_history
+    assert not service.fakes.gate.replies
+
+
+def test_unmute_discards_previous_senders():
+    from plugin.plugins.qq_auto_reply.group_send_safety import group_send_safety
+    service = _service()
+    _repeat(service, senders=5)
+    group_send_safety(service.plugin).cutoff[GROUP] = 1010
+    assert service.observe(group_id=GROUP, sender_id="new", text=LINE, now=1011) is None
+    assert len(service._episodes[(GROUP, service.normalize(LINE))]["senders"]) == 1
+
+
 def test_maybe_echo_sends_exactly_one_message():
     service = _service()
 

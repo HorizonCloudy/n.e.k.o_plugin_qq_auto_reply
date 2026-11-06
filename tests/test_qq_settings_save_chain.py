@@ -338,18 +338,8 @@ def test_the_dropped_key_warning_is_written_to_the_file_log_too():
     assert any("proactive_topics" in line for line in logged), "文件日志里没有这条警告"
 
 
-def test_locale_is_connected_end_to_end():
-    """界面语言偏好必须真的存得下来 —— 三条链缺一条它就只有 localStorage 生效。
-
-    前端一直在提交（`onLangChange`）并在快照里读回（`s.locale`），但 `locale`
-    以前不在真源里，于是：
-
-    * 入口按白名单过滤 → 整键丢弃，`payload` 为空 → 返回 Err（前端 `catch(e){}` 吞掉）
-    * `settings_service` 里那段写盘代码的上游签名没有这个参数 → **不可达**
-    * 快照只遍历 saveable spec → 不回显
-
-    净效果：换浏览器 / 清 localStorage 就回到默认语言。这条钉住"三条链都在"。
-    """
+def test_locale_api_remains_available_without_a_separate_ui_selector():
+    """保留语言设置 API 兼容性；页面语言统一跟随本体。"""
     from plugin.plugins.qq_auto_reply import settings_schema
 
     assert "locale" in settings_schema.SAVEABLE_KEYS, (
@@ -360,12 +350,11 @@ def test_locale_is_connected_end_to_end():
     )
 
     html = (_PLUGIN_DIR / "static" / "napcat.html").read_text(encoding="utf-8")
-    assert "action:'save', locale:locale" in html, (
-        "前端不再提交 locale 了，测试需要跟着改"
-    )
-    assert "s.locale" in html, (
-        "前端不再从快照读回 locale 了，测试需要跟着改"
-    )
+    assert 'id="lang-select"' not in html
+    assert "function onLangChange" not in html
+    i18n = (_PLUGIN_DIR / "static" / "i18n.js").read_text(encoding="utf-8")
+    assert "removeItem('qq_auto_reply_locale')" in i18n
+
 
 
 

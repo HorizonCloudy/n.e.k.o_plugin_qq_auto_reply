@@ -237,6 +237,8 @@ class QQAutoReplyPromptingMixin:
 
     @staticmethod
     def _build_group_turn_message(*, group_scene_mode: str, user_title: str, sender_id: str, group_id: str | None, message: str, current_message_id: str = "", is_reply_to_bot: bool = False, quoted_message_id: str = "", mentions_other_user: bool = False, mentions_all: bool = False, first_reply_after_own_speech: bool = False, addressee: "addressing.AddresseeVerdict | None" = None, member_labels: dict[str, str] | None = None) -> str:
+        from .group_dialogue_guidance import GROUP_DIALOGUE_GUIDANCE
+
         msg_id_line = f"当前消息ID: {current_message_id}\n" if current_message_id else ""
         is_at_bot = (str(group_scene_mode or "").strip() == "directed_user")
         # 本轮涉及的人 → 可读名字。空 dict 时下面每一处都退化成改动前的样子。
@@ -276,7 +278,7 @@ class QQAutoReplyPromptingMixin:
         elif mentions_all:
             hint = "【这条消息是@全体成员】对方对全群广播。内容与你或群里讨论的话题相关时可以回复。"
         elif first_reply_after_own_speech:
-            hint = "【这条消息很可能是在接你的话】你刚刚才在群里说过话，而这是之后的第一条发言 —— 大概率是在回应你。该接就接，别晾着对方；确实与你无关再忽略。"
+            hint = "【这条消息可能在接你的话，需结合上下文确认】发言时间接近只是线索，不代表在回应你；先核对发言人、引用对象和前文。确实接你的话就自然回应，别把别人的对话接到自己身上。"
         else:
             hint = "【这条消息不是冲你来的】群里的人在和其他人聊天，不是跟你说话。只有当你真的有话想说、能贡献独特见解时再回复，不要每条都接。"
         return (
@@ -285,6 +287,7 @@ class QQAutoReplyPromptingMixin:
             f"群号: {str(group_id or '').strip()}\n"
             f"{hint}\n"
             f"{_render_people_block(labels=labels, sender_id=sender_id, aim_target=aim_target)}"
+            f"{GROUP_DIALOGUE_GUIDANCE}"
             f"消息:\n{message}"
         )
 

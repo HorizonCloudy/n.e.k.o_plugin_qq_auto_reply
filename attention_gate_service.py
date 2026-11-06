@@ -753,6 +753,14 @@ class QQAttentionGateService:
             group_level = str(permission_mgr.get_group_level(normalized_group_id) or "")
         if group_level == "trusted":
             now_ts = float(timestamp or attention._current_time())
+            if (
+                addressee.kind == addressing.KIND_AFTER_OWN_SPEECH
+                and self._dialogue.is_latest_reply_to(normalized_group_id, sender_id, now=now_ts)
+            ):
+                self._backoff.reset(normalized_group_id)
+                self._mark_active(normalized_group_id)
+                self._log_decision(f"[Followup] 群{normalized_group_id} 同一对话对象紧接追问，交给模型结合上下文判断")
+                return GateDecision("reply", reason="dialogue_followup")
             # 先看空闲退避：连续「决定不接」之后她会主动从这个群退开一段时间
             # （指数放长到 300s）。积压到 BYPASS_PENDING 条则绕过退避重新评估——
             # 否则群聊热起来她会因为退避而错过。@ / 引用她已在上面短路，不受退避影响。

@@ -61,13 +61,9 @@ const I18n = {
     const encodedPluginId = encodeURIComponent(this._pluginId);
     const queryLocale = this._queryLocale();
     const storageLocale = this._storageLocale();
-    // 从插件保存的设置中读取 locale（优先级高于宿主语言）
-    let pluginLocale = '';
-    try {
-      const pluginStorageKey = 'qq_auto_reply_locale';
-      pluginLocale = String(localStorage.getItem(pluginStorageKey) || '').trim();
-    } catch (e) {}
-    let resolved = queryLocale || pluginLocale || storageLocale || '';
+    // Follow the host locale; retire the old independent UI language override.
+    try { localStorage.removeItem('qq_auto_reply_locale'); } catch (_) {}
+    let resolved = queryLocale || storageLocale || '';
     if (!resolved) {
       try {
         const resp = await fetch(`/plugin/${encodedPluginId}/ui-api/locale`, { cache: 'no-store' });

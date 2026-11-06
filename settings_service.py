@@ -924,6 +924,24 @@ class QQSettingsService:
             return await self._save_settings_locked(**kwargs)
 
     async def _save_settings_locked(self, **kwargs: Any) -> dict[str, Any]:
+        from .onebot_backend import OneBotBackend, selected_backend
+
+        backend = kwargs.get("onebot_backend")
+        backend_keys = ("onebot_backend", "snowluma_directory", "show_snowluma_window")
+        backend_before = {key: self.plugin._qq_settings.get(key) for key in backend_keys}
+        if getattr(self.plugin, "_onebot_deploy_in_progress", False) is True:
+            for key in ("onebot_backend", "qq_connection_mode", "onebot_url", "token", "napcat_directory", "snowluma_directory"):
+                if kwargs.get(key) is not None and kwargs[key] != self.plugin._qq_settings.get(key):
+                    raise RuntimeError("部署正在进行，请完成后再修改连接设置")
+        if backend is not None:
+            backend = OneBotBackend(backend)  # Reject unknown backends before side effects.
+            if backend != selected_backend(self.plugin._qq_settings):
+                await self.plugin._stop_auto_reply_runtime(stop_napcat=True)
+                # A backend switch must not reuse the previous login finalization.
+                deploy = getattr(self.plugin, "deploy_service", None)
+                if deploy is not None:
+                    deploy._login_applied_uin = ""
+                self.plugin._deploy_prewrote_onebot_uin = ""
         onebot_url = kwargs.get("onebot_url")
         token = kwargs.get("token")
         napcat_directory = kwargs.get("napcat_directory")
@@ -1321,12 +1339,18 @@ class QQSettingsService:
                 )
         if self.plugin.attention_service:
             self.plugin.attention_service.cleanup_stale_cache()
+        if not success:
+            for key, value in backend_before.items():
+                if value is None:
+                    self.plugin._qq_settings.pop(key, None)
+                else:
+                    self.plugin._qq_settings[key] = value
         if success:
             self.plugin._emit_log("INFO", "设置已保存到磁盘" + (" (需重启自动回复以应用新连接)" if self.plugin._running else ""))
         if self.plugin.qq_client:
             self.plugin.qq_client.onebot_url = self.plugin._qq_settings.get("onebot_url", self.plugin.qq_client.onebot_url)
             self.plugin.qq_client.token = self.plugin._qq_settings.get("token", self.plugin.qq_client.token)
-        if onebot_url is not None or token is not None or napcat_directory is not None or show_napcat_window is not None or qq_connection_mode is not None or qq_open_app_id is not None or qq_open_client_secret is not None:
+        if backend is not None or kwargs.get("snowluma_directory") is not None or kwargs.get("show_snowluma_window") is not None or onebot_url is not None or token is not None or napcat_directory is not None or show_napcat_window is not None or qq_connection_mode is not None or qq_open_app_id is not None or qq_open_client_secret is not None:
             self.plugin.napcat_service.clear_startup_error()
         return {
             "persisted": success,

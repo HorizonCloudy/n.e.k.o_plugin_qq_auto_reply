@@ -32,28 +32,29 @@ h1 { font-size:22px; color:var(--text-primary); text-align:center; margin-bottom
    装饰性元素、不带文案，所以不需要 i18n 键。 */
 .mascot { display:block; margin:0 auto 12px; width:72px; height:72px; object-fit:contain; }
 </style>
+<link rel="stylesheet" href="layout.css?v=2">
 </head>
-<body>
+<body class="home-layout">
 <div style="max-width:900px;width:100%;padding:0 16px;">
     <img class="mascot" src="assets/neko-logo.png?v=1" alt="" aria-hidden="true" draggable="false" onerror="this.style.display='none'">
     <h1 data-i18n="ui.index.title">QQ 接入方式</h1>
-    <p class="sub" data-i18n="ui.index.subtitle">请选择一种连接方式。不同方式的配置流程不同，可随时切换。</p>
+    <p class="sub" data-i18n="ui.index.subtitle">首次使用从一键部署开始；已接入账号可直接进入对应控制台。</p>
     <div class="wrap">
         <a class="card" href="status.html" data-nav="status.html">
             <div class="icon">◉</div>
             <h2 data-i18n="ui.index.status.title">一键部署</h2>
             <p>
-                <span data-i18n="ui.index.status.desc1">自动下载并配置 NapCat</span><br>
-                <span data-i18n="ui.index.status.desc2">启动后出登录二维码，扫码即用</span>
+                <span>自动下载并配置 NapCat / SnowLuma</span><br>
+                <span data-i18n="ui.index.status.desc2">按后端引导完成登录与连接</span>
             </p>
             <span class="tag tag-ok" data-i18n="ui.index.status.tag">自动化</span>
         </a>
         <a class="card" href="napcat.html" data-nav="napcat.html" data-nav-mode="napcat">
             <div class="icon">N</div>
-            <h2>NapCat</h2>
+            <h2>OneBot · NapCat / SnowLuma</h2>
             <p>
-                <span data-i18n="ui.index.napcat.desc1">需要部署 NapCat 进程</span><br>
-                <span data-i18n="ui.index.napcat.desc2">支持 QQ 扫码登录</span><br>
+                <span>选择 NapCat / SnowLuma 后端</span><br>
+                <span data-i18n="ui.index.napcat.desc2">连接状态、账号与回复设置</span><br>
                 <span data-i18n="ui.index.napcat.desc3">可接收群聊</span><strong>全部消息</strong><br>
                 <span data-i18n="ui.index.napcat.desc4">支持戳一戳、表情包等完整能力</span>
             </p>
@@ -70,18 +71,11 @@ h1 { font-size:22px; color:var(--text-primary); text-align:center; margin-bottom
             </p>
             <span class="tag tag-ok" data-i18n="ui.index.openplat.tag">轻量 · 指令式</span>
         </a>
-        <a class="card" href="old.html" data-nav="old.html" data-nav-mode="legacy">
-            <div class="icon">M</div>
-            <h2 data-i18n="ui.index.legacy.title">旧版控制中心</h2>
-            <p>
-                <span data-i18n="ui.index.legacy.desc1">完整的旧版控制面板</span><br>
-                <span data-i18n="ui.index.legacy.desc2">引导、状态、回复管理一站式</span>
-            </p>
-            <span class="tag tag-legacy" data-i18n="ui.index.legacy.tag">旧版 UI</span>
-        </a>
+
     </div>
+    <a class="legacy-link" href="old.html" data-nav="old.html" data-i18n="ui.layout.legacy">使用旧版控制中心 ↗</a>
 </div>
-<script src="i18n.js?v=2"></script>
+<script src="i18n.js?v=3"></script>
 <script src="nav.js?v=1"></script>
 <script>
 function t(key,fallback){return window.I18n&&typeof window.I18n.t==='function'?window.I18n.t(key,fallback):(fallback||key)}
@@ -90,5 +84,6 @@ function t(key,fallback){return window.I18n&&typeof window.I18n.t==='function'?w
    击穿 —— 那个数散落在三处、忘了改就看到旧页面。现在改成运行时生成，从 index 进
    子页必然是新的 URL（nav.js 顶部写了来龙去脉）。 */
 </script>
+<script src="background-settings.js?v=1"></script>
 </body>
 </html>

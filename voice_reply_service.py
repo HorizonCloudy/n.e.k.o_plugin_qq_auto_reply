@@ -514,6 +514,13 @@ class QQVoiceReplyService:
             raise
 
     async def deliver_group_reply(self, group_id: str, text: str, *, reply_message_id: str = "", at_user_id: str = "", keyboard: str = "", voice_text: str = "", fallback_to_text_on_voice_failure: bool) -> bool:
+        import time
+
+        from .group_send_safety import group_send_safety
+        safety = group_send_safety(self.plugin)
+        started_at = time.time()
+        if await safety.blocked(group_id, created_at=started_at, force=True):
+            return False
         normalized_text = self.plugin._validate_outbound_message(text)
         mode = self.plugin._get_reply_mode()
         text_segments: list[dict[str, Any]] = []
@@ -562,6 +569,8 @@ class QQVoiceReplyService:
                     )
                 try:
                     file_uri, _ = await self.synthesize_reply_voice_file(voice_content)
+                    if await safety.blocked(group_id, created_at=started_at, force=True):
+                        return text_ok
                     return self._confirm_send(
                         await self.plugin.qq_client.send_group_record(group_id, file_uri, reply_message_id=reply_message_id, at_user_id=at_user_id),
                     ) or text_ok
@@ -574,12 +583,16 @@ class QQVoiceReplyService:
                 )
         try:
             file_uri, _ = await self.synthesize_reply_voice_file(speech_text)
+            if await safety.blocked(group_id, created_at=started_at, force=True):
+                return False
             voice_ok = self._confirm_send(
                 await self.plugin.qq_client.send_group_record(group_id, file_uri, reply_message_id=reply_message_id, at_user_id=at_user_id),
             )
             if voice_ok:
                 return True
             if mode == "voice" and fallback_to_text_on_voice_failure:
+                if await safety.blocked(group_id, created_at=started_at, force=True):
+                    return False
                 # 对偶私聊路径：未确认（开放平台吞异常返回 None）也回退文本。
                 # 回退的这条同样要带 keyboard——否则语音一失败，用户拿到的
                 # 是一句"想看哪个？"却一个按钮都没有。
@@ -592,6 +605,8 @@ class QQVoiceReplyService:
             return False
         except Exception:
             if mode == "voice" and fallback_to_text_on_voice_failure:
+                if await safety.blocked(group_id, created_at=started_at, force=True):
+                    return False
                 self.plugin.logger.warning("QQ 纯语音群聊发送失败，回退文本", exc_info=True)
                 return self._confirm_send(
                     await self.plugin.qq_client.send_group_message_segments(

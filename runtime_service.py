@@ -10,16 +10,23 @@ class QQRuntimeService:
         self.plugin = plugin
 
     def build_runtime_status(self) -> dict[str, Any]:
+        from .onebot_backend import selected_backend
+
+        backend = selected_backend(self.plugin._qq_settings)
         qrcode_path = self.plugin.config_dir / "static" / "cache" / "qrcode.png"
         attention_snapshot = self.plugin.attention_service.get_snapshot() if getattr(self.plugin, "attention_service", None) else {"enabled": False, "focus_group_id": "", "focus_score": 0.0, "groups": []}
         return {
+            "onebot_backend": backend.value,
+            "backend_label": "SnowLuma" if backend == "snowluma" else "NapCat",
+            "backend_webui_url": self.plugin.napcat_service.get_webui_url(),
+            "login_method": "native_qq" if backend == "snowluma" else "qrcode",
             "plugin_running": True,
             "auto_reply_running": self.plugin._running,
             "onebot_connected": bool(self.plugin.qq_client and self.plugin.qq_client.is_connected()),
             "napcat_managed": self.plugin.napcat_service.manages_napcat_process,
             "napcat_running": bool(self.plugin.napcat_service.napcat_process and self.plugin.napcat_service.napcat_process.returncode is None),
             "napcat_pid": int(self.plugin.napcat_service.napcat_process.pid) if self.plugin.napcat_service.napcat_process and self.plugin.napcat_service.napcat_process.returncode is None and self.plugin.napcat_service.napcat_process.pid else None,
-            "qrcode_url": f"/plugin/{self.plugin.plugin_id}/ui/cache/qrcode.png" if qrcode_path.is_file() else "",
+            "qrcode_url": f"/plugin/{self.plugin.plugin_id}/ui/cache/qrcode.png" if backend == "napcat" and qrcode_path.is_file() else "",
             "show_napcat_window": bool((self.plugin._qq_settings or {}).get("show_napcat_window", False)),
             "startup_error": self.plugin.napcat_service.get_startup_error() or None,
             "attention": attention_snapshot,

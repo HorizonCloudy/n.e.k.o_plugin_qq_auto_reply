@@ -122,6 +122,11 @@ class QQDeployService:
                      auto_start: bool = True,
                      emit: Callable[[dict], None] | None = None) -> dict:
         """跑完整条部署。返回结果字典；失败抛 ``RuntimeError``。"""
+        if self._settings().get("qq_connection_mode") == "open_platform":
+            raise RuntimeError("开放平台无需部署 OneBot 后端，请先选择 OneBot")
+        if self._settings().get("onebot_backend") == "snowluma":
+            from .snowluma_deploy import QQSnowLumaDeployService
+            return await QQSnowLumaDeployService(self.plugin).deploy(uin=uin, force=force, auto_start=auto_start, emit=emit)
         uin = str(uin or "").strip()
         if not uin or not uin.isascii() or not uin.isdigit() or uin.startswith("0"):
             raise RuntimeError("请先填写有效的机器人 QQ 号（非零开头的纯数字），并使用该账号登录 NapCat。")
@@ -405,6 +410,9 @@ class QQDeployService:
         **防重入**：收尾会起运行时，而前端是定时轮询 —— 不记状态的话每轮都会重做。
         做完记下 uin，之后同一个号一律返回 ``already``。
         """
+        if self._settings().get("onebot_backend") == "snowluma":
+            from .snowluma_deploy import QQSnowLumaDeployService
+            return await QQSnowLumaDeployService(self.plugin).poll_login(auto_start=auto_start, emit=emit)
         svc = self.plugin.napcat_service
         napcat_dir = svc.get_napcat_directory()
         if not napcat_dir:
@@ -462,6 +470,11 @@ class QQDeployService:
         ``uin`` 为空时自动取最新的 ``onebot11_*.json`` —— 扫码登录成功后 NapCat 会
         自己建出那个文件，靠扫目录就能知道登的是哪个号。
         """
+        if self._settings().get("qq_connection_mode") == "open_platform":
+            raise RuntimeError("开放平台无需写入 OneBot 配置")
+        if self._settings().get("onebot_backend") == "snowluma":
+            from .snowluma_deploy import QQSnowLumaDeployService
+            return await QQSnowLumaDeployService(self.plugin).apply_onebot_config(uin=uin, restart=restart, emit=emit)
         svc = self.plugin.napcat_service
         napcat_dir = svc.get_napcat_directory()
         if not napcat_dir:

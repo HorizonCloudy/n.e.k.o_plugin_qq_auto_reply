@@ -11,7 +11,17 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from plugin.plugins.qq_auto_reply.backlog_store import QQBacklogStore
-from plugin.sdk.plugin import Err, NekoPluginBase, Ok, SdkError, lifecycle, neko_plugin, plugin_entry, tr, ui
+from plugin.sdk.plugin import (
+    Err,
+    NekoPluginBase,
+    Ok,
+    SdkError,
+    lifecycle,
+    neko_plugin,
+    plugin_entry,
+    tr,
+    ui,
+)
 
 # OneBotConnector 仅作类型注解使用（from __future__ import annotations 下为惰性求值），
 # 运行时无需导入 —— 连接由 connector_seam 在方法内惰性解析并构建，见 _make_qq_connection。
@@ -19,7 +29,9 @@ if TYPE_CHECKING:
     from .connector_seam import OneBotConnector
 
 try:
-    from utils.tts.native_voice_registry import get_active_realtime_native_provider_for_ui
+    from utils.tts.native_voice_registry import (
+        get_active_realtime_native_provider_for_ui,
+    )
 except (ImportError, ModuleNotFoundError):
     get_active_realtime_native_provider_for_ui = None
 try:
@@ -59,7 +71,7 @@ from .handler_runtime_service import QQHandlerRuntimeService
 from .memory_bridge import QQMemoryBridge
 from .memory_tool_service import QQMemoryToolService
 from .message_dispatcher import QQMessageDispatcher
-from .napcat_service import QQNapcatService
+from .onebot_backend import OneBotBackendService
 from .outbound_guard_service import QQOutboundGuardService
 from .permission import PermissionManager
 from .plugin_tool_followup_service import QQPluginToolFollowupService
@@ -172,7 +184,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self.settings_service = QQSettingsService(self)
         self.runtime_service = QQRuntimeService(self)
         self.dashboard_service = QQDashboardService(self)
-        self.napcat_service = QQNapcatService(
+        self.napcat_service = OneBotBackendService(
             get_settings=lambda: self._qq_settings,
             get_qq_client=lambda: self.qq_client,
             config_dir=self.config_dir,
@@ -796,7 +808,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self.settings_service.apply_runtime_settings(settings)
         await self.napcat_service.migrate_napcat_storage()
         migrated_path = self.napcat_service.get_configured_napcat_path()
-        if migrated_path and migrated_path != str(settings.get("napcat_directory") or "").strip():
+        if settings.get("onebot_backend") != "snowluma" and migrated_path and migrated_path != str(settings.get("napcat_directory") or "").strip():
             await self.settings_service.save_settings(napcat_directory=migrated_path)
         await self.attention_service.load_cached_state()
         self.reply_buffer_service = QQReplyBufferService(self)
@@ -1688,9 +1700,10 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
 
     async def _query_napcat_webui(self, kw: dict[str, Any]):
         _ = kw
-        url = self.napcat_service.get_webui_url()
+        url = await self.napcat_service.get_webui_login_url()
         webui_lines = await self.napcat_service._read_napcat_webui_lines()
-        return Ok({"url": url, "lines": webui_lines})
+        return Ok({"url": url, "lines": webui_lines,
+                   "backend": str(self._qq_settings.get("onebot_backend") or "napcat")})
 
     async def _query_bots(self, kw: dict[str, Any]):
         _ = kw
@@ -2380,6 +2393,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         return Ok({"status": "napcat_started", "onebot_ready": False})
 
     async def _deploy_one_click(self, kw: dict[str, Any]):
+        if getattr(self, "_onebot_deploy_in_progress", False):
+            return Err(SdkError("DEPLOY_BUSY: 部署正在进行，请等待完成"))
+        self._onebot_deploy_in_progress = True
         uin = str(kw.get("uin") or "").strip()
         force = bool(kw.get("force", False))
         auto_start = bool(kw.get("auto_start", True))
@@ -2400,6 +2416,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         except Exception as e:
             self.logger.error(f"一键部署失败: {e}")
             return Err(SdkError(f"DEPLOY_FAILED: {e}"))
+        finally:
+            self._onebot_deploy_in_progress = False
         return Ok({**result})   # 收尾字段由 deploy 一并带回
 
     async def _deploy_apply_onebot(self, kw: dict[str, Any]):
@@ -3006,12 +3024,14 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     @plugin_entry(
         id="runtime",
         name=tr("entries.runtime.name", default="运行时控制"),
-        description=tr("entries.runtime.description", default="启停自动回复、切换连接方式。action 取 start / stop / set_mode。"),
+        description=tr("entries.runtime.description", default="启停自动回复、切换连接方式、启停本地 OneBot 后端。action 取 start / stop / set_mode / backend_start / backend_stop。"),
         input_schema={"type": "object", "properties": {
-            "action": {"type": "string", "enum": ["start", "stop", "set_mode"],
-                       "description": "start=启动自动回复；stop=停止；set_mode=切换连接方式（另需 mode）"},
+            "action": {"type": "string", "enum": ["start", "stop", "set_mode", "backend_start", "backend_stop"],
+                       "description": "start/stop=启停自动回复；set_mode=切换连接方式；backend_start/backend_stop=启停本地后端（另需 backend）"},
             "mode": {"type": "string", "enum": list(CONNECTION_MODES),
                      "description": "仅 set_mode 用：napcat / napcat_forward / open_platform"},
+            "backend": {"type": "string", "enum": ["napcat", "snowluma"],
+                        "description": "backend_start/backend_stop 必填：当前已保存的后端"},
             "restart": {"type": "boolean", "default": True,
                         "description": "仅 set_mode 用：正在运行时是否按新模式重连；关掉则只存设置"},
         }, "required": ["action"], "additionalProperties": False},
@@ -3027,8 +3047,12 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return await self._runtime_stop(kw)
         if action == "set_mode":
             return await self._runtime_set_mode(kw)
+        if action in ("backend_start", "backend_stop"):
+            return await self.runtime_ops_service.control_backend(
+                start=action == "backend_start", backend=str(kw.get("backend") or ""),
+            )
         return Err(SdkError(
-            f"BAD_ACTION: runtime 不支持 {action!r}（可选 start/stop/set_mode）"))
+            f"BAD_ACTION: runtime 不支持 {action!r}（可选 start/stop/set_mode/backend_start/backend_stop）"))
 
     async def _runtime_start(self, kw: dict[str, Any]):
         """开始监听 QQ 消息，并按当前配置自动回复或转发。"""
@@ -3040,6 +3064,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
 
     async def _runtime_set_mode(self, kw: dict[str, Any]):
         """切换连接方式。运行中则停掉重连，否则只存设置。"""
+        if getattr(self, "_onebot_deploy_in_progress", False):
+            return Err(SdkError("DEPLOY_BUSY: 部署正在进行，请完成后再切换连接方式"))
         mode = str(kw.get("mode") or "").strip()
         restart = bool(kw.get("restart", True))
         if mode not in CONNECTION_MODES:

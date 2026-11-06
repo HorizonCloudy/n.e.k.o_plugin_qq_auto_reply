@@ -14,6 +14,47 @@ class QQRuntimeOpsService:
     def __init__(self, plugin: Any):
         self.plugin = plugin
 
+    async def control_backend(self, *, start: bool, backend: str):
+        from .onebot_backend import selected_backend
+
+        async with runtime_transition_guard(self.plugin).hold("OneBot 后端启停"):
+            settings = self.plugin._qq_settings or {}
+            if getattr(self.plugin, "_onebot_deploy_in_progress", False):
+                return Err(SdkError("DEPLOY_BUSY: 请等待部署完成后再启停后端"))
+            if settings.get("qq_connection_mode") not in ("napcat", "napcat_forward"):
+                return Err(SdkError("BAD_MODE: 开放平台不使用 OneBot 后端"))
+            selected = selected_backend(settings)
+            if backend != selected.value:
+                return Err(SdkError("BACKEND_CHANGED: 后端选择已改变，请保存设置并刷新页面"))
+            service = self.plugin.napcat_service.services[selected]
+            process = service.napcat_process
+            alive = bool(process and process.returncode is None)
+            connected = bool(self.plugin.qq_client and self.plugin.qq_client.is_connected())
+            try:
+                if start:
+                    if alive or connected:
+                        return Ok({"status": "already_running", "backend": backend})
+                    service.clear_startup_error()
+                    await service.ensure_napcat_started()
+                    process = service.napcat_process
+                    if service.get_startup_error() or not (process and process.returncode is None):
+                        return Err(SdkError("BACKEND_START_FAILED: " + (
+                            service.get_startup_error() or "未找到可启动的本地后端，请先一键部署"
+                        )))
+                else:
+                    if not alive or not service.manages_napcat_process:
+                        return Err(SdkError("NOT_MANAGED: 没有由插件管理的后端进程；手动或远程启动的后端请在对应控制台关闭"))
+                    # Cancel message handling before disconnecting the transport.
+                    await self._stop_runtime_locked(stop_napcat=False)
+                    await service.stop_managed_napcat()
+                    if process.returncode is None:
+                        return Err(SdkError("BACKEND_STOP_FAILED: 进程尚未确认退出，请检查后端状态"))
+                return Ok({"status": "started" if start else "stopped", "backend": backend})
+            except Exception as exc:
+                return Err(SdkError(f"BACKEND_ERROR: {exc}"))
+            finally:
+                getattr(self.plugin, "_spawn_push_ui_event", lambda *a, **k: None)("status")
+
     async def start_auto_reply(self):
         async with runtime_transition_guard(self.plugin).hold("启动自动回复"):
             return await self._start_auto_reply_locked()

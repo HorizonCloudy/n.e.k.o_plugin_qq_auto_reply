@@ -831,12 +831,16 @@ class QQReplyBufferService:
             )
             return
 
-        if self._consent_revoked_since(pending):
+        from .group_send_safety import group_send_safety
+        muted = pending.is_group and await group_send_safety(self.plugin).blocked(
+            pending.group_id, created_at=pending.created_at, force=True,
+        )
+        if muted or self._consent_revoked_since(pending):
             # 等待期间授权被撤销：这条草稿是在旧授权下生成的（prompt 里
             # 可能带 scoped/跨群内容），不得再送出。草稿保持未投递、屏障
             # 解除、不记 mention。
             self._log(
-                "WARN", f"[Buffer] 记忆授权已撤销，丢弃缓冲中的旧回复（{session_key}）",
+                "WARN", f"[Buffer] {'禁言或解禁前旧回复' if muted else '记忆授权已撤销'}，丢弃缓冲中的旧回复（{session_key}）",
             )
             if self._detach_pending(session_key, pending, generation):
                 self._settle_provisional(
@@ -870,6 +874,7 @@ class QQReplyBufferService:
             plan = QQDeliveryPlan(
                 target_type="group" if pending.is_group else "private",
                 target_id=pending.group_id if pending.is_group else pending.sender_id,
+                created_at=pending.created_at,
                 blocks=blocks,
                 fallback_to_text_on_voice_failure=True,
             )

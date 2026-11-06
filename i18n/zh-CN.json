@@ -232,7 +232,7 @@
   "ui.index.legacy.tag": "旧版 UI",
   "ui.index.legacy.title": "旧版控制中心",
   "ui.index.napcat.desc1": "需要部署 NapCat 进程",
-  "ui.index.napcat.desc2": "支持 QQ 扫码登录",
+  "ui.index.napcat.desc2": "连接状态、账号与回复设置",
   "ui.index.napcat.desc3": "可接收群聊",
   "ui.index.napcat.desc4": "支持戳一戳、表情包等完整能力",
   "ui.index.napcat.tag": "全功能 · 多群聊",
@@ -241,7 +241,7 @@
   "ui.index.openplat.desc3": "仅接收 ",
   "ui.index.openplat.desc4": "支持 Markdown、按钮模板",
   "ui.index.openplat.tag": "轻量 · 指令式",
-  "ui.index.subtitle": "请选择一种连接方式。不同方式的配置流程不同，可随时切换。",
+  "ui.index.subtitle": "首次使用从一键部署开始；已接入账号可直接进入对应控制台。",
   "ui.index.title": "QQ 接入方式",
   "ui.initiative.blocked": "现在不会开口：{why}",
   "ui.initiative.enabled": "允许她主动搭话（默认关）",
@@ -729,5 +729,11 @@
   "ui.openplat.plugintools.followup_hint": "她答应「结果出来告诉你」时，后台会替你盯着那个任务；出结果后她把结论主动发回同一个会话。关掉之后她就不会再承诺这件事。",
   "ui.openplat.plugintools.followup_pending": "正在等结果：{items}",
   "ui.openplat.plugintools.followup_waited": "已等 {s}s",
-  "ui.user.level_blacklist": "黑名单（不处理其消息）"
+  "ui.user.level_blacklist": "黑名单（不处理其消息）",
+  "ui.layout.connection": "连接与运行",
+  "ui.layout.chat": "聊天配置",
+  "ui.layout.maintenance": "排查与维护",
+  "ui.layout.setup_hint": "接入 → 部署 → 登录确认",
+  "ui.layout.legacy": "使用旧版控制中心 ↗",
+  "ui.index.status.desc2": "按后端引导完成登录与连接"
 }
