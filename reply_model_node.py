@@ -10,6 +10,21 @@ class QQReplyModelNode:
         self.plugin = plugin
 
     async def generate(self, context: QQReplyContext) -> QQModelResult:
+        if context.is_group and context.group_id:
+            from .group_send_safety import group_send_safety
+
+            async with group_send_safety(self.plugin).generation(context.group_id) as reason:
+                if reason:
+                    logger = getattr(self.plugin, "logger", None)
+                    if logger is not None:
+                        logger.info("[Pace] 群%s 跳过模型生成：%s，不补发", context.group_id, reason)
+                    return QQModelResult(reply_text=None, source="none", traces=[
+                        QQPipelineStageTrace(stage="model_primary", status="skipped", detail=reason),
+                    ])
+                return await self._generate_admitted(context)
+        return await self._generate_admitted(context)
+
+    async def _generate_admitted(self, context: QQReplyContext) -> QQModelResult:
         if not self._should_generate(context):
             return QQModelResult(
                 reply_text=None,

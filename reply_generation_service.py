@@ -1309,12 +1309,16 @@ class QQReplyGenerationService:
         if context.is_group and context.group_id:
             from .group_send_safety import group_send_safety
 
-            if not group_send_safety(self.plugin).has_capacity(context.group_id):
-                emit_bridge_log(self.plugin, "INFO", f"[Pace] 群{context.group_id}发送额度已满，跳过本轮生成，不补发")
-                return QQModelResult(reply_text=None, source="none", traces=[
-                    QQPipelineStageTrace(stage="model_primary", status="skipped", detail="group_rate_limit"),
-                ])
+            async with group_send_safety(self.plugin).generation(context.group_id) as reason:
+                if reason:
+                    emit_bridge_log(self.plugin, "INFO", f"[Pace] 群{context.group_id}跳过生成：{reason}，不补发")
+                    return QQModelResult(reply_text=None, source="none", traces=[
+                        QQPipelineStageTrace(stage="model_primary", status="skipped", detail=reason),
+                    ])
+                return await self._generate_admitted_context(context)
+        return await self._generate_admitted_context(context)
 
+    async def _generate_admitted_context(self, context: QQReplyContext) -> QQModelResult:
         primary_result = await self.run_primary_session_call(context)
         if not primary_result.allow_fallback:
             return primary_result

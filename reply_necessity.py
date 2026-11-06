@@ -314,6 +314,17 @@ def score_necessity(
     presence, presence_reason = _presence(signals)
     pair_penalty, pair_reason = _human_pair(signals, human_pair_penalty, human_pair_min_streak)
     addressee_delta, addressee_reason = _addressee(signals, addressee_penalty)
+    # Backlog is not an invitation. Once others have exchanged several turns,
+    # focus + unread volume alone must not pull us into every ordinary remark.
+    listening = (
+        signals.is_group and not signals.is_at_bot and not signals.is_reply_to_bot
+        and signals.human_pair_streak >= max(1, human_pair_min_streak)
+        and signals.addressee_kind in (addressing.KIND_GROUP_CHATTER, *addressing.POINTED_ELSEWHERE)
+    )
+    if listening:
+        pressure = min(pressure, 5)
+        relevance = min(relevance, 20)
+        pressure_reason = "旁听时积压限权"
 
     reasons = tuple(
         r for r in (

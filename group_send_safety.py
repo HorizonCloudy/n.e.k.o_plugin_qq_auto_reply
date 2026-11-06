@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from contextlib import asynccontextmanager
 from typing import Any
 
 
@@ -14,7 +15,22 @@ class GroupSendSafety:
         self.muted_until: dict[str, float] = {}
         self.checked: dict[str, float] = {}
         self.recent: dict[str, list[float]] = {}
+        self.last_sticker: dict[str, float] = {}
+        self.generating: dict[str, int] = {}
+        self.last_question: dict[str, float] = {}
         self.locks: dict[str, asyncio.Lock] = {}
+
+    def note_reply(self, group_id: str, *, question: bool):
+        if question:
+            self.last_question[str(group_id)] = time.time()
+        else:
+            self.last_question.pop(str(group_id), None)
+
+    def style_hint(self, group_id: str) -> str:
+        last = self.last_question.get(str(group_id))
+        if last is not None and time.time() - last < 120:
+            return "你上一条已用问句收尾。这轮优先回应对方给出的内容，用陈述句结束；仅在缺少完成明确请求必需的信息时再澄清，不要追加闲聊问题。\n"
+        return ""
 
     async def blocked(self, group_id: str, *, created_at: float = 0,
                       force: bool = False) -> bool:
@@ -73,11 +89,52 @@ class GroupSendSafety:
         return len(rows) < 3
 
     def admit(self, group_id: str) -> bool:
-        """At most three reply plans per minute; no retry queue."""
+        """Reserve one outgoing message attempt, not a whole reply plan.
+
+        Failed/uncertain sends keep their reservation to avoid retry bursts.
+        """
         if not self.has_capacity(group_id):
             return False
         self.recent[str(group_id)].append(time.time())
         return True
+
+    def admit_sticker(self, group_id: str) -> bool:
+        """Reserve before upload so concurrent replies cannot burst stickers."""
+        gid = str(group_id)
+        now = time.time()
+        last = self.last_sticker.get(gid)
+        if last is not None and now - last < 30:
+            return False
+        if not self.admit(gid):
+            return False
+        self.last_sticker[gid] = now
+        return True
+
+    @asynccontextmanager
+    async def generation(self, group_id: str):
+        """Shared preflight for both model entry points; never queue generation."""
+        gid = str(group_id)
+        if await self.blocked(gid):
+            yield "group_muted"
+            return
+        self.has_capacity(gid)  # Prune expired send reservations.
+        pending = getattr(getattr(self.plugin, "reply_buffer_service", None), "_pending", {})
+        draft = pending.get(f"group:{gid}") if isinstance(pending, dict) else None
+        # A placeholder has no generated blocks yet. A delivering plan is
+        # already accounted for by actual send reservations.
+        queued = len(getattr(draft, "first_blocks", ()) or ()) if not getattr(draft, "delivering", False) else 0
+        if len(self.recent[gid]) + self.generating.get(gid, 0) + queued >= 3:
+            yield "group_rate_limit"
+            return
+        self.generating[gid] = self.generating.get(gid, 0) + 1
+        try:
+            yield ""
+        finally:
+            left = self.generating[gid] - 1
+            if left:
+                self.generating[gid] = left
+            else:
+                self.generating.pop(gid, None)
 
 
 def group_send_safety(plugin: Any) -> GroupSendSafety:

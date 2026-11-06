@@ -34,7 +34,7 @@ class QQReplyDeliveryNode:
         if plan.target_type == "group":
             safety = group_send_safety(self.plugin)
             if (await safety.blocked(plan.target_id, created_at=plan.created_at, force=True)
-                    or not safety.admit(plan.target_id)):
+                    or not safety.has_capacity(plan.target_id)):
                 self.plugin.logger.warning("[Mute/Pace] 群 %s 禁言、旧回复或发送过密，丢弃本轮，不补发", plan.target_id)
                 return QQDeliveryResult(False, plan.target_type, plan.target_id, None)
 
@@ -51,8 +51,9 @@ class QQReplyDeliveryNode:
         content_sent = True
         decoration_sent = False
         for i, block in enumerate(blocks):
-            if i > 0:
+            if i > 0 and not (plan.target_type == "group" and block.sticker):
                 # 块间延迟：模拟真人打字间隔
+                # 群表情包上传已有延迟，不再额外延后制造一波新气泡。
                 await asyncio.sleep(random.uniform(2.0, 5.0))
 
             if consent_gate is not None and consent_gate():
@@ -134,6 +135,9 @@ class QQReplyDeliveryNode:
                 if not self._outbound_allowed(plan.target_type, plan.target_id, labels):
                     content_sent = False
                     continue
+                if not self._admit_message(plan):
+                    content_sent = False
+                    continue
                 if self._supports_keyboard():
                     # 内容不能是空白：开放平台 sender 会 strip 后判空直接
                     # 返回 None，连带按钮 payload 都不构造——既没按钮也没
@@ -172,6 +176,10 @@ class QQReplyDeliveryNode:
         # 就不得报 delivered=True——buffer 会据此清未投递标并记 mention，
         # 而排除名单是整行粒度的，部分未发出的内容也会进 scoped 提取。
         delivered = content_sent if content_attempted else decoration_sent
+        if delivered and content_attempted and plan.target_type == "group":
+            group_send_safety(self.plugin).note_reply(
+                plan.target_id, question=self._ends_with_question(blocks),
+            )
         # 发送成功**必须留一行文件日志**（2026-09-27 真机验收的缺口）：
         # 这条路径原来只在失败/跳过时写日志，成功时只进 `_emit_log` 的内存环形
         # 缓冲（UI 面板）——于是"她今天到底发出去几条"在日志里查不到，
@@ -273,6 +281,19 @@ class QQReplyDeliveryNode:
         self.plugin._emit_log("WARN", f"[Outbound] 拦截（{reason}）: {text[:20]}")
         return False
 
+    def _admit_message(self, plan: QQDeliveryPlan, *, sticker: bool = False) -> bool:
+        if plan.target_type != "group":
+            return True
+        safety = group_send_safety(self.plugin)
+        allowed = (safety.admit_sticker(plan.target_id) if sticker
+                   else safety.admit(plan.target_id))
+        if not allowed:
+            self.plugin.logger.info(
+                "[SendBudget] 群 %s %s，跳过本条，不延迟补发",
+                plan.target_id, "表情包冷却或消息额度不足" if sticker else "消息额度不足",
+            )
+        return allowed
+
     async def _send_text(
         self, plan: QQDeliveryPlan, block: QQMessageBlock, text: str,
         *, keyboard: str = "",
@@ -305,6 +326,8 @@ class QQReplyDeliveryNode:
             if not self._outbound_allowed(plan.target_type, plan.target_id, voice_text):
                 return False
             if plan.target_type == "group":
+                if not self._admit_message(plan):
+                    return False
                 return bool(await self.plugin._deliver_group_reply(plan.target_id, voice_text, fallback_to_text_on_voice_failure=plan.fallback_to_text_on_voice_failure))
             return bool(await self.plugin._deliver_private_reply(plan.target_id, voice_text, fallback_to_text_on_voice_failure=plan.fallback_to_text_on_voice_failure))
         if plan.target_type != "group" and keyboard:
@@ -333,6 +356,8 @@ class QQReplyDeliveryNode:
             if keyboard and self._supports_keyboard():
                 guarded_text += "\n" + " / ".join(part.strip() for part in str(keyboard).split("|") if part.strip())
             if not self._outbound_allowed(plan.target_type, plan.target_id, guarded_text):
+                return False
+            if not self._admit_message(plan):
                 return False
             if block is not None and (block.reply_to or block.at_user):
                 # 修饰明确作为 OneBot 消息段发送，不能塞进 text 段冒充引用或 @。
@@ -435,6 +460,8 @@ class QQReplyDeliveryNode:
         sticker_path = self.plugin._resolve_sticker_path(block.sticker)
         if not sticker_path:
             return False
+        if not self._admit_message(plan, sticker=True):
+            return False
         client = self.plugin.qq_client
         is_open_platform = media_seam.is_open_platform(client)
 
@@ -480,6 +507,8 @@ class QQReplyDeliveryNode:
             return False
         if not hasattr(self, "_last_poke_out"):
             self._last_poke_out = {}
+        if not self._admit_message(plan):
+            return False
         self._last_poke_out[key] = now
         return self._confirm_platform_result(
             await self.plugin.qq_client.send_group_poke(plan.target_id, block.poke),
@@ -626,6 +655,8 @@ class QQReplyDeliveryNode:
             ):
                 return False
             if plan.target_type == "group":
+                if not self._admit_message(plan):
+                    return False
                 result = await self.plugin.qq_client.send_group_record(plan.target_id, file_uri)
             else:
                 result = await self.plugin.qq_client.send_private_record(plan.target_id, file_uri)
@@ -639,6 +670,8 @@ class QQReplyDeliveryNode:
                 # 回退文本，而不是直接判未投递。
                 if plan.target_type == "group":
                     if await group_send_safety(self.plugin).blocked(plan.target_id, created_at=plan.created_at, force=True):
+                        return False
+                    if not self._admit_message(plan):
                         return False
                     fb = await self.plugin.qq_client.send_group_message(plan.target_id, block.record)
                 else:
@@ -657,6 +690,8 @@ class QQReplyDeliveryNode:
                 text = block.record
                 if plan.target_type == "group":
                     if await group_send_safety(self.plugin).blocked(plan.target_id, created_at=plan.created_at, force=True):
+                        return False
+                    if not self._admit_message(plan):
                         return False
                     result = await self.plugin.qq_client.send_group_message(plan.target_id, text)
                 else:
