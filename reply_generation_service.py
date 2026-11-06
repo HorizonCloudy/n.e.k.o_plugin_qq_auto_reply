@@ -1164,6 +1164,7 @@ class QQReplyGenerationService:
         user_data: dict[str, Any],
         context: QQReplyContext,
         reply_text: str = "",
+        sync_tail_ai: bool = False,
     ) -> None:
         if user_data.get("memory_enabled"):
             try:
@@ -1171,13 +1172,8 @@ class QQReplyGenerationService:
                 # 只做 cache 同步，避免同一发言重复入 bucket。
                 count = await self.plugin._cache_session_delta(
                     session_key, user_data,
-                    # 合成轮（主动搭话等）的回复是直接发出去的、不经 buffer，
-                    # 尾部 ai 行不会随后被 summary 取代，当轮就该入库。否则
-                    # 她说完之后用户不回消息，这条要等下一轮才进记忆库，中途
-                    # 宿主重启就永久丢了。
-                    sync_tail_ai=is_synthetic_source(
-                        getattr(context, "source_kind", "")
-                    ),
+                    # 生成成功不代表发送成功。尾部回复只在投递确认后同步。
+                    sync_tail_ai=sync_tail_ai,
                 )
                 if count:
                     self.plugin.logger.info(f"[管理员] 成功同步 {count} 条消息到 Memory Server (会话: {session_key})")

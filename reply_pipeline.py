@@ -936,6 +936,22 @@ class QQReplyPipelineRunner:
             await self.plugin.reply_generation_service.record_scoped_mentions_on_delivery(
                 context, delivered_text,
             )
+            # 主动搭话当轮落库，但必须等发送成功、provisional 标记结算之后。
+            # 否则网络发送失败时，未发出的回复已经进入了主人的长期记忆。
+            from .pipeline_models import is_synthetic_source
+
+            if request is not None and is_synthetic_source(request.source_kind):
+                memory_key = self.plugin._build_session_key(
+                    sender_id=request.sender_id,
+                    is_group=request.is_group,
+                    group_id=request.group_id if request.is_group else None,
+                )
+                user_data = self.plugin._user_sessions.get(memory_key)
+                if user_data is not None:
+                    await self.plugin.reply_generation_service._sync_memory_after_success(
+                        session_key=memory_key, user_data=user_data,
+                        context=context, sync_tail_ai=True,
+                    )
         if result is None:
             # `deliver()` 的 None **只有一个来源**：计划里什么都没有（它开头那句
             # `if not plan or not plan.blocks: return None`）。也就是说这一轮**没有可发
