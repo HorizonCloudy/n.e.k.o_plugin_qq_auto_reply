@@ -558,6 +558,7 @@ class QQVoiceReplyService:
                 group_id, text_segments, normalized_text,
                 mode=mode, fallback=fallback_to_text_on_voice_failure, keyboard=keyboard,
             )
+        # 语音只发独立 record；引用和 @ 留在 text_segments，供文字及失败回退使用。
         # both 模式：LLM 自主决定 → 有 <record> 则语音，否则纯文字
         if mode == "both":
             voice_content = (voice_text or "").strip()
@@ -572,7 +573,7 @@ class QQVoiceReplyService:
                     if await safety.blocked(group_id, created_at=started_at, force=True):
                         return text_ok
                     return self._confirm_send(
-                        await self.plugin.qq_client.send_group_record(group_id, file_uri, reply_message_id=reply_message_id, at_user_id=at_user_id),
+                        await self.plugin.qq_client.send_group_record(group_id, file_uri),
                     ) or text_ok
                 except Exception:
                     self.plugin.logger.warning("QQ both-语音群聊发送失败，已保留文本", exc_info=True)
@@ -586,7 +587,7 @@ class QQVoiceReplyService:
             if await safety.blocked(group_id, created_at=started_at, force=True):
                 return False
             voice_ok = self._confirm_send(
-                await self.plugin.qq_client.send_group_record(group_id, file_uri, reply_message_id=reply_message_id, at_user_id=at_user_id),
+                await self.plugin.qq_client.send_group_record(group_id, file_uri),
             )
             if voice_ok:
                 return True

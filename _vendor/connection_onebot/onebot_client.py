@@ -1,3 +1,4 @@
+# LOCAL-PATCH: v0.14.7 (2026-11-07) Keep voice payloads record-only, matching the host fix.
 """
 OneBot-protocol client (reverse WebSocket server / forward WebSocket client).
 
@@ -999,21 +1000,21 @@ class OneBotClient(OneBotConnectionBase):
             self.logger.debug(f"Sent segmented private message to {user_id}")
 
     async def send_private_record(self, user_id: str, file_uri: str, *, reply_message_id: str = "") -> Optional[str]:
-        """Send a private-message voice note."""
-        segments: list[Dict[str, Any]] = []
-        if str(reply_message_id or "").strip():
-            segments.append({"type": "reply", "data": {"id": str(reply_message_id)}})
-        segments.append({"type": "record", "data": {"file": str(file_uri or "")}})
+        """Send a standalone voice note; ignore legacy reply metadata.
+
+        Keep the keyword for caller compatibility, but never combine a voice
+        note with a quoted reply. Text messages retain their own modifiers.
+        """
+        segments = [{"type": "record", "data": {"file": str(file_uri or "")}}]
         return await self.send_private_message_segments(user_id, segments)
 
     async def send_group_record(self, group_id: str, file_uri: str, *, reply_message_id: str = "", at_user_id: str = "") -> Optional[str]:
-        """Send a group-message voice note."""
-        segments: list[Dict[str, Any]] = []
-        if str(reply_message_id or "").strip():
-            segments.append({"type": "reply", "data": {"id": str(reply_message_id)}})
-        if str(at_user_id or "").strip():
-            segments.append({"type": "at", "data": {"qq": str(at_user_id)}})
-        segments.append({"type": "record", "data": {"file": str(file_uri or "")}})
+        """Send a standalone voice note; ignore legacy reply/at metadata.
+
+        Keep the keywords for caller compatibility. Reply and at segments may
+        accompany text messages, not the record-only voice payload.
+        """
+        segments = [{"type": "record", "data": {"file": str(file_uri or "")}}]
         return await self.send_group_message_segments(group_id, segments)
 
     async def send_group_message_segments(self, group_id: str, segments: list[Dict[str, Any]], *, record_sent: bool = True, keyboard: str = "") -> Optional[str]:

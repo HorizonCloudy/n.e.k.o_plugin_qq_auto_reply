@@ -118,7 +118,7 @@ def test_voice_fallback_expands_cq_modifiers(monkeypatch, failure):
     else:
         synth.assert_awaited_once_with("你好")
     if failure == "unconfirmed":
-        assert client.send_group_record.call_args.kwargs == {"reply_message_id": "456", "at_user_id": "789"}
+        client.send_group_record.assert_awaited_once_with("123", "file:///voice.wav")
 
 
 class _FakeConfigManager:
