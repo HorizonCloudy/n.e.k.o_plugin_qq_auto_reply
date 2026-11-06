@@ -97,7 +97,7 @@ class AutonomyScheduler:
         - ``last_sent_at()``：两个来源里最后一次真发出去的时刻（间隔也要共享，
           否则「原服务刚发完、她立刻再发」就绕过了最小间隔）。
 
-        读不到就 **fail-open**：账本故障不该让功能彻底静默（少发可以，永久不发不行）。
+        账本读取失败就跳过本轮；实际发送仍须经过共享额度入口再次检查。
         """
         initiative = getattr(self.service.plugin, "proactive_initiative_service", None)
         if initiative is None:
@@ -112,7 +112,7 @@ class AutonomyScheduler:
                 if last_sent_at and now - last_sent_at < gap:
                     return False
         except Exception:  # noqa: BLE001
-            return True
+            return False
         return True
 
     def _record_shared_send(self, now: float) -> None:
@@ -185,7 +185,9 @@ class AutonomyScheduler:
                 (user_id, now, self._day_key(now)),
             )
 
-    def mark_reached_out(self, user_id: str, *, now: float | None = None) -> None:
+    def mark_reached_out(
+        self, user_id: str, *, now: float | None = None, record_shared: bool = True,
+    ) -> None:
         now = time.time() if now is None else float(now)
         today = self._day_key(now)
         with self.store.connection() as conn:
@@ -207,7 +209,8 @@ class AutonomyScheduler:
                 (user_id, now, today),
             )
         # 共享账本：这一笔对「有由头搭话」同样生效（额度 + 全局间隔）。
-        self._record_shared_send(now)
+        if record_shared:
+            self._record_shared_send(now)
 
     # ── decision ────────────────────────────────────────────────────
 

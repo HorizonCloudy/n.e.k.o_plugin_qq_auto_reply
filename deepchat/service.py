@@ -520,16 +520,21 @@ class DeepChatService:
                     limit=self._int_setting("deepchat_autonomy_max_per_tick", 1),
                 )
                 for candidate in candidates:
-                    # Mark before sending: a failed send should still respect the
-                    # cooldown, otherwise the next tick can spam the same user.
-                    self.autonomy.mark_reached_out(candidate.user_id)
-                    sender = getattr(self.plugin, "proactive_message_service", None)
-                    if sender is None:
-                        continue
+                    if not self.autonomy.enabled:
+                        break
+                    initiative = getattr(self.plugin, "proactive_initiative_service", None)
+                    sender = getattr(initiative, "send_with_budget", None)
+                    if not callable(sender):
+                        self._warn("[DeepChat] 缺少共享发送额度服务，跳过主动联系")
+                        break
                     try:
-                        await sender.send_private_message(
+                        await sender(
+                            source="deepchat",
                             target=candidate.user_id,
                             message=candidate.reason,
+                            before_send=lambda user_id=candidate.user_id: self.autonomy.mark_reached_out(
+                                user_id, record_shared=False,
+                            ),
                         )
                     except Exception as exc:  # noqa: BLE001
                         self._warn(

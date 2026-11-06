@@ -41,6 +41,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -234,18 +235,53 @@ class QQProactiveInitiativeService:
         return self.budget.remaining_today(now)
 
     def last_sent_at(self) -> float:
-        """两个来源里最后一次**真的发出去**的时刻（全局最小间隔的依据）。"""
+        """两来源最后一次已发送或结果不确定的时刻（全局最小间隔依据）。"""
         return self.budget.last_sent_at()
 
     def record_send(self, source: str, now: float | None = None) -> BudgetReservation | str:
         """登记一次「已经发出去了」的发送（预占 + 提交）。
 
-        供深聊自主联系（source="deepchat"）记账用：它自己没有 HTTP 失败重试语义，
-        发出去就是发出去了，所以不需要三态，直接 record。
+        保留给旧调用方的记账接口；生产发送必须使用 send_with_budget，
+        不能先发送再尝试记账，否则拒绝计数也无法撤销已经发出的消息。
         """
         result = self.budget.record(source, now=now)
         self._save()
         return result
+
+    async def send_with_budget(self, *, source: str, target: str, message: str, before_send=None):
+        """Shared admission and settlement for both proactive sources."""
+        from plugin.sdk.plugin import Err, SdkError
+
+        reservation = self.budget.try_reserve(source)
+        if isinstance(reservation, str):
+            return Err(SdkError(f"BUDGET_BLOCKED: {reservation}"))
+        return await self._send_reserved(
+            reservation, target=target, message=message, before_send=before_send,
+        )
+
+    async def _send_reserved(self, reservation, *, target: str, message: str, before_send=None):
+        from plugin.sdk.plugin import Err
+
+        try:
+            if before_send is not None:
+                await asyncio.to_thread(before_send)
+            self.budget.mark_sending(reservation)
+            if not self._save():
+                # Nothing has reached the sender: failing to persist must not send.
+                self.budget.cancel_unsent(reservation)
+                raise RuntimeError("主动消息额度未能保存")
+            result = await self.plugin.proactive_message_service.send_private_message(
+                target=target, message=message,
+            )
+            if isinstance(result, Err) and str(result.error).startswith("GENERATE_FAILED:"):
+                self.budget.cancel_unsent(reservation)
+            return result
+        finally:
+            # Includes task cancellation. Only pre-send reservations can be freed;
+            # a send that may have reached QQ remains charged, exactly once.
+            if not self.budget.release(reservation):
+                self.budget.commit(reservation)
+            self._save()
 
     def _within_active_hours(self, now: float) -> bool:
         start, end = self.quiet_hours()
@@ -335,22 +371,18 @@ class QQProactiveInitiativeService:
 
         from plugin.sdk.plugin import Ok
 
-        # 进入发送阶段后**不可回收**：无法证明对方没收到，按已消耗处理。
-        # 这与「宁可少发，不可重发」一致——一次含糊的失败宁可少说一条。
-        self.budget.mark_sending(reservation)
+        # 明确没有生成内容可退款；不确定是否投递的失败保留额度。
         try:
-            result = await self.plugin.proactive_message_service.send_private_message(
+            result = await self._send_reserved(
+                reservation,
                 target=admin,
                 message=self.build_prompt(item),
             )
         except Exception as exc:  # noqa: BLE001
-            self.budget.commit(reservation)
-            self._save()
-            self._warn(f"[Initiative] 发送异常，额度按已消耗处理: {exc}")
+            self._warn(f"[Initiative] 发送异常，已按发送阶段结算额度: {exc}")
             return
         if isinstance(result, Ok):
             self._items.pop(admin, None)
-            self.budget.commit(reservation)
             self._save()
             self._log("INFO", "[Initiative] 已开口并结清这条由头")
             return
@@ -423,10 +455,11 @@ class QQProactiveInitiativeService:
         except (TypeError, ValueError):
             self._last_admin_activity_at = 0.0
 
-    def _save(self) -> None:
+    def _save(self) -> bool:
         try:
             path = self._state_path()
-            path.write_text(
+            temporary = path.with_suffix(path.suffix + ".tmp")
+            temporary.write_text(
                 json.dumps(
                     {
                         "items": self._items,
@@ -439,8 +472,11 @@ class QQProactiveInitiativeService:
                 ),
                 encoding="utf-8",
             )
+            temporary.replace(path)
+            return True
         except Exception as exc:  # noqa: BLE001 - 落盘失败不该掀翻回复链路
             self._warn(f"[Initiative] 状态写盘失败: {exc}")
+            return False
 
 
     def _drop(self, reason: str) -> None:
