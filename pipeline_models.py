@@ -287,6 +287,9 @@ class QQReplyContext:
     # CPython 会把刚释放的同尺寸对象原样发回，下一轮的 context 常常拿到
     # 同一地址，幂等扫描会把新一轮的行误判成"已经补过了"。
     turn_uid: str = field(default_factory=lambda: uuid.uuid4().hex)
+    # 只读外部背景仅限本轮；绑定凭据也随下方快照进入缓冲撤销检查。
+    companion_section: str = ""
+    companion_token: str = ""
     # 生成时刻的授权依赖快照：直投路径在真正发出去之前再比一次（buffer
     # 路径由 PendingReply.consent_snapshot 负责），"生成完成→发送"之间
     # 的窗口也不得漏掉撤销。None=还没生成过（读当前设置兜底）；空 dict

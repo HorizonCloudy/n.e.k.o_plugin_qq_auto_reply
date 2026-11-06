@@ -1,8 +1,8 @@
 """合并入口的 action 分流 + 入口面的看门狗。
 
-每个大入口都是"薄分发器 + 每 action 一个私有方法"；DeepChat 的 5 个入口是直参工具。
+每个大入口都是"薄分发器 + 每 action 一个私有方法"；DeepChat 的 6 个入口是直参工具。
 这里钉住三件事：未知 action 必须明确报错（不是静默什么都不做）、必填参数必须在下游服务
-被调用**之前**拦下、以及**入口面恰好是这 12 个**（7 个 action 分发 + 5 个 DeepChat 直参）。
+被调用**之前**拦下、以及**入口面恰好是这 14 个**（7 个 action 分发 + 6 个 DeepChat 直参 + 1 个插件身份接口）。
 """
 from __future__ import annotations
 
@@ -113,10 +113,11 @@ DEEPCHAT_ENTRIES = {
     # P0a（8577d21）：遗忘入口。加进这里等于声明它要守入口契约。
     "dc_forget_user",
 }
-EXPECTED_ENTRIES = LEGACY_ENTRIES | DEEPCHAT_ENTRIES
+INTER_PLUGIN_ENTRIES = {"account_identity"}
+EXPECTED_ENTRIES = LEGACY_ENTRIES | DEEPCHAT_ENTRIES | INTER_PLUGIN_ENTRIES
 
 #: 对 agent 隐藏的入口（braid/task_executor.py 的 _is_plugin_entry_agent_hidden 读这个标记）
-AGENT_HIDDEN = {"asset", "deploy"}
+AGENT_HIDDEN = {"asset", "deploy", "account_identity"}
 
 
 def _entry_attr_map() -> dict[str, str]:
@@ -139,10 +140,10 @@ def _plugin_entry_ids() -> set[str]:
     return set(_entry_attr_map())
 
 
-def test_entry_surface_is_exactly_twelve():
+def test_entry_surface_matches_explicit_contract():
     """**收束成果的看门狗。**
 
-    48 → 7 是一次大重构换来的；后续又加了 5 个 DeepChat 直参工具，当前是 12 个。
+    48 → 7 是一次大重构换来的；后续加了 6 个 DeepChat 直参工具和只读身份接口。
     没有这条，后续提交会一点点把入口长回去 —— 而涨回去的入口会重新进入 agent 的
     候选面、重新出现在宿主面板上。确实要加新入口就改这个集合，改的时候你会看到这条提示。
     """
@@ -175,7 +176,7 @@ def test_no_entry_name_shadows_a_base_class_instance_attribute():
 
 
 def test_agent_hidden_entries_carry_the_flag():
-    """asset / deploy 必须对 agent 隐藏 —— 前者是资源写入面，
+    """account_identity 是插件间只读接口，不增加模型工具候选；asset / deploy 必须对 agent 隐藏 —— 前者是资源写入面，
     后者装着会杀掉正在运行的 QQ 的 one_click 和会轮换 AppSecret 的 bind_*。"""
     from plugin.sdk.shared.core.decorators import EVENT_META_ATTR
 

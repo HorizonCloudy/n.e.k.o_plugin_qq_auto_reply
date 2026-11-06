@@ -202,7 +202,7 @@ class QQSettingsService:
         ] | None = None,
         identity_probe_before: bool | None = None,
         identity_probe_after: bool | None = None,
-        deferred_opt_ins: dict[str, bool] | None = None,
+        deferred_opt_ins: dict[str, Any] | None = None,
     ) -> bool:
         # 取消路径也要能发布：写盘被 shield 保护，取消 await 不取消它。
         """Persist settings and roll consent back if the write did not land.
@@ -273,7 +273,7 @@ class QQSettingsService:
         return success
 
     def _clamp_member_to_group(
-        self, deferred_opt_ins: dict[str, bool] | None = None,
+        self, deferred_opt_ins: dict[str, Any] | None = None,
     ) -> None:
         """Member memory is a child of group memory — enforce it here.
 
@@ -300,7 +300,7 @@ class QQSettingsService:
             deferred_opt_ins.pop("group_member_memory_enabled", None)
         self.plugin._qq_settings["group_member_memory_enabled"] = False
 
-    def _publish_consent_opt_ins(self, opt_ins: dict[str, bool]) -> None:
+    def _publish_consent_opt_ins(self, opt_ins: dict[str, Any]) -> None:
         """Apply opt-ins that were held back until the write landed.
 
         Stamping and session sync happen here too: doing them before the
@@ -314,8 +314,8 @@ class QQSettingsService:
                 "private_participant_memory_enabled", False,
             )
         )
-        for key in opt_ins:
-            self.plugin._qq_settings[key] = True
+        for key, value in opt_ins.items():
+            self.plugin._qq_settings[key] = value
         # 迟发的 opt-in 同样受父子约束：群记忆关着时把 member 打开无效。
         self._clamp_member_to_group()
         group_after = bool(
@@ -660,7 +660,7 @@ class QQSettingsService:
             self.plugin._qq_settings["trusted_users"] = self.plugin.permission_mgr.list_users() if self.plugin.permission_mgr else []
             self.plugin._qq_settings["trusted_groups"] = self.plugin.group_permission_mgr.list_groups() if self.plugin.group_permission_mgr else []
             pre_publish = {
-                key: bool(self.plugin._qq_settings.get(key, False))
+                key: self.plugin._qq_settings.get(key, False)
                 for key in (overlay or {})
             }
             payload = dict(self.plugin._qq_settings)
@@ -1189,7 +1189,33 @@ class QQSettingsService:
         # 写盘成功——消息处理不取设置事务锁，写盘期间到达的轮次会照新开关
         # 读 scoped/跨群记忆并把回复**发出去**，而回滚只能清本地状态，收不
         # 回已经说出去的话（跨群更是连会话清理都没有）。
-        deferred_opt_ins: dict[str, bool] = {}
+        deferred_opt_ins: dict[str, Any] = {}
+        if kwargs.get("qq_open_plugin_tools") is not None:
+            from .plugin_authorization import normalize_plugin_tiers
+            before = normalize_plugin_tiers(self.plugin._qq_settings.get("qq_open_plugin_tools"))
+            desired = normalize_plugin_tiers(kwargs["qq_open_plugin_tools"])
+            if desired != before:
+                service = getattr(self.plugin, "companion_context_service", None)
+                if service is not None:
+                    service.invalidate()
+                # Revocations/restrictions apply immediately. New grants and
+                # admin -> all widening must wait for the durable write.
+                self.plugin._qq_settings["qq_open_plugin_tools"] = {
+                    pid: ("admin" if "admin" in (tier, desired[pid]) else "all")
+                    for pid, tier in before.items() if pid in desired
+                }
+                deferred_opt_ins["qq_open_plugin_tools"] = desired
+        if kwargs.get("companion_context") is not None:
+            from .companion_context_service import normalize_config
+            config = normalize_config(kwargs["companion_context"])
+            if config != normalize_config(self.plugin._qq_settings.get("companion_context")):
+                service = getattr(self.plugin, "companion_context_service", None)
+                if service is not None:
+                    service.invalidate()
+                # Rebinding is also consent: no new binding is live before durable save.
+                self.plugin._qq_settings["companion_context"] = {**config, "enabled": False}
+                deferred_opt_ins["companion_context"] = config
+
         for key in (
             "group_memory_enabled",
             "group_member_memory_enabled",
@@ -1335,7 +1361,7 @@ class QQSettingsService:
             else:
                 self.plugin._emit_log(
                     "WARNING",
-                    "记忆开关开启未能写盘，已放弃本次开启（运行时保持关闭）",
+                    "上下文授权未能写盘，已放弃本次开启（运行时保持关闭）",
                 )
         if self.plugin.attention_service:
             self.plugin.attention_service.cleanup_stale_cache()

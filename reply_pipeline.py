@@ -7,6 +7,7 @@ from contextvars import ContextVar
 from typing import Any
 
 from . import addressing
+from .companion_context_service import consent_enabled
 from .pipeline_models import (
     BUFFER_INTERNAL_SOURCE_KINDS,
     QQDeliveryResult,
@@ -1001,9 +1002,8 @@ class QQReplyPipelineRunner:
         snapshot = getattr(context, "consent_snapshot", None)
         if not snapshot:
             return False
-        settings = getattr(self.plugin, "_qq_settings", {}) or {}
         return any(
-            was_enabled and not settings.get(key, False)
+            was_enabled and not consent_enabled(self.plugin, key)
             for key, was_enabled in snapshot.items()
         )
 

@@ -20,6 +20,8 @@ import re
 import time
 from typing import Any, Optional
 
+from .companion_context_service import consent_enabled
+
 
 class PendingReply:
     """待发送的回复（缓冲模式：收消息时不合成，等暂停后统一生成回复）"""
@@ -178,9 +180,8 @@ class QQReplyBufferService:
         snapshot = getattr(pending, "consent_snapshot", None)
         if not snapshot:
             return False
-        settings = getattr(self.plugin, "_qq_settings", {}) or {}
         for key, was_enabled in snapshot.items():
-            if was_enabled and not settings.get(key, False):
+            if was_enabled and not consent_enabled(self.plugin, key):
                 return True
         return False
 

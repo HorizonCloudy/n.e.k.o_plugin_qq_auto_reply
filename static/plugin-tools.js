@@ -17,6 +17,17 @@
   'use strict';
 
   const MARKUP = `
+    <div class="card" id="cc-card" oninput="ccEdit()">
+      <div class="card-title">私有插件上下文：主人绑定</div>
+      <p class="form-hint">功能开关统一使用下方插件授权。加入“仅管理员”（或“所有人”）后，已适配的只读背景能力自动参与绑定主人的 QQ 私聊；撤销授权后停止读取。这里仅绑定身份，不再逐项开启来源。</p>
+      <div class="form-group"><label>主人 QQ 号</label><input class="form-input" id="cc-owner_id" maxlength="128" placeholder="必须已设为管理员"></div>
+      <div class="form-group"><label>机器人 QQ 号</label><input class="form-input" id="cc-bot_id" maxlength="128" placeholder="必须与当前登录账号一致"></div>
+      <div class="form-group"><label>角色名（精确匹配）</label><input class="form-input" id="cc-character" maxlength="128"></div>
+      <p class="form-hint">自动背景只用于 OneBot 绑定主人的管理员私聊，仍需 DeepChat 总开关和片段开关。不会自动启动插件、开启来源自身关闭的能力，也不回写情绪或叠加好感度。清空全部绑定后保存可解绑。</p>
+      <p class="form-hint">普通工具仍按下方档位向相应用户开放，可能包含写操作；主人绑定只保护自动背景。自动背景需有已适配的只读接口，缺少接口或没有有效状态时跳过。</p>
+      <button class="btn btn-primary" id="cc-save" onclick="ccSave()">保存绑定并使用插件授权</button>
+      <span class="form-hint" id="cc-status">尚未加载</span>
+    </div>
     <div class="card">
         <div class="card-title" data-i18n="ui.openplat.plugintools.title">插件工具</div>
         <p style="color:var(--text-secondary);font-size:12px;margin-bottom:8px" data-i18n="ui.openplat.plugintools.hint">让她可以调用本体的其它插件。所有非 QQ 插件都会列出来（没启动的也能先配好，只是那一轮挂不上）；点卡片上的「所有人 / 仅管理员」按钮或用拖拽决定谁能用。</p>
@@ -100,6 +111,9 @@
       : 'background:var(--success-tint-strong);border:1px solid var(--success-border);border-left:3px solid var(--success)';
     let entries = (c.entries || []).length;
     let count = entries ? ` · ${t('ui.openplat.plugintools.entry_count', '可用功能 ')}${entries}` : '';
+    let contextHint = (c.context_capabilities || []).map(cap =>
+      `<div class="form-hint">自动背景：${escapeHtml(cap.label)} · ${cap.available ? '只限绑定主人' : '缺少只读接口，暂不可用'}</div>`
+    ).join('');
     let pid = escapeOnclick(c.plugin_id);
     let btn = (want, label) => `<button class="btn ${tier === want ? 'btn-primary' : 'btn-ghost'} btn-sm" onclick="ptSetTier('${pid}','${want}')">${label}</button>`;
     let actions = tier
@@ -109,6 +123,7 @@
       style="${skin};border-radius:var(--radius-md);padding:8px 10px;margin-bottom:6px;cursor:grab">
       <div style="font-weight:600;font-size:13px">${escapeHtml(c.name || c.plugin_id)} ${stateTag}</div>
       <div style="font-size:11px;color:var(--text-secondary);word-break:break-all">${escapeHtml(c.plugin_id)}${count}</div>
+      ${contextHint}
       <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">${actions}</div>
     </div>`;
   }
@@ -180,9 +195,12 @@
     let box = document.getElementById('pt-zone-available');
     if (!box) return;
     try {
+      const revision = ptRevision;
       let d = await call('query', {action: 'plugin_tools'});
+      if (ptSaving || revision !== ptRevision) return;
       _pluginTools = Object.assign(_pluginTools, d || {});
       renderPluginTools();
+      await ccLoad();
     } catch (e) {
       toast(t('ui.openplat.plugintools.load_failed', '加载插件列表失败: ') + e.message);
     }
@@ -213,18 +231,73 @@
     }
   }
 
+  let ptSaving = false, ptRevision = 0;
   async function ptSetTier(pid, tier) {
+    if (ptSaving) return;
+    ptSaving = true; ptRevision++;
     let t2 = Object.assign({}, _pluginTools.tiers || {});
     if (tier) t2[pid] = tier; else delete t2[pid];
     try {
-      await call('config', {action: 'save', qq_open_plugin_tools: t2});
-      _pluginTools.tiers = t2;
+      const result = await call('config', {action: 'save', qq_open_plugin_tools: t2});
+      if (!result || result.persisted !== true) throw new Error('授权未写入磁盘');
+      _pluginTools.tiers = (result.settings || {}).qq_open_plugin_tools || t2;
       renderPluginTools();
       toast(t('ui.openplat.plugintools.saved', '分级已保存'), true);
     } catch (e) {
       toast(t('ui.openplat.plugintools.save_failed', '保存失败: ') + e.message);
-    }
+    } finally { ptSaving = false; ptRevision++; }
   }
+
+  const CC_TEXT = ['owner_id', 'bot_id', 'character'];
+  let ccDirty = false, ccRevision = 0, ccSaving = false, ccLoaded = false;
+  function ccStatus(text) {const el = document.getElementById('cc-status'); if (el) el.textContent = text;}
+  function ccEdit() {ccDirty = true; ccRevision++; ccStatus('有未保存的修改');}
+  function ccApply(config) {
+    CC_TEXT.forEach(k => {document.getElementById('cc-' + k).value = config[k] || '';});
+  }
+  async function ccLoad() {
+    if ((ccDirty && ccLoaded) || ccSaving) return;
+    const revision = ccRevision;
+    try {
+      const data = await call('query', {action: 'dashboard'});
+      if (!data || !data.settings) throw new Error('配置响应不完整');
+      ccLoaded = true;
+      if (ccDirty || ccSaving || revision !== ccRevision) return;
+      ccApply((data.settings || {}).companion_context || {});
+      const binding = data.settings.companion_context || {};
+      ccStatus(binding.source_mode === 'plugin_tools'
+        ? '已使用插件授权；自动背景仅在绑定匹配、来源有有效数据时加入'
+        : '尚未迁移到统一授权：保存绑定后，来源将跟随下方插件分级');
+    } catch (e) {ccStatus('配置加载失败，请重新进入此页重试');}
+  }
+  async function ccSave() {
+    if (ccSaving) return;
+    if (!ccLoaded) {ccStatus('请先成功加载配置再保存'); return;}
+    const config = {source_mode: 'plugin_tools'};
+    CC_TEXT.forEach(k => {config[k] = document.getElementById('cc-' + k).value.trim();});
+    const filled = CC_TEXT.filter(k => config[k]).length;
+    if (filled && filled !== CC_TEXT.length) {
+      ccStatus('请填写完整绑定；解绑时请清空全部三项'); return;
+    }
+    config.enabled = filled === CC_TEXT.length;
+    const revision = ++ccRevision;
+    ccDirty = true;
+    ccSaving = true;
+    document.getElementById('cc-save').disabled = true;
+    try {
+      const result = await call('config', {action: 'save', companion_context: config});
+      if (!result || result.persisted !== true) throw new Error('未能写入磁盘，修改尚未保存');
+      if (revision === ccRevision) {
+        ccApply((result.settings || {}).companion_context || config);
+        ccDirty = false;
+        ccStatus(config.enabled ? '绑定已保存；背景来源跟随下方插件授权，缺少有效数据时跳过' : '已保存解绑；不再读取自动背景');
+      } else ccStatus('本次提交已保存；还有新的未保存修改');
+    } catch (e) {ccStatus('保存失败：' + e.message);}
+    finally {ccSaving = false; document.getElementById('cc-save').disabled = false;}
+  }
+  window.ccEdit = ccEdit;
+  window.ccSave = ccSave;
+  window.ccLoad = ccLoad;
 
   // 页面与内联 handler 只认这几个名字（拖拽区与卡片按钮都是内联 onclick/oninput，
   // 挂在 window 上才叫得到）。其余（候选表、定时器、卡片渲染）留在本作用域里。

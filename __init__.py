@@ -202,6 +202,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         # 只在写入路径触发；遗忘路径绝不触发（见 memory_bridge._register_write）。
         self.memory_bridge.on_subject_write = self._on_subject_write
         self.deepchat_service = DeepChatService(self)
+        from .companion_context_service import QQCompanionContextService
+        self.companion_context_service = QQCompanionContextService(self)
         self.display_name_service = QQDisplayNameService(self)
         self.memory_tool_service = QQMemoryToolService(self)
         # 插件工具桥（只在开放平台启用）：把别的插件的能力按分级挂到 QQ 会话上。
@@ -1586,6 +1588,17 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     # ── query：状态读取 ─────────────────────────────────────────
     #
     # 全是只读。对 agent 可见 —— 它得能看状态才知道自己做得对不对。
+
+    @plugin_entry(
+        id="account_identity",
+        metadata={"agent_auto": False},
+        name="QQ 登录身份",
+        description="只读返回 QQ 集成当前已确认的 OneBot 登录 QQ 号；供其他插件识别角色自己的账号，不含配置、联系人或凭据。",
+        input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+    )
+    async def account_identity(self, **_):
+        from .account_identity import account_identity
+        return Ok(await account_identity(self))
 
     @ui.action(id="query", label=tr("entries.query.name", default="查询状态"), refresh_context=False)
     @plugin_entry(

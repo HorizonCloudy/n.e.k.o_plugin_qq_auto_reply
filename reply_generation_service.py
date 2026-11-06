@@ -8,6 +8,7 @@ from main_logic.tool_calling import ToolResult
 from utils.llm_client import AIMessage, SystemMessage, create_chat_llm_async
 from utils.token_tracker import set_call_type
 
+from .companion_context_service import consent_enabled
 from .memory_tool_service import RECALL_TOOL_HTTP_TIMEOUT_SECONDS, RECALL_TOOL_NAME
 from .pipeline_models import (
     QQModelResult,
@@ -336,6 +337,7 @@ class QQReplyGenerationService:
                 # 对齐；restore 保证持久会话仍保留创建时的原始 system 行。
                 always_refresh=(
                     context.is_group
+                    or bool(getattr(context, "companion_section", ""))
                     or bool(getattr(context, "cross_session_section", ""))
                     or user_data.get("private_memory_mode") == "participant"
                     or not bool(
@@ -963,6 +965,9 @@ class QQReplyGenerationService:
         depends on the switch too."""
         settings = getattr(self.plugin, "_qq_settings", {}) or {}
         snapshot: dict = {}
+        token = getattr(context, "companion_token", "")
+        if token and getattr(context, "companion_section", ""):
+            snapshot[token] = True
         if getattr(context, "cross_session_section", ""):
             snapshot["allow_cross_group_context"] = bool(
                 settings.get("allow_cross_group_context", False)
@@ -1014,9 +1019,8 @@ class QQReplyGenerationService:
         """True when a switch this prompt relied on went off since `before`."""
         if not before:
             return False
-        settings = getattr(self.plugin, "_qq_settings", {}) or {}
         return any(
-            was_enabled and not settings.get(key, False)
+            was_enabled and not consent_enabled(self.plugin, key)
             for key, was_enabled in before.items()
         )
 
@@ -1029,6 +1033,14 @@ class QQReplyGenerationService:
         session call, direct fallback) enforces the same boundary — the
         per-path rechecks kept diverging as new paths appeared."""
         settings = getattr(self.plugin, "_qq_settings", {}) or {}
+        token = getattr(context, "companion_token", "")
+        if token and not consent_enabled(self.plugin, token):
+            system_prompt = self._strip_section_text(system_prompt, getattr(context, "companion_section", ""))
+            context.system_prompt = self._strip_section_text(
+                context.system_prompt, getattr(context, "companion_section", ""),
+            )
+            context.companion_section = ""
+            context.companion_token = ""
         if not settings.get("allow_cross_group_context", False):
             # 私聊轮也可能带会话清单段（跨群开关打开时它会列出其他群与
             # 联系人）：非群轮不能在这里直接返回，否则那段撤不掉。

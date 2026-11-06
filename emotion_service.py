@@ -10,6 +10,7 @@ from .deepchat.emotion import emotion_fragment
 async def build_emotion_section(
     plugin: Any, *, is_group: bool, group_id: str | None, sender_id: str,
     synthetic: bool = False,
+    companion_token: str = "", character: str = "", companion_result: dict | None = None,
 ) -> str:
     # Group state always wins in a group, even when calm/unavailable. Never
     # fall back to a member's private state, including synthetic group turns.
@@ -31,4 +32,16 @@ async def build_emotion_section(
             state = deepchat.mood.get(deepchat._mood_key(sender_id))
             return emotion_fragment(state.current, is_group=False)
 
-    return await asyncio.to_thread(read_private)
+    local = await asyncio.to_thread(read_private)
+    service = getattr(plugin, "companion_context_service", None)
+    external = ""
+    if service is not None and companion_token:
+        try:
+            external = await service.build(companion_token, character=character)
+        except Exception:
+            pass  # Optional providers must never suppress the existing local emotion.
+    if not deepchat.enabled or not deepchat.fragments_enabled:
+        return ""
+    if companion_result is not None and external:
+        companion_result.update(section=external, token=companion_token)
+    return "\n\n".join(part for part in (local, external) if part)
