@@ -154,3 +154,20 @@ def test_no_permission_manager_means_nobody_is_blacklisted():
     plugin.permission_mgr = None
 
     assert dispatcher._is_blacklisted_user("111") is False
+
+
+def test_dispatcher_collects_images_only_after_user_filter():
+    from unittest.mock import AsyncMock
+
+    for level in ("trusted", "blacklist"):
+        dispatcher, plugin = _dispatcher(level)
+        remember = AsyncMock(return_value=["g1"])
+        plugin.gallery_service = SimpleNamespace(remember_message=remember)
+        segments = [{"type": "image", "data": {"url": "https://example.test/cat.png"}}]
+        asyncio.run(dispatcher.handle_message({
+            "message_type": "group", "group_id": "G1", "user_id": "222",
+            "content": "take a look", "message": segments, "message_id": "m4",
+        }))
+        assert remember.await_count == (1 if level == "trusted" else 0)
+        if level == "trusted":
+            assert remember.call_args.args[0]["message"] == segments

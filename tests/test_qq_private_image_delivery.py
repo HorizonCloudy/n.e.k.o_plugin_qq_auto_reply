@@ -48,7 +48,7 @@ def _node(client, *, sticker_ok: bool = True):
         qq_client=client,
         logger=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None),
         _emit_log=lambda *a, **k: None,
-        _resolve_sticker_path=lambda sid: STICKER_PATH if sticker_ok else "",
+        _resolve_sticker_path=lambda sid, **kw: STICKER_PATH if sticker_ok else "",
         _mask_token=lambda t: t,
         _get_reply_mode=lambda: "text",
         i18n=SimpleNamespace(t=lambda key, default=None: default or key),

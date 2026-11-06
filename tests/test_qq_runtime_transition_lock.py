@@ -121,6 +121,20 @@ def test_guard_is_shared_for_the_same_owner():
     assert runtime_transition_guard(plugin) is runtime_transition_guard(plugin)
 
 
+def test_runtime_starts_and_flushes_gallery():
+    from unittest.mock import AsyncMock
+
+    async def run():
+        plugin = _plugin(_FakeClient())
+        plugin.gallery_service = SimpleNamespace(start=AsyncMock(), flush=AsyncMock())
+        await plugin.runtime_ops_service.start_auto_reply()
+        plugin.gallery_service.start.assert_awaited_once()
+        await plugin.runtime_ops_service.stop_runtime(stop_napcat=False)
+        plugin.gallery_service.flush.assert_awaited_once()
+
+    asyncio.run(run())
+
+
 def test_nested_hold_from_same_task_is_reentrant():
     """收尾重建是「停 → 丢对象 → 启」，持闸期间必然再停一次、启一次。"""
 

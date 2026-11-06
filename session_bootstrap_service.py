@@ -261,6 +261,11 @@ class QQSessionBootstrapService:
             # instructions（兜底路径也用），在那里注入会让同一段摘要在多轮里反复出现。
             handoff = getattr(self.plugin, "session_handoff_service", None)
             instructions = context.system_prompt
+            # External companion facts are turn-local. Never freeze them into a reusable
+            # session's base instructions (or restore/persist them after the turn).
+            companion_section = getattr(context, "companion_section", "")
+            if companion_section:
+                instructions = instructions.replace(companion_section, "", 1)
             handoff_section = ""
             if handoff is not None:
                 try:

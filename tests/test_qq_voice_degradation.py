@@ -15,7 +15,7 @@
 要求现在留在真正需要它的地方：云端各分支自己有守卫（DashScope 那条见下）。本文件钉四件事：
 
 1. 没有 voice_id 时，本地那条**照样能合成**（回归守卫 —— 这条以前是红的）；
-2. 真的没有音色可用时，报错要**指名 voice_id 与本地那条已试过**；
+2. 没有 voice_id 且本地不可用时，使用当前线路默认音色，而不是服务名或空音色；
 3. 撞到宿主的 ``gsv:`` 音色要**当场说清插件没有这一路**，而不是拿它去问百炼；
 4. 配置性失败只打**一句人话**（不再整段 traceback），且回退文字时补一句说明；
    真正的意外（非 RuntimeError）照旧带栈，不许把 bug 也降噪掉。
@@ -36,7 +36,7 @@ from plugin.plugins.qq_auto_reply.voice_reply_service import QQVoiceReplyService
 WAV_BYTES = b"RIFF....WAVEfake-audio"
 
 
-def test_legacy_free_voice_missing_from_ui_catalog_uses_free_tts(tmp_path, monkeypatch):
+def _mock_free_tts(monkeypatch):
     import base64
     import io
     import json
@@ -44,8 +44,6 @@ def test_legacy_free_voice_missing_from_ui_catalog_uses_free_tts(tmp_path, monke
 
     from main_logic.tts_client.workers import free
 
-    service = _service(tmp_path, monkeypatch, voice_id="qingchunshaonv")
-    monkeypatch.setattr(vrs, "get_free_voices", lambda: {"new": "new-voice"})
     monkeypatch.setattr(free, "_adjust_free_tts_url", lambda url: url)
     wav = io.BytesIO()
     with wave.open(wav, "wb") as output:
@@ -78,10 +76,17 @@ def test_legacy_free_voice_missing_from_ui_catalog_uses_free_tts(tmp_path, monke
         return Socket()
 
     monkeypatch.setattr(vrs.websockets, "connect", connect)
+    return wav.getvalue(), sent
+
+
+def test_legacy_free_voice_missing_from_ui_catalog_uses_free_tts(tmp_path, monkeypatch):
+    service = _service(tmp_path, monkeypatch, voice_id="qingchunshaonv")
+    monkeypatch.setattr(vrs, "get_free_voices", lambda: {"new": "new-voice"})
+    wav, sent = _mock_free_tts(monkeypatch)
     audio, mime = asyncio.run(service.synthesize_reply_voice_audio("你好"))
-    assert audio == wav.getvalue()
+    assert audio == wav
     assert mime == "audio/wav"
-    assert "qingchunshaonv" in json.dumps(sent[0])
+    assert sent[0]["data"]["voice_id"] == "qingchunshaonv"
 
 
 @pytest.mark.parametrize("failure", ["synthesis", "unconfirmed", "unsupported"])
@@ -118,7 +123,7 @@ def test_voice_fallback_expands_cq_modifiers(monkeypatch, failure):
     else:
         synth.assert_awaited_once_with("你好")
     if failure == "unconfirmed":
-        assert client.send_group_record.call_args.kwargs == {"reply_message_id": "456", "at_user_id": "789"}
+        client.send_group_record.assert_awaited_once_with("123", "file:///voice.wav")
 
 
 class _FakeConfigManager:
@@ -128,6 +133,10 @@ class _FakeConfigManager:
         self._api_key = api_key
         self._voices = voices or {}
         self._tts_custom = tts_custom or {}
+
+    async def aensure_region_resolved(self):
+        self.region_resolved = True
+        return True
 
     def get_voices_for_current_api(self):
         return self._voices
@@ -176,6 +185,10 @@ def test_the_local_line_works_without_a_character_voice(tmp_path, monkeypatch):
     """GSV/自建 TTS：角色没有 voice_id 也该能合成 —— 以前这里直接抛。"""
     service = _service(tmp_path, monkeypatch, voice_id="", local_result=(WAV_BYTES, "audio/wav"))
 
+    def unexpected_default():
+        pytest.fail("本地合成成功时不应读取云端默认音色")
+
+    monkeypatch.setattr(vrs, "get_new_character_default_voice_id", unexpected_default)
     uri, mime = asyncio.run(service.synthesize_reply_voice_file("你好呀"))
 
     assert mime == "audio/wav"
@@ -183,16 +196,74 @@ def test_the_local_line_works_without_a_character_voice(tmp_path, monkeypatch):
     assert (tmp_path / "voice_cache").is_dir(), "音频文件要落进 voice_cache"
 
 
-def test_without_a_voice_the_reason_names_the_voice_and_the_local_line(tmp_path, monkeypatch):
-    """真没音色可用时：说清缺什么、以及本地那条已经试过。"""
-    service = _service(tmp_path, monkeypatch, voice_id="", local_result=None)
+@pytest.mark.parametrize("voice_id", ["", "  ", None])
+@pytest.mark.parametrize("native_provider", [None, "free", "free_intl"])
+@pytest.mark.parametrize("catalog", [
+    {"other": "other-voice", "cuteGirl": "region-default"},
+    {"first": "first-voice"},
+    {},
+])
+def test_missing_voice_uses_host_default(tmp_path, monkeypatch, voice_id, native_provider, catalog):
+    from utils import api_config_loader
 
-    with pytest.raises(RuntimeError) as err:
-        asyncio.run(service.synthesize_reply_voice_file("你好呀"))
+    service = _service(tmp_path, monkeypatch, voice_id=voice_id)
+    cm = host_config_manager.get_config_manager()
+    monkeypatch.setattr(vrs, "get_active_realtime_native_provider_for_ui", lambda cm: native_provider)
 
-    message = str(err.value)
-    assert "voice_id" in message
-    assert "本地" in message, "要说明本地 SoVITS/CosyVoice 那条已经试过了，否则看不出为什么"
+    def free_voices():
+        assert cm.region_resolved, "必须先完成区域判定，再选择默认音色"
+        return catalog
+
+    monkeypatch.setattr(api_config_loader, "get_free_voices", free_voices)
+    monkeypatch.setattr(vrs, "get_free_voices", free_voices)
+    wav, sent = _mock_free_tts(monkeypatch)
+    uri, mime = asyncio.run(service.synthesize_reply_voice_file("你好呀"))
+
+    assert uri.startswith("file://")
+    assert mime == "audio/wav"
+    assert next((tmp_path / "voice_cache").glob("*.wav")).read_bytes() == wav
+    assert sent[0]["data"]["voice_id"] == api_config_loader.get_new_character_default_voice_id()
+    assert sent[0]["data"]["voice_id"] not in ("free", "free_intl", "")
+
+
+@pytest.mark.parametrize("catalog", [{"cuteGirl": "legacy-default"}, {}])
+def test_missing_voice_on_older_host_uses_free_default(tmp_path, monkeypatch, catalog):
+    from utils.tts.providers.stepfun import STEPFUN_TTS_DEFAULT_VOICE
+
+    service = _service(tmp_path, monkeypatch, voice_id="")
+    monkeypatch.setattr(vrs, "get_new_character_default_voice_id", None)
+    monkeypatch.setattr(vrs, "get_free_voices", lambda: catalog)
+    wav, sent = _mock_free_tts(monkeypatch)
+    assert asyncio.run(service.synthesize_reply_voice_audio("你好")) == (wav, "audio/wav")
+    assert sent[0]["data"]["voice_id"] == catalog.get("cuteGirl", STEPFUN_TTS_DEFAULT_VOICE)
+
+
+def test_gemini_missing_voice_uses_native_default_with_core_key(tmp_path, monkeypatch):
+    import sys
+    from unittest.mock import AsyncMock
+
+    service = _service(tmp_path, monkeypatch, voice_id="")
+    cm = host_config_manager.get_config_manager()
+    cm._api_key = ""  # Gemini 使用 CORE_API_KEY，不要求免费线路的 AUDIO_API_KEY。
+    monkeypatch.setattr(cm, "aget_core_config", AsyncMock(return_value={"CORE_API_KEY": "native-key"}))
+    monkeypatch.setattr(vrs, "get_active_realtime_native_provider_for_ui", lambda cm: "gemini")
+    synth = AsyncMock(return_value=WAV_BYTES)
+    monkeypatch.setitem(sys.modules, "main_routers.characters_router", SimpleNamespace(
+        _synthesize_gemini_native_voice_preview=synth,
+    ))
+    expected_voice, _ = vrs.normalize_gemini_tts_voice("")
+    assert asyncio.run(service.synthesize_reply_voice_audio("你好")) == (WAV_BYTES, "audio/wav")
+    synth.assert_awaited_once_with(
+        voice_id=expected_voice, preview_line="你好", audio_api_key="native-key",
+    )
+
+
+def test_default_voice_still_requires_api_key(tmp_path, monkeypatch):
+    service = _service(tmp_path, monkeypatch, voice_id="")
+    host_config_manager.get_config_manager()._api_key = ""
+    monkeypatch.setattr(vrs, "get_new_character_default_voice_id", lambda: "default-voice")
+    with pytest.raises(RuntimeError, match="TTS_AUDIO_API_KEY_MISSING"):
+        asyncio.run(service.synthesize_reply_voice_audio("你好"))
 
 
 def test_a_gsv_voice_says_the_plugin_has_no_such_line(tmp_path, monkeypatch):

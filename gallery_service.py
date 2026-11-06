@@ -92,6 +92,7 @@ class QQGalleryService:
         self._dirty = False
         self._save_task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
+        self._start_lock = asyncio.Lock()
         #: 吞异常必须留数：分不清「没权限」「本来就没有」「调用失败」，
         #: 事后就只剩一句「图库是空的」，看不出发生了什么。
         self._diag: dict[str, int] = {
@@ -192,13 +193,16 @@ class QQGalleryService:
     async def start(self) -> None:
         if self._loaded:
             return
-        self.root_dir().mkdir(parents=True, exist_ok=True)
-        try:
-            await asyncio.to_thread(self._load_sync)
-        except Exception as exc:
-            if self.logger:
-                self.logger.warning(f"[Gallery] 载入索引失败: {type(exc).__name__}: {exc}")
-            self._loaded = True
+        async with self._start_lock:
+            if self._loaded:
+                return
+            self.root_dir().mkdir(parents=True, exist_ok=True)
+            try:
+                await asyncio.to_thread(self._load_sync)
+            except Exception as exc:
+                if self.logger:
+                    self.logger.warning(f"[Gallery] 载入索引失败: {type(exc).__name__}: {exc}")
+                self._loaded = True
         # 投喂目录里有图就顺手收进来。失败只记日志——图库读不了不该
         # 拖垮插件启动。
         try:
@@ -268,8 +272,9 @@ class QQGalleryService:
     async def _delayed_save(self) -> None:
         try:
             await asyncio.sleep(self.SAVE_DEBOUNCE_SECONDS)
-            if self._dirty:
-                await asyncio.to_thread(self._save_sync)
+            async with self._lock:
+                if self._dirty:
+                    await asyncio.to_thread(self._save_sync)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -278,13 +283,52 @@ class QQGalleryService:
 
     async def flush(self) -> None:
         if self._save_task and not self._save_task.done():
-            self._save_task.cancel()
-        if self._dirty:
-            try:
-                await asyncio.to_thread(self._save_sync)
-            except Exception as exc:
-                if self.logger:
-                    self.logger.warning(f"[Gallery] 关闭前写盘失败: {type(exc).__name__}")
+            # 写盘可能已进入工作线程，cancel 不会停止线程。先 join，避免
+            # 两次保存争用同一个 index.json.tmp，或旧快照覆盖新索引。
+            await self._save_task
+        async with self._lock:
+            if self._dirty:
+                try:
+                    await asyncio.to_thread(self._save_sync)
+                except Exception as exc:
+                    if self.logger:
+                        self.logger.warning(f"[Gallery] 关闭前写盘失败: {type(exc).__name__}")
+
+    async def remember_message(self, message: dict[str, Any], *, segments: Any = None) -> list[str]:
+        """Collect inbound images after eligibility checks, reusing VLM descriptions."""
+        if not isinstance(segments, list):
+            from .enrichment import QQMessageEnricher
+
+            segments = QQMessageEnricher._message_segments(message)
+        images: dict[str, str] = {}
+        for segment in segments if isinstance(segments, list) else []:
+            if not isinstance(segment, dict):
+                continue
+            kind = segment.get("type")
+            if kind not in {"image", "mface", "market_face"}:
+                continue
+            data = segment.get("data") or {}
+            locator = str(data.get("url") or data.get("file") or "").strip()
+            if locator:
+                sticker = kind != "image" or str(data.get("subType", data.get("sub_type", ""))) == "1"
+                images[locator] = "sticker" if sticker else "image"
+        for attachment in message.get("attachments") or []:
+            if not isinstance(attachment, dict) or attachment.get("type") not in {"image", "image_url"}:
+                continue
+            locator = str(attachment.get("url") or attachment.get("path") or attachment.get("file") or "").strip()
+            if locator:
+                images.setdefault(locator, "image")
+        descriptions = message.get("_image_descriptions") or {}
+        saved: list[str] = []
+        for locator, kind in list(images.items())[:3]:
+            item_id = await self.remember(
+                locator, kind=kind, desc=str(descriptions.get(locator) or ""),
+                sender_id=str(message.get("user_id") or ""),
+                sender_name=str(message.get("user_nickname") or ""),
+            )
+            if item_id:
+                saved.append(item_id)
+        return saved
 
     # ── 收图 ────────────────────────────────────────────────
 
@@ -303,8 +347,16 @@ class QQGalleryService:
         text = str(locator or "").strip()
         if not text:
             return b""
-        if text.startswith("file:///"):
-            path = Path(text[8:])
+        if text.startswith("file://"):
+            from urllib.parse import unquote, urlparse
+
+            parsed = urlparse(text)
+            path_text = unquote(parsed.path)
+            if parsed.netloc and parsed.netloc != "localhost":
+                path_text = f"//{parsed.netloc}{path_text}"
+            elif re.match(r"^/[A-Za-z]:/", path_text):
+                path_text = path_text[1:]
+            path = Path(path_text)
             try:
                 return await asyncio.to_thread(path.read_bytes)
             except Exception:

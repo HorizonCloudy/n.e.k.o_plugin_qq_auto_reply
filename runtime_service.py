@@ -16,6 +16,7 @@ class QQRuntimeService:
         qrcode_path = self.plugin.config_dir / "static" / "cache" / "qrcode.png"
         attention_snapshot = self.plugin.attention_service.get_snapshot() if getattr(self.plugin, "attention_service", None) else {"enabled": False, "focus_group_id": "", "focus_score": 0.0, "groups": []}
         return {
+            "deployment_complete": self._deployment_complete(backend.value),
             "onebot_backend": backend.value,
             "backend_label": "SnowLuma" if backend == "snowluma" else "NapCat",
             "backend_webui_url": self.plugin.napcat_service.get_webui_url(),
@@ -32,6 +33,26 @@ class QQRuntimeService:
             "attention": attention_snapshot,
             "recent_pipeline_traces": self.get_recent_pipeline_traces(),
         }
+
+    def _deployment_complete(self, backend: str) -> bool:
+        if getattr(self.plugin, "_onebot_deploy_in_progress", False) is True:
+            return False
+        settings = self.plugin._qq_settings or {}
+        records = settings.get("backend_deployments") or {}
+        svc = self.plugin.napcat_service
+        if backend in records:
+            directory = svc.get_napcat_directory()
+            return bool(records[backend] and directory.is_dir()
+                        and records[backend] == str(directory.resolve()))
+        # Older/manual installations have no completion record. A live healthy
+        # backend is evidence; cached QR files or an empty install directory aren't.
+        if settings.get("qq_connection_mode") == "open_platform":
+            return False
+        return bool(not svc.get_startup_error() and (
+            (self.plugin.qq_client and self.plugin.qq_client.is_connected())
+            or (svc.manages_napcat_process and svc.napcat_process
+                and svc.napcat_process.returncode is None)
+        ))
 
     def record_pipeline_outcome(self, *, source: str, request: Any, outcome: Any) -> None:
         traces = [

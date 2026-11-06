@@ -65,6 +65,7 @@ def _plugin(tmp_path: Path, *, client: _Client | None = None):
         data_path=lambda: str(tmp_path),
         logger=_Logger(),
         qq_client=client,
+        _admin_qq="12345",
         _vlm_describe_locator=None,
     )
     return plugin, client
@@ -294,3 +295,60 @@ def test_both_tool_definitions_are_built(tmp_path: Path) -> None:
     # 参数名必须是 id：模型自己编成 index 的那次就是没换成的直接原因
     assert "id" in avatar.parameters["properties"]
     assert "index" not in avatar.parameters["properties"]
+
+
+@_sync
+async def test_browse_loads_persisted_index_before_listing(tmp_path):
+    from plugin.plugins.qq_auto_reply.reply_generation_service import QQReplyGenerationService
+
+    svc, _client, blobs = _lab(tmp_path)
+    svc.SAVE_DEBOUNCE_SECONDS = 0
+    blobs["http://x/cat.png"] = _png()
+    await svc.remember("http://x/cat.png", desc="saved cat")
+    await svc.flush()
+    fresh = QQGalleryService(svc.plugin)
+    handler = QQReplyGenerationService(svc.plugin)._build_gallery_handlers(fresh, SimpleNamespace(sender_id="12345"))[BROWSE_TOOL_NAME]
+    result = await handler(SimpleNamespace(arguments={}, call_id="browse", name=BROWSE_TOOL_NAME))
+    assert "saved cat" in result.output
+    assert "g1" in result.output
+
+
+@_sync
+async def test_inbound_images_reuse_descriptions_and_deduplicate_attachments(tmp_path):
+    from unittest.mock import AsyncMock
+
+    svc, _client, blobs = _lab(tmp_path)
+    svc.SAVE_DEBOUNCE_SECONDS = 0
+    blobs["http://x/cat.png"] = _png()
+    svc.plugin._vlm_describe_locator = AsyncMock()
+    message = {
+        "user_id": "123", "user_nickname": "Alice",
+        "_image_descriptions": {"http://x/cat.png": "a cat"},
+        "attachments": [{"type": "image", "url": "http://x/cat.png"}],
+    }
+    ids = await svc.remember_message(message, segments=[
+        {"type": "image", "data": {"url": "http://x/cat.png", "subType": 1}},
+    ])
+    assert ids == ["g1"]
+    assert svc.resolve("g1")[1]["desc"] == "a cat"
+    assert svc.resolve("g1")[1]["kind"] == "sticker"
+    svc.plugin._vlm_describe_locator.assert_not_awaited()
+    await svc.flush()
+
+
+@_sync
+async def test_inbox_is_imported_on_first_browse(tmp_path):
+    from plugin.plugins.qq_auto_reply.reply_generation_service import QQReplyGenerationService
+
+    svc, _client, _blobs = _lab(tmp_path)
+    svc.SAVE_DEBOUNCE_SECONDS = 0
+    image = svc.inbox_dir() / "cat.png"
+    image.write_bytes(_png())
+    handler = QQReplyGenerationService(svc.plugin)._build_gallery_handlers(svc, SimpleNamespace(sender_id="12345"))[BROWSE_TOOL_NAME]
+    result = await handler(SimpleNamespace(arguments={}, call_id="browse", name=BROWSE_TOOL_NAME))
+    assert "g1" in result.output
+    assert not image.exists()
+    await svc.flush()
+    fresh = QQGalleryService(svc.plugin)
+    await fresh.start()
+    assert fresh.resolve("g1") is not None

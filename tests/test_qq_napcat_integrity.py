@@ -134,6 +134,7 @@ def test_deploy_failed_repair_keeps_settings_and_existing_install(installed, mon
         _emit_log=lambda *args: None,
     )
     deploy = QQDeployService(plugin)
+    monkeypatch.setattr(deploy, "_record_deployment", AsyncMock())
     fetch = AsyncMock(side_effect=RuntimeError("download failed"))
     monkeypatch.setattr(deploy, "_fetch", fetch)
     with pytest.raises(RuntimeError, match="download failed"):
@@ -170,6 +171,7 @@ def test_deploy_repairs_custom_path_before_config_and_start(installed, monkeypat
         _emit_log=lambda *args: None, data_path=lambda name: installed.parent / name,
     )
     deploy = QQDeployService(plugin)
+    monkeypatch.setattr(deploy, "_record_deployment", AsyncMock())
     monkeypatch.setattr(deploy, "_check_node", lambda step: None)
     monkeypatch.setattr(napcat_install, "download_asset", AsyncMock(return_value=installed.parent / "shell.zip"))
 

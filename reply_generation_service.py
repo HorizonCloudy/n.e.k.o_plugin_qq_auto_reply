@@ -8,6 +8,7 @@ from main_logic.tool_calling import ToolResult
 from utils.llm_client import AIMessage, SystemMessage, create_chat_llm_async
 from utils.token_tracker import set_call_type
 
+from .companion_context_service import consent_enabled
 from .gallery_service import AVATAR_TOOL_NAME, BROWSE_TOOL_NAME
 from .memory_tool_service import RECALL_TOOL_HTTP_TIMEOUT_SECONDS, RECALL_TOOL_NAME
 from .pipeline_models import (
@@ -24,6 +25,9 @@ from .plugin_tool_turn_guard import (
 )
 from .session_bootstrap_service import MAX_TOOL_ITERATIONS
 
+#: 表情包收集工具名。与 ``sticker_lab_service.build_save_definition`` 里的一致。
+STICKER_SAVE_TOOL_NAME = "save_sticker"
+
 # 工具轮超时预算里，LLM 流那部分最多折算几段。
 #
 # 额度是 MAX_TOOL_ITERATIONS，理论上最坏是 1 + 5 段流。但一段流正常只有
@@ -31,6 +35,16 @@ from .session_bootstrap_service import MAX_TOOL_ITERATIONS
 # 七分钟（群里就是全群停摆），比直接判超时丢一轮更难收拾。所以只折算到这个
 # 上限为止——撞上它说明模型在空转，不是工具慢。
 TOOL_TURN_STREAM_CAP = 4
+
+#: 挂了表情包收集工具时，额外留给"下载 + 看图"的时间。
+#
+# 这条路径有**两次网络往返**，都不在 LLM 流的预算里：把图拉下来（15 秒超时），
+# 再让看图模型说一句（内层 15 秒 + 预处理余量）。按「一次最多收 2 张」算，
+# 2 × (15 + 18) = 66 秒，这里给 70 秒。
+#
+# 只在这轮真的收到过图时才加（``QQStickerLab.should_offer_save``）。常时加会让
+# 所有轮次的超时上限一起变长，卡死的时候用户白等多一分钟。
+BUILTIN_TOOL_BUDGET_SECONDS = 70.0
 
 
 class QQReplyGenerationService:
@@ -102,6 +116,34 @@ class QQReplyGenerationService:
 
     async def generate_fallback_from_context(self, context: QQReplyContext) -> Optional[str]:
         return await self.generate_reply_fallback_direct_llm(context=context)
+
+    async def writeback_deepchat(self, context: QQReplyContext) -> None:
+        """把一轮**成功**回复写回 DeepChat（情绪 / 关系 / 表达学习）。
+
+        所有成功路径（host session 主路径、direct 模式、两条 fallback）都必须
+        调用且只调用一次：primary 成功会在 ``run_primary_session_call`` 内部写回
+        并提前 return，所以走 fallback 时这里才补上。
+
+        合成控制轮（synthetic source）不写回——它不计入真实互动，写进去会把
+        关系曲线和表达学习一起带偏。
+
+        写回是**同步 SQLite + 纯 CPU** 的活儿，所以丢到线程里跑：直接在事件循环
+        里调用会阻塞同一 loop 上的心跳/定时任务（``decay_all`` 之类的批量结算
+        一旦变慢就更容易看出）。``to_thread`` 不改变语义，只把阻塞挪出 loop。
+        """
+        deepchat = getattr(self.plugin, "deepchat_service", None)
+        if deepchat is None or is_synthetic_source(getattr(context, "source_kind", "")):
+            return
+        try:
+            await asyncio.to_thread(
+                deepchat.writeback,
+                sender_id=context.sender_id,
+                text=context.message,
+                is_group=context.is_group,
+                group_id=context.group_id,
+            )
+        except Exception as deepchat_error:  # noqa: BLE001 —— 写回失败不得影响回复
+            self.plugin.logger.warning(f"[DeepChat] 情绪/关系写回失败: {deepchat_error}")
 
     async def run_primary_session_call(self, context: QQReplyContext) -> QQModelResult:
         session_key = self.plugin.session_runtime_service.build_generation_session_key(context)
@@ -205,6 +247,7 @@ class QQReplyGenerationService:
                 session_key=session_key, user_data=user_data, context=context,
                 reply_text=ai_reply,
             )
+            await self.writeback_deepchat(context)
             self.plugin.logger.info(f"AI 生成回复完成 (会话: {session_key}, length: {len(ai_reply)})")
             stage_trace.status = "success"
             stage_trace.metadata["reply_length"] = len(ai_reply)
@@ -331,6 +374,7 @@ class QQReplyGenerationService:
                 # 对齐；restore 保证持久会话仍保留创建时的原始 system 行。
                 always_refresh=(
                     context.is_group
+                    or bool(getattr(context, "companion_section", ""))
                     or bool(getattr(context, "cross_session_section", ""))
                     or user_data.get("private_memory_mode") == "participant"
                     or not bool(
@@ -345,7 +389,7 @@ class QQReplyGenerationService:
             # 本轮 context 重建，绝不能在建会话时冻结（那会让所有人都用首
             # 个发言者的 subject）。consent_before 传给闭包：工具读发生在
             # 生成中途，运行时记录要能被生成结束的撤销比对看到。
-            armed_recall_tool, armed_bridge_tools = await self._arm_turn_tools(
+            armed_recall_tool, armed_bridge_tools, armed_builtin_tools = await self._arm_turn_tools(
                 context=context,
                 session_key=session_key,
                 user_session=user_session,
@@ -378,6 +422,11 @@ class QQReplyGenerationService:
                     from .plugin_tool_service import CALL_TIMEOUT_SECONDS
 
                     turn_timeout += CALL_TIMEOUT_SECONDS * 2
+                if armed_builtin_tools:
+                    # 收表情包是"下载 + 看图"两次网络往返，都不在 LLM 流的预算里。
+                    # 不单独加的话，慢一点就会撞上超时——而这条路径超时的代价是
+                    # 丢弃整个共享群会话，不是丢一张表情包。
+                    turn_timeout += BUILTIN_TOOL_BUDGET_SECONDS
                 turn_message = context.prompt_message
                 if armed_bridge_tools:
                     turn_message += TOOL_TURN_INSTRUCTION
@@ -554,11 +603,16 @@ class QQReplyGenerationService:
         consent_before: dict,
         session_key: str = "",
         on_tool_round_start: Callable[[], Awaitable[None]] | None = None,
-    ) -> tuple[bool, bool]:
-        """本轮挂到会话上的工具。返回 ``(挂了任何工具, 挂了插件工具)``。
+    ) -> tuple[bool, bool, bool]:
+        """本轮挂到会话上的工具。
 
-        **没有配置任何插件工具时，这条路径退化成原来的 `_arm_recall_tool`** ——
-        功能默认关闭，未启用的人拿到的行为与之前逐字节一致。
+        返回 ``(挂了任何工具, 挂了插件工具, 挂了内置工具)``。三个值各有各的
+        用处，别合并：第二个决定要不要注入 ``TOOL_TURN_INSTRUCTION``（那段讲的是
+        搜索/跨插件任务，对收表情包完全不适用），第三个决定要不要为"下载 + 看图"
+        额外留超时预算。
+
+        **没有配置任何插件工具、也没收到新图时，这条路径退化成原来的
+        `_arm_recall_tool`** —— 功能默认关闭，未启用的人拿到的行为与之前逐字节一致。
 
         插件工具（把别的插件的能力给模型用）**只在开放平台挂**：使用者定的范围。
         NapCat 那边是"群里什么样的人都有"的通道，多给一层工具面就多一层风险；
@@ -566,6 +620,25 @@ class QQReplyGenerationService:
         """
         user_session._qq_tool_audit = {"started": 0, "returned": 0, "names": []}
         session_key = session_key or str(getattr(context, "session_key", "") or "")
+        # 表情包：跟 recall / 插件工具是两条独立的线，但**不是常挂**——
+        # 只在"闸没关、并且最近真的收到过图"时才给。常挂的代价是每一轮都往
+        # prompt 里追加工具轮指令、每一轮都多留一份超时预算；而这些成本没有
+        # 任何一张新图的时候什么也换不来（收表情包的前提是得先有人发图）。
+        # 判据统一在 ``should_offer_save`` 里，这里不重复判策略。
+        sticker_tools: list[Any] = []
+        sticker_handlers: dict[str, Any] = {}
+        sticker_lab = getattr(self.plugin, "sticker_lab", None)
+        if sticker_lab is not None and sticker_lab.should_offer_save():
+            try:
+                sticker_tools.append(sticker_lab.build_save_definition())
+                sticker_handlers[STICKER_SAVE_TOOL_NAME] = (
+                    self._build_sticker_save_handler(sticker_lab, context)
+                )
+            except Exception as exc:
+                self.plugin.logger.warning(
+                    f"save_sticker 工具构建失败（这轮收不了表情包）: {exc}"
+                )
+                sticker_tools, sticker_handlers = [], {}
         bridge = getattr(self.plugin, "plugin_tool_service", None)
         bridge_tools: list[Any] = []
         mounted: list[tuple[dict[str, Any], str]] = []
@@ -581,7 +654,7 @@ class QQReplyGenerationService:
         gallery_tools: list[Any] = []
         gallery_handlers: dict[str, Any] = {}
         gallery = getattr(self.plugin, "gallery_service", None)
-        if gallery is not None:
+        if gallery is not None and self._gallery_tools_allowed(context):
             try:
                 gallery_handlers = self._build_gallery_handlers(gallery, context)
                 gallery_tools = [
@@ -592,21 +665,21 @@ class QQReplyGenerationService:
                 self.plugin.logger.warning(f"图库工具构建失败（这轮没有图库）: {exc}")
                 gallery_tools, gallery_handlers = [], {}
 
-        if not bridge_tools and not gallery_tools:
+        if not bridge_tools and not gallery_tools and not sticker_tools:
             armed = self._arm_recall_tool(
                 context=context,
                 user_session=user_session,
                 consent_before=consent_before,
                 on_tool_round_start=on_tool_round_start,
             )
-            return armed, False
+            return armed, False, False
 
         # 合并挂载：recall（如果本轮该有）+ 插件工具，走一个按名字分发的 handler。
         set_tools = getattr(user_session, "set_tools", None)
         set_handler = getattr(user_session, "set_tool_call_handler", None)
         set_round_start = getattr(user_session, "set_tool_round_start_callback", None)
         if not callable(set_tools) or not callable(set_handler):
-            return False, False
+            return False, False, False
 
         recall_enabled = bool(getattr(context, "use_memory_context", False))
         definitions: list[Any] = []
@@ -616,6 +689,7 @@ class QQReplyGenerationService:
             recall_handler = self._build_recall_tool_handler(
                 context=context, consent_before=consent_before,
             )
+        definitions.extend(sticker_tools)
         definitions.extend(bridge_tools)
         if gallery_tools:
             definitions.extend(gallery_tools)
@@ -631,20 +705,21 @@ class QQReplyGenerationService:
             name = str(getattr(tool_call, "name", "") or "")
             if recall_handler is not None and name == RECALL_TOOL_NAME:
                 return await recall_handler(tool_call)
-            gallery_handler = gallery_handlers.get(name)
-            if gallery_handler is not None:
-                return await gallery_handler(tool_call)
-            if bridge_handler is None:
-                # 只挂了图库、没挂插件工具时不该叫到别的名字。真叫了也别抛，
-                # 回个空结果让她接着说——抛出去整轮就没了。
-                return ToolResult(
-                    call_id=getattr(tool_call, "call_id", "") or "",
-                    name=name,
-                    output="没有这个工具。",
-                )
             audit = user_session._qq_tool_audit
             audit["started"] += 1
             audit["names"].append(name)
+            builtin_handler = gallery_handlers.get(name) or sticker_handlers.get(name)
+            if builtin_handler is not None:
+                # 内置工具，不走插件工具桥那套日志（"调用开始 tool=xxx" 是给
+                # 别的插件的工具留的痕迹）。异常直接冒到生成层，那里会兜成
+                # "这张没存下来"，不会把这轮的回复整个带崩。
+                result = await builtin_handler(tool_call)
+                audit["returned"] += 1
+                return result
+            if bridge_handler is None:
+                # 只挂了表情包工具、没挂插件工具时会有这个名字之外的东西：
+                # 说明模型自己编了个工具名。明确报错，别静默吞掉。
+                raise RuntimeError(f"本轮没有挂载名为 {name} 的工具")
             emit_bridge_log(self.plugin, "INFO", f"[PluginTool] 调用开始 session={session_key} tool={name}")
             try:
                 result = await bridge_handler(tool_call)
@@ -666,15 +741,15 @@ class QQReplyGenerationService:
                     clear_slot(None)
                 except Exception:
                     pass
-            return False, False
+            return False, False, False
         emit_bridge_log(self.plugin, 
             "INFO",
             f"[PluginTool] 本轮挂载 {len(bridge_tools)} 个插件工具"
-            f" + {len(gallery_tools)} 个内置工具"
+            f" + {len(gallery_tools) + len(sticker_tools)} 个内置工具"
             f"（权限 {getattr(context, 'permission_level', '') or 'unknown'}）: "
             + "、".join(row["plugin_id"] for row, _tier in mounted),
         )
-        return True, True
+        return True, bool(bridge_tools), bool(sticker_tools or gallery_tools)
 
     @staticmethod
     def _bridge_conversation(context: Any) -> dict[str, Any]:
@@ -731,6 +806,37 @@ class QQReplyGenerationService:
             for row, tier in mounted
         ]
 
+    def _build_sticker_save_handler(self, sticker_lab: Any, context: Any):
+        """本轮的表情包收集闭包。
+
+        "收哪一张"不从模型拿编号——她看不见序号，只会瞎猜。默认收**这条会话里
+        最近收到的那张**，覆盖绝大多数「这个好玩，存了」的场面。
+
+        跨群能不能收不在这一层判：session 的 group_id 原样交给
+        ``execute_save``，由 ``sticker_collect_policy`` 那一档决定（见
+        ``sticker_lab_service.check``）。放这里判的话，私聊里 group_id 是空串，
+        会把"哪个群都行"当成默认，闸就形同虚设。
+        """
+
+        async def _handle_save_tool(tool_call: Any) -> ToolResult:
+            name = getattr(tool_call, "name", "") or STICKER_SAVE_TOOL_NAME
+            try:
+                output = await sticker_lab.execute_save(
+                    getattr(tool_call, "arguments", None) or {},
+                    sender_id=str(getattr(context, "sender_id", "") or ""),
+                    group_id=str(getattr(context, "group_id", "") or ""),
+                )
+            except Exception as exc:
+                self.plugin.logger.warning(f"save_sticker 执行失败: {exc}")
+                output = "（这张没存下来。别跟对方说你存了。）"
+            return ToolResult(
+                call_id=getattr(tool_call, "call_id", "") or "",
+                name=name,
+                output=output,
+            )
+
+        return _handle_save_tool
+
     def _arm_recall_tool(
         self,
         *,
@@ -785,6 +891,27 @@ class QQReplyGenerationService:
                     pass
             return False
 
+    def _gallery_tools_allowed(self, context: Any) -> bool:
+        """Global images and account mutations are reserved for account admins.
+
+        Re-read the roster at execution time, so a tool mounted before a role
+        revocation cannot still mutate the account. Group privileges alone are
+        not account-administrator privileges.
+        """
+        sender = str(getattr(context, "sender_id", "") or "").strip()
+        if not sender:
+            return False
+        manager = getattr(self.plugin, "permission_mgr", None)
+        if manager is not None:
+            try:
+                level = manager.get_permission_level(sender)
+            except Exception:
+                return False
+            if level == "blacklist":
+                return False
+            return level == "admin" or sender == str(getattr(self.plugin, "_admin_qq", "") or "")
+        return sender == str(getattr(self.plugin, "_admin_qq", "") or "")
+
     def _build_gallery_handlers(self, gallery: Any, context: Any) -> dict[str, Any]:
         """图库两个工具的闭包：``browse_gallery`` / ``set_avatar``。
 
@@ -795,6 +922,11 @@ class QQReplyGenerationService:
         """
 
         async def _handle_browse(tool_call: Any) -> ToolResult:
+            if not self._gallery_tools_allowed(context):
+                return ToolResult(
+                    call_id=getattr(tool_call, "call_id", "") or "",
+                    name=BROWSE_TOOL_NAME, output="只有账号管理员可以查看全局图库或修改 QQ 头像。",
+                )
             arguments = getattr(tool_call, "arguments", None) or {}
             query = str(arguments.get("query") or "").strip()
             try:
@@ -803,6 +935,7 @@ class QQReplyGenerationService:
                 limit = 8
             limit = max(1, min(limit, 20))
             try:
+                await gallery.start()
                 items = await asyncio.to_thread(
                     gallery.list_items, query=query, limit=limit
                 )
@@ -827,6 +960,11 @@ class QQReplyGenerationService:
             )
 
         async def _handle_avatar(tool_call: Any) -> ToolResult:
+            if not self._gallery_tools_allowed(context):
+                return ToolResult(
+                    call_id=getattr(tool_call, "call_id", "") or "",
+                    name=AVATAR_TOOL_NAME, output="只有账号管理员可以查看全局图库或修改 QQ 头像。",
+                )
             arguments = getattr(tool_call, "arguments", None) or {}
             key = str(arguments.get("id") or "").strip()
             if not key:
@@ -1072,6 +1210,9 @@ class QQReplyGenerationService:
         depends on the switch too."""
         settings = getattr(self.plugin, "_qq_settings", {}) or {}
         snapshot: dict = {}
+        token = getattr(context, "companion_token", "")
+        if token and getattr(context, "companion_section", ""):
+            snapshot[token] = True
         if getattr(context, "cross_session_section", ""):
             snapshot["allow_cross_group_context"] = bool(
                 settings.get("allow_cross_group_context", False)
@@ -1123,9 +1264,8 @@ class QQReplyGenerationService:
         """True when a switch this prompt relied on went off since `before`."""
         if not before:
             return False
-        settings = getattr(self.plugin, "_qq_settings", {}) or {}
         return any(
-            was_enabled and not settings.get(key, False)
+            was_enabled and not consent_enabled(self.plugin, key)
             for key, was_enabled in before.items()
         )
 
@@ -1138,6 +1278,14 @@ class QQReplyGenerationService:
         session call, direct fallback) enforces the same boundary — the
         per-path rechecks kept diverging as new paths appeared."""
         settings = getattr(self.plugin, "_qq_settings", {}) or {}
+        token = getattr(context, "companion_token", "")
+        if token and not consent_enabled(self.plugin, token):
+            system_prompt = self._strip_section_text(system_prompt, getattr(context, "companion_section", ""))
+            context.system_prompt = self._strip_section_text(
+                context.system_prompt, getattr(context, "companion_section", ""),
+            )
+            context.companion_section = ""
+            context.companion_token = ""
         if not settings.get("allow_cross_group_context", False):
             # 私聊轮也可能带会话清单段（跨群开关打开时它会列出其他群与
             # 联系人）：非群轮不能在这里直接返回，否则那段撤不掉。
@@ -1231,6 +1379,7 @@ class QQReplyGenerationService:
         user_data: dict[str, Any],
         context: QQReplyContext,
         reply_text: str = "",
+        sync_tail_ai: bool = False,
     ) -> None:
         if user_data.get("memory_enabled"):
             try:
@@ -1238,13 +1387,8 @@ class QQReplyGenerationService:
                 # 只做 cache 同步，避免同一发言重复入 bucket。
                 count = await self.plugin._cache_session_delta(
                     session_key, user_data,
-                    # 合成轮（主动搭话等）的回复是直接发出去的、不经 buffer，
-                    # 尾部 ai 行不会随后被 summary 取代，当轮就该入库。否则
-                    # 她说完之后用户不回消息，这条要等下一轮才进记忆库，中途
-                    # 宿主重启就永久丢了。
-                    sync_tail_ai=is_synthetic_source(
-                        getattr(context, "source_kind", "")
-                    ),
+                    # 生成成功不代表发送成功。尾部回复只在投递确认后同步。
+                    sync_tail_ai=sync_tail_ai,
                 )
                 if count:
                     self.plugin.logger.info(f"[管理员] 成功同步 {count} 条消息到 Memory Server (会话: {session_key})")
@@ -1456,12 +1600,16 @@ class QQReplyGenerationService:
         if context.is_group and context.group_id:
             from .group_send_safety import group_send_safety
 
-            if not group_send_safety(self.plugin).has_capacity(context.group_id):
-                emit_bridge_log(self.plugin, "INFO", f"[Pace] 群{context.group_id}发送额度已满，跳过本轮生成，不补发")
-                return QQModelResult(reply_text=None, source="none", traces=[
-                    QQPipelineStageTrace(stage="model_primary", status="skipped", detail="group_rate_limit"),
-                ])
+            async with group_send_safety(self.plugin).generation(context.group_id) as reason:
+                if reason:
+                    emit_bridge_log(self.plugin, "INFO", f"[Pace] 群{context.group_id}跳过生成：{reason}，不补发")
+                    return QQModelResult(reply_text=None, source="none", traces=[
+                        QQPipelineStageTrace(stage="model_primary", status="skipped", detail=reason),
+                    ])
+                return await self._generate_admitted_context(context)
+        return await self._generate_admitted_context(context)
 
+    async def _generate_admitted_context(self, context: QQReplyContext) -> QQModelResult:
         primary_result = await self.run_primary_session_call(context)
         if not primary_result.allow_fallback:
             return primary_result
@@ -1476,6 +1624,9 @@ class QQReplyGenerationService:
                 )
             )
             await self.run_fallback_memory_hooks(context, fallback_reply)
+            # direct fallback 也是"成功回复"，同样要回写（primary 成功已在
+            # run_primary_session_call 内写回并提前 return，不会重复）。
+            await self.writeback_deepchat(context)
             return QQModelResult(reply_text=fallback_reply, source="direct_llm_fallback", used_fallback=True, traces=primary_result.traces)
         primary_result.traces.append(
             QQPipelineStageTrace(

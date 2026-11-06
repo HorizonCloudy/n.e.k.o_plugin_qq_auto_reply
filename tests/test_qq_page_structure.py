@@ -129,3 +129,29 @@ def test_the_parser_actually_sees_the_pages():
         f"只解析出 {len(parser.pages)} 个 .page，解析器失配了"
     )
     assert any(pid == "page-logs" for pid, _, _ in parser.pages)
+
+
+def test_setup_user_defaults_to_admin_without_changing_group_default():
+    class Selects(HTMLParser):
+        current = None
+
+        def handle_starttag(self, tag, attrs):
+            attrs = dict(attrs)
+            if tag == "select":
+                self.current = attrs.get("id")
+                options[self.current] = []
+            elif tag == "option" and self.current is not None:
+                options[self.current].append(attrs)
+
+        def handle_endtag(self, tag):
+            if tag == "select":
+                self.current = None
+
+    options = {}
+    Selects().feed((STATIC / "status.html").read_text(encoding="utf-8"))
+    users = options["u-level"]
+    assert [option["value"] for option in users if "selected" in option] == ["admin"]
+    assert {option["value"] for option in users} == {"trusted", "admin", "normal", "blacklist"}
+    groups = options["g-level"]
+    selected_groups = [option for option in groups if "selected" in option]
+    assert (selected_groups or groups)[0]["value"] == "trusted"

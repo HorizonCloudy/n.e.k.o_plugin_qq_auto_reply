@@ -25,6 +25,7 @@ from typing import Any
 from . import addressing
 from .dialogue_partner import DialoguePartnerTracker
 from .feedback_classifier import QQFeedbackClassifier
+from .media_reply_policy import authored_media_text
 from .pipeline_models import backlog_sender_label
 from .reply_necessity import (
     ADDRESSED_ELSEWHERE_PENALTY_DEFAULT,
@@ -337,9 +338,10 @@ class QQAttentionGateService:
 
         `self_id` 与名字清单在这里补齐（调用方不需要知道它们从哪来）。
         """
+        authored = authored_media_text(segments)
         return addressing.resolve_addressee(
             self_id=str(getattr(self.plugin.qq_client, "self_id", "") or ""),
-            text=message_text,
+            text=message_text if authored is None else authored,
             is_at_bot=is_at_bot,
             is_reply_to_bot=is_reply_to_bot,
             mentions_all=mentions_all,
@@ -552,6 +554,23 @@ class QQAttentionGateService:
         if self.plugin.qq_client and not self.plugin.qq_client.needs_attention:
             return GateDecision("reply", reason="no_attention_needed", force_reply=is_at_bot)
 
+        enriched_message_text = message_text
+        authored = authored_media_text(segments)
+        media_only = authored == ""
+        if authored is not None:
+            # Descriptions still go to backlog/LLM, never to wake keywords,
+            # attention content signals or reply-necessity length/question scores.
+            message_text = authored
+        is_reply_to_bot = is_reply_to_bot or bool(
+            quoted_message_id and self.plugin.qq_client
+            and quoted_message_id in getattr(self.plugin.qq_client, "sent_message_ids", {})
+        )
+        if (media_only and not is_at_bot and not is_reply_to_bot
+                and self._participates_in_attention(str(group_id or "").strip())):
+            self._touch_group(str(group_id or "").strip())
+            self.plugin._emit_log("INFO", "[Gate] 纯图片/表情：保留上下文，不单独触发回复")
+            return GateDecision("ignore", reason="passive_media_context")
+
         attention = self.plugin.attention_service
         if not attention or not attention._enabled():
             if self.plugin.permission_mgr and self.plugin.permission_mgr.get_permission_level(sender_id) == "admin":
@@ -585,12 +604,6 @@ class QQAttentionGateService:
                 "timestamp": timestamp or attention._current_time(),
                 "is_at_bot": is_at_bot,
             })
-
-        # 连接层 is_reply_to_bot 优先（含 API 兜底），弱链缓存重算仅作兜底
-        is_reply_to_bot = is_reply_to_bot or bool(
-            quoted_message_id and self.plugin.qq_client
-            and quoted_message_id in getattr(self.plugin.qq_client, "sent_message_ids", {})
-        )
 
         # 1.2 「谁在跟谁说话」：结论算一次，下面三处都用它（减分 / 硬门控 / 提示词）。
         #     判据本身在 addressing.py，这里是它唯一的调用点 —— 门控、打分、文案
@@ -650,12 +663,12 @@ class QQAttentionGateService:
             return GateDecision(
                 "reply",
                 reason=("named_bot" if named_me else "at_bot"),
-                force_reply=True,
+                force_reply=not media_only,
             )
 
         # 3. 黑名单 → 不处理（对**所有**群生效，含不参与竞争的群：这是全局过滤）
         label_defs = list((self.plugin._qq_settings or {}).get("backlog_labels") or [])
-        if QQFeedbackClassifier.is_blacklisted(message_text, label_defs):
+        if QQFeedbackClassifier.is_blacklisted(enriched_message_text, label_defs):
             return GateDecision("ignore", reason="blacklist")
 
         # 3.5 不参与注意力竞争的群（normal / none）：直接放行给下游。
@@ -702,7 +715,7 @@ class QQAttentionGateService:
                 attention.mark_focus(normalized_group_id)
                 attention.wake_boost(normalized_group_id)
                 self._backoff.reset(normalized_group_id)
-            return GateDecision("reply", reason="reply_to_bot", force_reply=True)
+            return GateDecision("reply", reason="reply_to_bot", force_reply=not media_only)
 
         # 4.5 这个群冷漠了（静默 ≥ `dormancy_idle_seconds`，默认半小时）→ **只答点名**。
         #     点名类（@ / 关键词 / 引用她）在上面已经短路返回了，所以走到这里的必然是

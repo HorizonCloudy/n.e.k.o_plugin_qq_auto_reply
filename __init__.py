@@ -57,8 +57,12 @@ from .attention_gate_service import QQAttentionGateService
 from .attention_service import QQAttentionService
 from .backlog_models import QQBacklogMessage as QQBacklogMessage
 from .backlog_service import QQBacklogService
+from .catchup_service import QQMessageCatchupService
 from .config_store import QQAutoReplyConfigStore
 from .dashboard_service import QQDashboardService
+from .deepchat import RETIRED_TUNING_KEYS as DEEPCHAT_RETIRED_TUNING_KEYS
+from .deepchat import TUNING_KEYS as DEEPCHAT_TUNING_KEYS
+from .deepchat import DeepChatService
 from .deploy_service import QQDeployService
 from .display_name_service import QQDisplayNameService
 from .enrichment import QQMessageEnricher
@@ -106,6 +110,7 @@ from .session_instruction_service import (
 from .session_memory_service import QQSessionMemoryService
 from .session_runtime_service import QQSessionRuntimeService
 from .settings_service import QQSettingsService
+from .sticker_lab_service import QQStickerLab
 from .targets import QQAutoReplyTargetsMixin
 from .targets import QQAutoReplyValidationError as QQAutoReplyValidationError
 from .time_context import build_time_context
@@ -195,9 +200,19 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         # 图库：她见过的图（含拿来当头像的那种）。跟 sticker 是两张表——
         # 表情包是按情绪找一张甩出去，图库是素材本身，生命周期不一样。
         self.gallery_service = QQGalleryService(self)
+        # 断线补消息：跟 backlog 是两件事。backlog 记的是"推过来的消息"，
+        # 断线期间推不过来，它一样空着；补消息得主动去服务端翻历史。
+        self.catchup_service = QQMessageCatchupService(self)
         self.attention_service = QQAttentionService(self)
         self.prompt_builder = QQPromptBuilder(self)
         self.memory_bridge = QQMemoryBridge(self)
+        # 宿主记忆的**写前登记**：把「谁 × 哪个域」写进本地社交坐标索引，
+        # 否则遗忘时枚举不到要清哪些 subject（宿主没有"列出某人的所有 subject"端点）。
+        # 只在写入路径触发；遗忘路径绝不触发（见 memory_bridge._register_write）。
+        self.memory_bridge.on_subject_write = self._on_subject_write
+        self.deepchat_service = DeepChatService(self)
+        from .companion_context_service import QQCompanionContextService
+        self.companion_context_service = QQCompanionContextService(self)
         self.display_name_service = QQDisplayNameService(self)
         self.memory_tool_service = QQMemoryToolService(self)
         # 插件工具桥（只在开放平台启用）：把别的插件的能力按分级挂到 QQ 会话上。
@@ -226,6 +241,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self.session_instruction_service = QQSessionInstructionService(self)
         self.session_memory_service = QQSessionMemoryService(self)
         self.session_runtime_service = QQSessionRuntimeService(self)
+        # 表情包的收集侧：她自己在聊天里收（上游只有手动上传那一条入口）。
+        # 收多少、从哪个群收，归 settings 的 sticker_collect_policy 三档闸管。
+        self.sticker_lab = QQStickerLab(self)
         self.qq_client: Optional[OneBotConnector] = None
         self.enricher: Optional[QQMessageEnricher] = None
         self.attention_gate_service = QQAttentionGateService(self)
@@ -237,6 +255,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self._group_digest_task: Optional[asyncio.Task] = None
         self._trust_migration_task: Optional[asyncio.Task] = None
         self._identity_scope_task: Optional[asyncio.Task] = None
+        self._deepchat_autonomy_task: Optional[asyncio.Task] = None
         # 只有在存量 trust 池成功推给 memory_server 之后才开始上报
         # speaker_tier / speaker_activity_events。纵深防御第一层，服务端的
         # legacy_barriers 是第二层。
@@ -918,6 +937,18 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         if followups is not None:
             followups.ensure_loop()
 
+        # DeepChat 自主调度：默认关闭，循环内部每轮先查开关；开启后
+        # 只在私聊过、关系达标、非静音时段且过了冷却的用户里挑一个。
+        deepchat = getattr(self, "deepchat_service", None)
+        # 总开关关闭时不起这个循环：循环内部虽然每轮都查开关，但「关掉还在跑」
+        # 本身就会让「关掉 = 不再有任何 DeepChat 行为」这条承诺变形。
+        if deepchat is not None and deepchat.enabled:
+            task = getattr(self, "_deepchat_autonomy_task", None)
+            if task is None or task.done():
+                self._deepchat_autonomy_task = asyncio.create_task(
+                    deepchat.autonomy_loop()
+                )
+
     async def _autostart_on_launch(self) -> None:
         """开机自启：起监听 / 拉起 NapCat。
 
@@ -1072,6 +1103,11 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             and not self._identity_scope_task.done()
         ):
             self._identity_scope_task.cancel()
+        if (
+            getattr(self, "_deepchat_autonomy_task", None)
+            and not self._deepchat_autonomy_task.done()
+        ):
+            self._deepchat_autonomy_task.cancel()
         if self._group_digest_task and not self._group_digest_task.done():
             self._group_digest_task.cancel()
         if getattr(self, "_purge_task", None) and not self._purge_task.done():
@@ -1108,9 +1144,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     async def _sync_napcat_qrcode_into_static(self) -> bool:
         return await self.napcat_service.sync_napcat_qrcode_into_static()
 
-    def _resolve_sticker_path(self, sticker_id: str) -> str:
+    def _resolve_sticker_path(self, sticker_id: str, *, target_type: str = "", target_id: str = "") -> str:
         """解析表情包 ID 到文件路径（供 delivery_node 使用）。"""
-        return self.reply_pipeline._resolve_sticker_path(sticker_id)
+        return self.reply_pipeline._resolve_sticker_path(sticker_id, target_type=target_type, target_id=target_id)
 
     def _find_napcat_launcher(self) -> Path | None:
         return self.napcat_service.find_napcat_launcher()
@@ -1145,6 +1181,284 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     async def open_ui(self, **_):
         return await self.dashboard_service.open_ui()
 
+    # ── deepchat：情绪与关系状态 ───────────────────────────────
+    #
+    # 注意力决定"要不要接话"，记忆决定"记得什么"；这里补的是"她现在
+    # 是什么心情、和这个人多熟"。全部走本地 SQLite（标准库），不额外
+    # 调用模型，也不改写既有注意力/记忆链路。
+
+    @plugin_entry(
+        id="dc_view_state",
+        name=tr("entries.dc_view_state.name", default="深度聊天：查看状态"),
+        description="查看某个 QQ 用户的情绪状态与关系值（好感/信任/互动次数/里程碑）。",
+        input_schema={"type": "object", "properties": {
+            "user_id": {"type": "string", "description": "QQ 号"},
+        }, "required": ["user_id"], "additionalProperties": False},
+    )
+    async def dc_view_state(self, user_id: str = "", **kw):
+        if not str(user_id or "").strip():
+            return Err(SdkError("INVALID_INPUT: user_id 不能为空"))
+        return Ok(self.deepchat_service.view_state(user_id))
+
+    @plugin_entry(
+        id="dc_reset_user",
+        name=tr("entries.dc_reset_user.name", default="深度聊天：重置用户状态"),
+        description=(
+            "清空某个 QQ 用户的**本地**情绪/关系/自主/表达学习记录。"
+            "只动插件自己的 deepchat.sqlite3，不碰宿主记忆；"
+            "要连宿主 participant 记忆一起清请用 dc_forget_user。"
+        ),
+        input_schema={"type": "object", "properties": {
+            "user_id": {"type": "string", "description": "QQ 号"},
+        }, "required": ["user_id"], "additionalProperties": False},
+    )
+    async def dc_reset_user(self, user_id: str = "", **kw):
+        if not str(user_id or "").strip():
+            return Err(SdkError("INVALID_INPUT: user_id 不能为空"))
+        return Ok(self.deepchat_service.reset_user(user_id))
+
+    #: 遗忘覆盖不到的部分。写进描述与返回体：宁可说清边界，也不给人"已经清干净"的错觉。
+    #: 覆盖不到的部分：P0b 起群成员域已能在**写前登记过**的前提下擦除；
+    #: P0b 之前写下的群成员历史没有坐标，枚举不到 —— 这条必须显式说出来。
+    FORGET_NOT_COVERED: tuple[str, ...] = ("group_participant:history_before_P0b",)
+
+    @plugin_entry(
+        id="dc_forget_user",
+        name=tr("entries.dc_forget_user.name", default="深度聊天：遗忘用户（本地 + 宿主记忆）"),
+        description=(
+            "完整遗忘某个 QQ 用户：清本地情绪/关系/自主/表达学习，并清宿主的 "
+            "participant 记忆（私聊个人域）。"
+            "\n\n**覆盖边界**：覆盖私聊 participant 域 + **写入时登记过**的群成员域"
+            "（group_participant，按群逐个清）；P0b 之前写下的群成员历史没有坐标、"
+            "枚举不到 —— 返回体同样给出 "
+            "not_covered: [\"group_participant:history_before_P0b\"]。"
+            "\n**身份元数据**：trust/profile 由宿主账本维护，本插件没有擦除端点，"
+            "故 identity_meta.supported=false（不计入 partial）。"
+            "\n**与 dc_reset_user 的差别**：dc_reset_user 只清本地 sqlite、不碰宿主记忆。"
+            "\n**与群遗忘互为对偶**：本入口不清群本体域（group_chat），"
+            "群遗忘（memory_forget）也不清成员个人域——两个域各自需要各自的入口。"
+        ),
+        input_schema={"type": "object", "properties": {
+            "user_id": {"type": "string", "description": "QQ 号"},
+        }, "required": ["user_id"], "additionalProperties": False},
+    )
+    async def dc_forget_user(self, user_id: str = "", **kw):
+        sender_id = str(user_id or "").strip()
+        if not sender_id:
+            return Err(SdkError("INVALID_INPUT: user_id 不能为空"))
+        return Ok(await self._forget_user(sender_id))
+
+    def _on_subject_write(self, subject: dict[str, Any]) -> None:
+        """写前登记回调：把 subject 坐标记进本地索引。
+
+        **fail-closed**：登记失败就抛出去，调用方（bridge 的写入方法）会因此不发 HTTP
+        —— 宁可少写一条记忆，也不要"发出去但没人知道它写在哪个 subject 上"（那样遗忘
+        时永远枚举不到，等于漏删）。
+
+        `group_chat` 这类"群本体"不是"谁写过"，`upsert_subject` 解析不了会返回 False，
+        这里不算失败（它是设计上不登记的对象）。
+        """
+        deepchat = getattr(self, "deepchat_service", None)
+        index = getattr(deepchat, "subject_index", None)
+        if index is None:
+            raise RuntimeError("subject_index_unavailable")
+        index.upsert_subject(subject)
+
+    def _private_memory_mode_of(self, user_id: str) -> str:
+        """该用户私聊记忆模式（`legacy` / `participant` / 空串=没有会话记录）。"""
+        user_data = (getattr(self, "_user_sessions", {}) or {}).get(f"private:{user_id}")
+        if isinstance(user_data, dict):
+            return str(user_data.get("private_memory_mode") or "")
+        return ""
+
+    async def _forget_user(self, user_id: str) -> dict[str, Any]:
+        """遗忘一个用户：本地 sqlite 与宿主 participant 记忆两条腿分别记账。
+
+        - **本地腿**必须成功；失败即 `partial=True`（不许声称清过）。
+        - **宿主腿**只在 `participant` 模式下有意义：legacy admin 的私聊记忆在宿主的
+          "私聊主人语料"里，participant 域本来就没有他那一行 —— 这里 **fail-closed**：
+          不猜、不清、明确写进 `subjects_skipped` 与 `warnings`。
+        - `subjects` 永远是显式 subject 字典，**不传 None**（None 在 bridge 里等于
+          "legacy 私聊语料"这个逃生门，遗忘路径绝不能碰）。
+        - `identity_meta` 只是能力声明，**不参与** `partial` 判定。
+        """
+        masked = (user_id[:3] + "***") if len(user_id) > 3 else "***"
+        warnings: list[str] = []
+        partial = False
+
+        # ── 腿 1：本地 sqlite ──
+        try:
+            local: dict[str, Any] = self.deepchat_service.reset_user(user_id)
+        except Exception as exc:  # noqa: BLE001 —— 一条腿失败不该让整次遗忘崩掉
+            self._emit_log("ERROR", f"[Forget] 本地状态清除失败 {masked}: {type(exc).__name__}")
+            local = {"error": type(exc).__name__}
+            warnings.append("local_failed")
+            partial = True
+
+        # ── 腿 2：宿主记忆（participant + 索引枚举出的 group_participant）──
+        subjects_forgotten: list[str] = []
+        subjects_skipped: list[str] = []
+        detail: Any = None
+        bridge = getattr(self, "memory_bridge", None)
+        mode = self._private_memory_mode_of(user_id)
+        index = getattr(getattr(self, "deepchat_service", None), "subject_index", None)
+
+        if mode and mode != "participant":
+            subjects_skipped.append("participant")
+            warnings.append("legacy_memory_mode")
+            partial = True
+            self._emit_log(
+                "WARNING",
+                f"[Forget] {masked} 处于 legacy 私聊记忆模式：participant 域无数据，"
+                "宿主侧未做任何清除（fail-closed）",
+            )
+        elif bridge is None:
+            subjects_skipped.append("participant")
+            warnings.append("memory_bridge_unavailable")
+            partial = True
+            self._emit_log("WARNING", f"[Forget] 没有 memory_bridge：{masked} 的宿主记忆未清除")
+        else:
+            try:
+                from utils.config_manager import get_config_manager
+
+                _, her_name, *_ = get_config_manager().get_character_data()
+            except Exception:  # noqa: BLE001 —— 独立运行/测试环境没有宿主配置
+                her_name = str(getattr(self, "_her_name", "") or "neko")
+            # 待遗忘的 subject：私聊 participant + 索引里登记过的群成员域。
+            # 群成员域（group_participant）在 P0b 之前没有登记，那些历史坐标枚举不到，
+            # 因此返回体仍保留 not_covered 说明（见 FORGET_NOT_COVERED）。
+            targets: list[tuple[str, dict[str, str]]] = [
+                ("participant", bridge.participant_subject(user_id)),
+            ]
+            group_ids: list[str] = []
+            if index is not None:
+                for row in index.rows_for_user(user_id):
+                    if str(row.get("subject_kind")) != "group_participant":
+                        continue
+                    gid = str(row.get("group_id") or "").strip()
+                    if not gid or gid in group_ids:
+                        continue
+                    group_ids.append(gid)
+                    targets.append(
+                        ("group_participant", bridge.group_participant_subject(gid, user_id)),
+                    )
+
+            failures: list[str] = []
+            for kind, subject in targets:
+                try:
+                    detail = await bridge.post_scoped_forget(her_name, subject=subject)
+                    subjects_forgotten.append(kind)
+                    self._emit_log("INFO", f"[Forget] {masked} 的 {kind} 记忆已清除")
+                except Exception as exc:  # noqa: BLE001
+                    failures.append(kind)
+                    subjects_skipped.append(kind)
+                    warnings.append(f"{kind}_forget_failed")
+                    self._emit_log(
+                        "ERROR", f"[Forget] {masked} 的 {kind} 记忆清除失败: {type(exc).__name__}"
+                    )
+
+            # HTTP **全部成功之后**才删索引行：删早了就再也枚举不到，重试也没机会。
+            # 有失败则保留（下次重试还能枚举到），并用 partial 说明没清干净。
+            if index is not None and not failures:
+                deleted_rows = index.delete_user(user_id)
+                self._emit_log("INFO", f"[Forget] {masked} 的社交坐标索引已清（{deleted_rows} 行）")
+            elif index is not None and failures:
+                self._emit_log(
+                    "WARNING",
+                    f"[Forget] {masked} 有 {len(failures)} 个域未清成功，索引行保留以便重试",
+                )
+            if failures:
+                partial = True
+
+        return {
+            "user_id": user_id,
+            "local": local,
+            "subjects_forgotten": subjects_forgotten,
+            "subjects_skipped": subjects_skipped,
+            "not_covered": list(self.FORGET_NOT_COVERED),
+            # 能力声明，不是清除结果：不参与 partial。
+            # trust / profile 由宿主账本维护，本插件既没有端点也不持有副本：
+            # 显式声明，避免"已彻底遗忘"的错觉（不参与 partial）。
+            "identity_meta": {
+                "supported": False,
+                "reason": "no_endpoint",
+                "trust_profile": "maintained_by_host",
+            },
+            "partial": partial,
+            "warnings": warnings,
+            "detail": detail,
+        }
+
+    @plugin_entry(
+        id="dc_set_mood",
+        name=tr("entries.dc_set_mood.name", default="深度聊天：设置情绪"),
+        description=(
+            "手动覆盖某个 QQ 用户的情绪状态（调试用）。mood 取 "
+            "calm/happy/excited/sulking/embarrassed/bored/annoyed"
+            "（历史值 neutral 视同 calm）。"
+        ),
+        input_schema={"type": "object", "properties": {
+            "user_id": {"type": "string", "description": "QQ 号"},
+            "mood": {"type": "string", "enum": [
+                "calm", "happy", "excited", "sulking",
+                "embarrassed", "bored", "annoyed",
+            ]},
+        }, "required": ["user_id", "mood"], "additionalProperties": False},
+    )
+    async def dc_set_mood(self, user_id: str = "", mood: str = "", **kw):
+        if not str(user_id or "").strip():
+            return Err(SdkError("INVALID_INPUT: user_id 不能为空"))
+        try:
+            return Ok(self.deepchat_service.set_mood(user_id, mood))
+        except ValueError as exc:
+            return Err(SdkError(f"INVALID_INPUT: {exc}"))
+
+    @plugin_entry(
+        id="dc_tune",
+        name=tr("entries.dc_tune.name", default="深度聊天：调参"),
+        description=(
+            "调整深度聊天参数并持久化。param 取 "
+            + ", ".join(k for k in DEEPCHAT_TUNING_KEYS if k not in DEEPCHAT_RETIRED_TUNING_KEYS)
+            + "；deepchat_generation_mode 只接受 host 或 direct。"
+            + "已停用（传入会明确报错）："
+            + ", ".join(sorted(DEEPCHAT_RETIRED_TUNING_KEYS))
+            + "——里程碑已停止写入用户原话（Phase 0 隐私修复）。"
+        ),
+        input_schema={"type": "object", "properties": {
+            "param": {"type": "string"},
+            "value": {"type": "string"},
+        }, "required": ["param", "value"], "additionalProperties": False},
+    )
+    async def dc_tune(self, param: str = "", value: str = "", **kw):
+        try:
+            return Ok(await self.deepchat_service.tune(param, value))
+        except (TypeError, ValueError) as exc:
+            return Err(SdkError(f"INVALID_INPUT: {exc}"))
+
+    @plugin_entry(
+        id="dc_recall",
+        name=tr("entries.dc_recall.name", default="深度聊天：召回记忆"),
+        description=(
+            "调试用：按群/成员范围召回长期记忆。scope=global 时走主人语料，"
+            "否则按 group_id/user_id 组装 subject。"
+        ),
+        input_schema={"type": "object", "properties": {
+            "query": {"type": "string"},
+            "scope": {"type": "string"},
+            "group_id": {"type": "string"},
+            "user_id": {"type": "string"},
+            "her_name": {"type": "string"},
+            "limit": {"type": "integer"},
+        }, "required": ["query"], "additionalProperties": False},
+    )
+    async def dc_recall(self, query: str = "", scope: str = "", group_id: str = "",
+                        user_id: str = "", her_name: str = "", limit: int = 5, **kw):
+        if not str(query or "").strip():
+            return Err(SdkError("INVALID_INPUT: query 不能为空"))
+        return Ok(await self.deepchat_service.recall(
+            query=query, scope=scope, group_id=group_id, user_id=user_id,
+            her_name=her_name, limit=int(limit or 5),
+        ))
 
     # ── trust：名单与身份 ───────────────────────────────────────
     #
@@ -1286,6 +1600,17 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     # ── query：状态读取 ─────────────────────────────────────────
     #
     # 全是只读。对 agent 可见 —— 它得能看状态才知道自己做得对不对。
+
+    @plugin_entry(
+        id="account_identity",
+        metadata={"agent_auto": False},
+        name="QQ 登录身份",
+        description="只读返回 QQ 集成当前已确认的 OneBot 登录 QQ 号；供其他插件识别角色自己的账号，不含配置、联系人或凭据。",
+        input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+    )
+    async def account_identity(self, **_):
+        from .account_identity import account_identity
+        return Ok(await account_identity(self))
 
     @ui.action(id="query", label=tr("entries.query.name", default="查询状态"), refresh_context=False)
     @plugin_entry(
@@ -1751,8 +2076,22 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 her_name,
                 subject=self.memory_bridge.group_subject(normalized_group_id),
             )
-            self._emit_log("INFO", f"群 {normalized_group_id} 记忆已清除: {result}")
-            return Ok({"group_id": normalized_group_id, "forgotten": True, "detail": result})
+            # HTTP 成功后再删群轴索引行（P0b）：删早了就枚举不到，重试也没机会。
+            index = getattr(getattr(self, "deepchat_service", None), "subject_index", None)
+            deleted_rows = index.delete_group(normalized_group_id) if index is not None else 0
+            self._emit_log(
+                "INFO",
+                f"群 {normalized_group_id} 记忆已清除: {result}（群轴索引 {deleted_rows} 行）",
+            )
+            return Ok({
+                "group_id": normalized_group_id,
+                "forgotten": True,
+                "subject_index_deleted": deleted_rows,
+                # 群轴只清「群本体 + 群成员坐标」；成员内容按 subject 独立擦除，
+                # 由 dc_forget_user 逐人负责。
+                "not_covered": ["group_participant:content_via_forget_user"],
+                "detail": result,
+            })
         except Exception as exc:
             self._emit_log("ERROR", f"清除群 {normalized_group_id} 记忆失败: {exc}")
             return Err(SdkError(f"FORGET_FAILED: {exc}"))
@@ -1963,7 +2302,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     @plugin_entry(
         id="config",
         name=tr("entries.config.name", default="保存配置"),
-        description=tr("entries.config.description", default="写入持久化设置与提示词。action 取 save / init / nl / prompt_save / prompt_reset / group_prompt_save / group_prompt_delete / attention_adjust / memory_forget。"),
+        description=tr("entries.config.description", default="写入持久化设置与提示词。action 取 save / init / nl / prompt_save / prompt_reset / group_prompt_save / group_prompt_delete / attention_adjust / memory_forget（**群遗忘不等于成员遗忘**：memory_forget 只清群本体域 + 群轴坐标，成员个人域要逐个 dc_forget_user）。"),
         input_schema={"type": "object", "properties": {
             "action": {"type": "string",
                        "enum": ["save", "init", "nl", "prompt_save", "prompt_reset",

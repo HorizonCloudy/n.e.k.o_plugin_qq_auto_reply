@@ -849,6 +849,13 @@ class QQMessageDispatcher:
             return False
 
     async def handle_message(self, message: dict[str, Any]):
+        # 游标推进放在**最前面**，比黑名单还早：黑名单用户的消息也是"处理过了"
+        # （决定不回），游标不推的话每次重连都会把它翻出来重新判一遍。
+        #
+        # 这一步是同步的、只动内存（落盘有独立循环），在收消息热路径上，绝不能 await。
+        catchup = getattr(self.plugin, "catchup_service", None)
+        if catchup is not None:
+            catchup.note_message(message)
         # 用户黑名单：这个人发的消息 / 戳一戳 / 入群通知一律不处理，**绝不进管线**。
         # 必须放在最前面，三个理由：
         #   ① 下面戳一戳分支会在更早的位置直接 send_group_poke 并 return ——
@@ -973,6 +980,9 @@ class QQMessageDispatcher:
 
         # 后台拉取引用/转发/语音/文件内容 + VLM 描述（在独立 handler task 中
         # await，避免 WS handler 死锁）。已移入连接层的 ``enrich_message``。
+        # Keep original segments before enrichment overwrites raw_message/content.
+        # VLM descriptions are context, not the sender's authored reply intent.
+        original_segments = addressing.segments_of(message, getattr(self.plugin, "enricher", None))
         if self.plugin.qq_client and self.plugin.qq_client.needs_attention and self.plugin.enricher:
             enricher = self.plugin.enricher
             # 连接器不再打 _pending_* 标记（只管收发/归一）；由插件 enricher 识别需增强的段
@@ -1005,6 +1015,18 @@ class QQMessageDispatcher:
                     f"黑名单过滤(附件解析后): text={str(message.get('content') or '')[:40]}",
                 )
                 return
+        # 表情包：把这条消息里的图/表情记进环形缓冲（同步、不下载、不调模型）。
+        # 必须放在 backlog 之前——纯图消息没有文本，record_message 会直接丢弃，
+        # 而"她要不要收这张图"恰恰只跟图有关。observe 内部自己兜异常，这里不设 if。
+        sticker_lab = getattr(self.plugin, "sticker_lab", None)
+        if sticker_lab is not None:
+            sticker_lab.observe(message)
+        gallery = getattr(self.plugin, "gallery_service", None)
+        if gallery is not None:
+            try:
+                await gallery.remember_message(message, segments=original_segments)
+            except Exception:
+                self.plugin.logger.warning("图库收图失败，继续处理消息", exc_info=True)
         await self.plugin.backlog_service.record_message(message)
         # 注意力的逐条更新统一由 attention_gate_service.evaluate() 负责（消息进管线时
         # 调用），这里不再自己更新一次 —— 历史上那条分支只在非 neko_dynamic 模式下跑，
@@ -1056,7 +1078,7 @@ class QQMessageDispatcher:
             quoted_sender_id = str(message.get("quoted_sender_id") or "").strip()
             # 原始段（数组或 CQ 串）：判"首段 @ 的是谁"要用段序，而连接器给的是布尔量。
             # 取段的办法复用 QQMessageEnricher._message_segments（"段在哪个键下"的唯一真相）。
-            segments = addressing.segments_of(message, getattr(self.plugin, "enricher", None))
+            segments = original_segments
             mentioned_user_ids = [
                 str(user_id or "").strip()
                 for user_id in list(message.get("mentioned_user_ids") or [])
@@ -1312,7 +1334,13 @@ class QQMessageDispatcher:
             # **之前**（她要不要跟一句复读，与"这条消息本身放不放行给 LLM"
             # 是两件事：回复频率闸拦的是普通回复，不该顺带把复读也拦掉；
             # 而"整批都是复读"时缓冲那边的总结会被抑制，不会变成两条）。
-            if self.plugin.repeat_echo_service is not None:
+            if gate_decision.reason == "passive_media_context":
+                # It was understood and retained by backlog, not left pending
+                # for retro-review to reply to each image later. No repeat echo.
+                store = getattr(self.plugin, "backlog_store", None)
+                if current_message_id and store is not None:
+                    await store.mark_message_reviewed(current_message_id)
+            elif self.plugin.repeat_echo_service is not None:
                 await self.plugin.repeat_echo_service.maybe_echo(
                     group_id=group_id, sender_id=sender_id, text=message_text,
                 )

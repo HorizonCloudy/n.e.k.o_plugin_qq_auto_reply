@@ -37,7 +37,11 @@ _DECAY_ORDER = attention_service._EMOTION_DECAY_ORDER
 
 #: 既不强抢焦点、也不主动让焦点的情绪。放在这里是一份**有意识的声明**：
 #: 这些情绪只改速率，不改焦点归属。
-_NEUTRAL_EMOTIONS = {"annoyed", "playful", "curious", "calm", "sad"}
+#:
+#: 3D 统一词表时新增 `happy` / `excited`（DeepChat 的 Mood 并入共享词表）：它们有倍率、
+#: 会改速率，但**不该**改变"死盯哪个群"的浏览行为 —— 抢焦点留给 `arguing` / `proud`。
+#: 所以登记在这里而不是塞进 `_EMOTION_FORCE_FOCUS` / `_EMOTION_DROP_FOCUS`。
+_NEUTRAL_EMOTIONS = {"annoyed", "playful", "curious", "calm", "sad", "happy", "excited"}
 
 
 def _advertised_emotions(text: str) -> set[str]:

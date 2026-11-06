@@ -28,6 +28,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+if __package__:
+    from .deepchat.emotion import EMOTION_MULTIPLIER
+else:  # Standalone schema tools and DeepChat's stdlib test runner.
+    from deepchat.emotion import EMOTION_MULTIPLIER
+
 
 @dataclass(frozen=True)
 class UIInput:
@@ -74,24 +79,7 @@ class SettingSpec:
     not_in_defaults: bool = False
 
 
-#: 情绪 → 注意力升/降速率倍率。原先硬编码在 ``attention_service._EMOTION_MULTIPLIER``。
-#: 注意 ``attention_service`` 另有两个**按名字**匹配的集合（抢焦点 `arguing`/`proud`、
-#: 让焦点 `sulking`/`embarrassed`/`bored`），它们不随这张表配置化 —— 用户往表里加新情绪时，
-#: 新情绪不会自动获得抢/让焦点的行为。
-#: 这张表与 ``attention_service._EMOTION_MULTIPLIER`` 必须逐键一致，由
-#: ``tests/test_qq_emotion_vocabulary.py`` 强制。
-DEFAULT_EMOTION_MULTIPLIERS: dict[str, float] = {
-    "arguing": 1.2,      # 上头死磕，涨得快跌得慢
-    "proud": 0.8,        # 赢了要炫耀，猛拉注意力
-    "annoyed": 0.5,      # 不爽，比正常更专注
-    "playful": 0.3,      # 玩闹中，微微挂住
-    "curious": 0.2,      # 被勾起兴趣
-    "calm": 0.0,         # 正常
-    "sad": -0.4,         # 难过，不太想说话
-    "embarrassed": -0.6,  # 尴尬想溜
-    "bored": -0.7,       # 没兴趣的话题，主动掉注意力去找别的群
-    "sulking": -0.9,     # 赌气——基本清零，主动让出焦点
-}
+DEFAULT_EMOTION_MULTIPLIERS: dict[str, float] = dict(EMOTION_MULTIPLIER)
 
 #: 默认的关键词标签表。原先硬编码在 ``config_store.default_backlog_labels``。
 DEFAULT_BACKLOG_LABELS: list[dict[str, Any]] = [
@@ -318,6 +306,48 @@ OUTBOUND = (
                 floor=1, description="save：短于此长度的文本不参与重复过滤（嗯嗯/？这类应答豁免）"),
 )
 
+#: 表情包收集范围。
+#:
+#: 库本身（``data/sticker.json`` + ``data/sticker/``）以前只有「用户手动上传」一条
+#: 入口，猫娘手上有什么全看用户传了什么。加上「她自己在聊天里收」之后必须给个闸：
+#: 群聊里什么图都有（别人的自拍、工作截图、二维码），她判断不了哪些"算表情包"，
+#: 收进来就会在别的群里发出去。
+#:
+#: 三档而不是布尔，是因为「只收当前这个群里看到的」是实际最常用的口径 ——
+#: 在 A 群看到的表情用在 A 群，不跨群搬运；真要跨群共享才显式打开 ``any``。
+STICKER = (
+    SettingSpec("sticker_collect_policy", "str", "current", saveable=True,
+                enum=("off", "current", "any"),
+                description="save：表情包收集范围（off=不收 / current=只收当前会话 / any=任何群都收）",
+                ui=UIInput("cfg-sticker-collect", kind="select",
+                           label="ui.napcat.config.sticker_collect",
+                           hint="ui.napcat.config.sticker_collect.hint")),
+)
+
+#: 断线补消息。
+#:
+#: 这条链路**只在 NapCat 系通道下真的能用**：开放平台的 `get_friend_msg_history`
+#: / `get_group_msg_history` 是同名空实现（直接返回 ``{}``），补消息会一直失败。
+#: 所以默认开，但失败按"通道不支持"计数，不刷屏。
+#:
+#: 窗口 12 小时是个折中：一夜断网（路由器重启、电脑睡眠）能全覆盖，再往前补
+#: 就是翻陈年老账，她对着昨天下午的话回一句反而怪。
+CATCHUP = (
+    SettingSpec("catchup_enabled", "bool", True, saveable=True,
+                description="save：断线重连后补消息",
+                ui=UIInput("cfg-catchup-enabled", kind="checkbox",
+                           label="ui.napcat.config.catchup_enabled",
+                           hint="ui.napcat.config.catchup_enabled.hint")),
+    SettingSpec("catchup_window_hours", "int", 12, saveable=True,
+                description="save：只补这个时间窗内的消息（小时）"),
+    SettingSpec("catchup_max_per_conversation", "int", 12, saveable=True,
+                description="save：单会话最多补几条"),
+    SettingSpec("catchup_max_total", "int", 30, saveable=True,
+                description="save：一次重连总共最多补几条"),
+    SettingSpec("catchup_sweep_seconds", "int", 30, saveable=True,
+                description="save：检查连接状态的间隔（秒）"),
+)
+
 #: 其余全部键。``saveable`` 决定是否进白名单/参数页；``handler`` 决定是否走通用路径。
 MISC = (
     # ── 连接 ──
@@ -360,8 +390,12 @@ MISC = (
     # 插件工具桥：``{plugin_id: "all"|"admin"}``。**只有开放平台会用它**（见
     # `plugin_tool_service` 的模块说明）。键 = 允许被猫娘调用的插件，值 = 谁可以用。
     # 只认"已经启动"的插件：没启动的那些挂不上工具，也不会出现在提示词里。
+    SettingSpec("companion_context", "dict", {}, saveable=True,
+                description="save：私有插件上下文绑定（source_mode=plugin_tools 时来源跟随插件授权）",
+                handler="companion_context"),
     SettingSpec("qq_open_plugin_tools", "dict", {}, saveable=True,
-                description="save：开放平台上允许猫娘调用的插件及其分级（JSON 对象）"),
+                description="save：允许猫娘调用的插件及其分级，同时授权已适配的只读背景能力",
+                handler="plugin_tools"),
     # 异步插件任务的**结果回投**：她答应过"结果出来告诉你"时，由后台轮询到结果后
     # 主动回一条到同一个会话（见 `plugin_tool_followup_service`）。使用者 16:3x 要的
     # ——这是插件里唯一一条"她主动说话"的路径，所以要给一个能一键关掉的开关。
@@ -549,10 +583,23 @@ MISC = (
                 description="save：主动搭话静音时段的结束小时（不含）"),
     SettingSpec("proactive_initiative_max_per_day", "int", 2, saveable=True,
                 floor=0, ceiling=12,
-                description="save：主动搭话每天最多几次（0=不发）"),
+                description=(
+                    "save：有由头主动搭话每天最多几次（0=不发）；"
+                    "深聊自主联系不越过这个剩余额度、自身另记一笔"
+                )),
     SettingSpec("proactive_initiative_min_gap_seconds", "int", 10800, saveable=True,
                 floor=0, ceiling=86400,
-                description="save：两次主动搭话之间至少隔多少秒"),
+                description=(
+                    "save：两次有由头主动搭话之间至少隔多少秒；"
+                    "深聊自主联系也读这个间隔，但计数各记各的"
+                )),
+    # ── 深聊（deepchat）：暂走 dc_tune ──
+    # 这些键会写独立的 deepchat.sqlite3，但 dashboard save_settings / 前端 UI 还没有
+    # 对应字段；为不破坏 settings 保存链，暂不放进 MISC/SAVEABLE_KEYS。
+    # deepchat_enabled / fragments / autonomy / expression_learning 仍可通过 dc_tune 设置；
+    # UI 开关 + save_settings 转发作为 follow-up。
+    # deepchat_guard_enabled 故意不进 UI：安全阀不给一键关闭，只留 dc_tune 给运维。
+    # （M2 修的是"关守卫也必须 sanitize_text"，一旦给了复选框，"关掉更清爽"就会被点下去。）
     # ── 回复缓冲开关 ──
     # 群聊与私聊**各自独立**开关，默认都开（与历史行为一致）。
     # 关掉的那一类不再排队等待，每条消息各自判定并立即投递。
@@ -591,7 +638,7 @@ MISC = (
     SettingSpec("group_prompts", "dict", {}, description="按群自定义提示词"),
 )
 
-SETTINGS: tuple[SettingSpec, ...] = ATTENTION + ATTENTION_NEW + PACING + OUTBOUND + MISC
+SETTINGS: tuple[SettingSpec, ...] = ATTENTION + ATTENTION_NEW + PACING + OUTBOUND + STICKER + CATCHUP + MISC
 
 BY_KEY: dict[str, SettingSpec] = {spec.key: spec for spec in SETTINGS}
 

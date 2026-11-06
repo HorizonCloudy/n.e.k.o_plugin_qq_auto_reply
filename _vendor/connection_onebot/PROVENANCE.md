@@ -72,6 +72,16 @@ grep -rn "LOCAL-PATCH" _vendor/connection_onebot/
 `tests/test_qq_connector_seam.py::test_vendored_local_patches_are_marked_and_kept` 会核对：
 标记还在、下面的接线还在、文件名清单与本文件对得上。
 
+### 2026-11-07：v0.14.7 语音消息独立发送
+
+`onebot_client.py` 与宿主同步修复：`send_private_record` / `send_group_record`
+只发送一个 `record` 段，不再拼接 `reply` 或 `at`。旧关键字参数保留以兼容调用方，
+但不参与语音载荷；文字消息及语音失败后的文字回退仍可携带引用和 @。
+插件回归测试：`tests/test_qq_voice_record_segments.py` 覆盖内置副本和语音服务；
+宿主回归测试：`tests/unit/test_onebot_voice_record_segments.py`（宿主仓库）。
+本插件发布不要求宿主同步升级：服务层也不再向语音接口传递引用或 @。
+仅模拟发送，尚未进行真机验证。
+
 ## 相对上游的本地改动（一）：功能性改动
 
 **这一节是 2026-09-27 补的。** 2026-09-26 的
