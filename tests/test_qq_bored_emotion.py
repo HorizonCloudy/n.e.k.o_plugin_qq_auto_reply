@@ -188,7 +188,7 @@ def test_invented_emotion_is_still_rejected():
     svc, clock = _service(emotion_table=STALE_CONFIG_TABLE)
     _seed(svc, "A", 8.0, now=clock.now)
     _seed(svc, "B", 8.0, now=clock.now)
-    _feel(svc, "A", "happy")
+    _feel(svc, "A", "invented_emotion")
     _feel(svc, "B", "calm")
 
     assert svc._load_state("A").emotion == "calm", "表外情绪（LLM 自造）不该被写进状态"
@@ -228,7 +228,7 @@ def test_positive_emotion_decays_stepwise_toward_calm():
     """
     svc, _ = _service()
     chain = _decay_chain(svc, "proud")
-    assert chain == ["proud", "annoyed", "playful", "curious", "calm"], (
+    assert chain == ["proud", "excited", "annoyed", "happy", "playful", "curious", "calm"], (
         f"proud 降温路径不对: {chain}"
     )
 

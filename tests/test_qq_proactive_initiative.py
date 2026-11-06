@@ -262,15 +262,14 @@ def test_daily_cap_and_gap_and_attempts_brake_the_send(tmp_path):
     service._last_admin_activity_at = 0.0
     assert service.blocked_reason() == ""
 
-    service._today = datetime.now().strftime("%Y-%m-%d")
-    service._today_count = 1
+    service.budget.restore({"today": datetime.now().strftime("%Y-%m-%d"), "today_count": 1})
     assert service.blocked_reason() == "今天已经说够了"
 
-    service._today_count = 0
-    service._last_sent_at = datetime.now().timestamp()
+    service.budget.restore({"today": datetime.now().strftime("%Y-%m-%d"),
+                            "today_count": 0, "last_sent_at": datetime.now().timestamp()})
     assert service.blocked_reason() == "距上次太近"
 
-    service._last_sent_at = 0.0
+    service.budget.restore({})
     item["attempts"] = MAX_ATTEMPTS
     assert service.blocked_reason() == "试过太多次"
 
@@ -320,7 +319,7 @@ def test_a_send_failure_keeps_the_item_for_a_later_retry(tmp_path):
 
     assert service.pending() is not None, "发失败不等于她不想说"
     assert item["attempts"] == 1
-    assert service.blocked_reason() == "等下一轮再试", "失败后要退避，别每轮都撞一次"
+    assert service.blocked_reason() == "距上次太近", "不确定是否送达时保留额度与全局间隔"
 
 
 def test_disabled_switch_never_sends(tmp_path):
@@ -480,9 +479,8 @@ def test_stop_start_does_not_stack_up_messages(tmp_path):
 def test_the_daily_counter_starts_over_after_midnight(tmp_path):
     plugin = _plugin(tmp_path)
     service = _service(plugin)
-    service._today = "2000-01-01"
-    service._today_count = 2
-    assert service._count_today(datetime.now().timestamp()) == 0, "跨天后没归零"
+    service.budget.restore({"today": "2000-01-01", "today_count": 2})
+    assert service.snapshot()["sent_today"] == 0, "跨天后没归零"
 
 
 def test_the_grace_window_is_the_documented_length(tmp_path):

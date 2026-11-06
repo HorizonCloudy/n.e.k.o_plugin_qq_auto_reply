@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from utils.config_manager import get_config_manager
 
+from .emotion_service import build_emotion_section
 from .pipeline_models import QQPipelineStageTrace, QQReplyContext, is_synthetic_source
 
 if TYPE_CHECKING:
@@ -462,6 +463,27 @@ class QQReplyContextNode:
             system_prompt,
             getattr(instruction_bundle, "cross_session_section", ""),
         )
+        deepchat = getattr(self.plugin, "deepchat_service", None)
+        if deepchat is not None and not is_synthetic_source(source_kind):
+            try:
+                system_prompt = await deepchat.enrich_system_prompt(
+                    system_prompt=system_prompt,
+                    sender_id=sender_id,
+                    group_id=group_id,
+                    is_group=is_group,
+                    sender_name=user_title,
+                )
+            except Exception as exc:  # noqa: BLE001 —— 状态注入失败不应阻断回复
+                self.plugin.logger.warning(f"[DeepChat] 情绪/关系片段注入失败: {exc}")
+        try:
+            emotion_section = await build_emotion_section(
+                self.plugin, is_group=is_group, group_id=group_id, sender_id=sender_id,
+                synthetic=is_synthetic_source(source_kind),
+            )
+            if emotion_section:
+                system_prompt += "\n\n" + emotion_section
+        except Exception as exc:  # noqa: BLE001
+            self.plugin.logger.warning(f"[Emotion] 状态读取失败: {type(exc).__name__}")
         self.plugin._emit_log("INFO", f"[UserMsg] (system {len(system_prompt)}字) {prompt_message[:200]}")
 
         return QQReplyContext(

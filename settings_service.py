@@ -706,6 +706,13 @@ class QQSettingsService:
         mode = str(settings.get("qq_connection_mode") or "napcat").strip()
         self.plugin._emit_log("INFO", f"连接模式: {mode} | 监听地址: {url or '(未配置)'} | Token: {masked}{' (空)' if not settings.get('token') else ''}")
 
+        # DeepChat 的 mood/relationship/expressions 在构造时读配置：配置从文件/UI 载入后
+        # 必须重建一次，否则「保存了但没重启也没 dc_tune」的路径上改动不生效。
+        deepchat = getattr(self.plugin, "deepchat_service", None)
+        apply_config = getattr(deepchat, "apply_runtime_config", None)
+        if callable(apply_config):
+            apply_config()
+
     @staticmethod
     def _default_onebot_url(mode: str) -> str:
         """该模式的默认通信地址。

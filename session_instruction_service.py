@@ -531,7 +531,6 @@ class QQSessionInstructionService:
             sections, group_id, is_group,
         )
         self._append_attention_context_section(sections, group_id, is_group)
-        self._append_emotion_section(sections, group_id, is_group)
         sections.append(self._resolve_static_layer("detail_constraints_section", DETAIL_CONSTRAINTS_SECTION, user_language))
         sections.append(self._resolve_static_layer("output_prompt_section", OUTPUT_PROMPT_SECTION, user_language))
 
@@ -1063,18 +1062,6 @@ class QQSessionInstructionService:
         context = attention.get_attention_context(str(group_id))
         if context:
             sections.append(context)
-
-    def _append_emotion_section(self, sections: list[str], group_id: Optional[str], is_group: bool) -> None:
-        """注入当前情绪状态（<feeling> 标签驱动的内部状态）。"""
-        if not is_group or not group_id:
-            return
-        attention = getattr(self.plugin, "attention_service", None)
-        if not attention or not attention._enabled():
-            return
-        state = attention.get_state(str(group_id))
-        emo = getattr(state, "emotion", "calm") or "calm"
-        if emo != "calm":
-            sections.append(f"[内部状态] 你现在的情绪: {emo}。用 <feeling>情绪</feeling> 更新状态（不发给对方），人设自然流露不要直接对用户说\"我很生气\"之类的话。")
 
     def _append_group_custom_prompt_section(self, sections: list[str], group_id: Optional[str], is_group: bool) -> None:
         """追加按群自定义提示词（仅在群聊场景生效）。"""
