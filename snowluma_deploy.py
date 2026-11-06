@@ -27,6 +27,7 @@ class QQSnowLumaDeployService(QQDeployService):
         uin = str(uin or "").strip()
         if not uin.isascii() or not uin.isdigit() or uin.startswith("0"):
             raise RuntimeError("请先填写有效的机器人 QQ 号，并使用该账号登录本机 QQ")
+        await self._record_deployment("snowluma")
         svc = self.plugin.napcat_service
         root = svc.get_napcat_directory()
         self._progress_last.clear()
@@ -59,6 +60,7 @@ class QQSnowLumaDeployService(QQDeployService):
             raise RuntimeError(svc.get_startup_error())
         login_uin = await self._online_login_uin()
         self._emit(emit, "start", "SnowLuma 已启动；请打开本机 QQ 并登录填写的账号，页面将自动确认连接")
+        await self._record_deployment("snowluma", root)
         return {"ok": True, "backend": "snowluma", "snowluma_directory": str(root), "uin": uin,
                 "qrcode_ready": False, "logged_in": bool(login_uin), "login_uin": login_uin,
                 "webui_url": svc.get_webui_url(), **self.plugin._auto_start_fields(auto)}

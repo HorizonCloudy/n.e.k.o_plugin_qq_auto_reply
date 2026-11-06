@@ -1,8 +1,8 @@
 """合并入口的 action 分流 + 入口面的看门狗。
 
-每个大入口都是"薄分发器 + 每 action 一个私有方法"。这里钉住三件事：
-未知 action 必须明确报错（不是静默什么都不做）、必填参数必须在下游服务被调用**之前**拦下、
-以及**入口面恰好是这 7 个**。
+每个大入口都是"薄分发器 + 每 action 一个私有方法"；DeepChat 的 6 个入口是直参工具。
+这里钉住三件事：未知 action 必须明确报错（不是静默什么都不做）、必填参数必须在下游服务
+被调用**之前**拦下、以及**入口面恰好是这 14 个**（7 个 action 分发 + 6 个 DeepChat 直参 + 1 个插件身份接口）。
 """
 from __future__ import annotations
 
@@ -103,10 +103,21 @@ def test_trust_entry_is_visible_to_the_agent():
 
 # ── 入口面看门狗 ────────────────────────────────────────────
 
-EXPECTED_ENTRIES = {"runtime", "config", "query", "send", "trust", "deploy", "asset"}
+LEGACY_ENTRIES = {"runtime", "config", "query", "send", "trust", "deploy", "asset"}
+DEEPCHAT_ENTRIES = {
+    "dc_view_state",
+    "dc_reset_user",
+    "dc_set_mood",
+    "dc_tune",
+    "dc_recall",
+    # P0a（8577d21）：遗忘入口。加进这里等于声明它要守入口契约。
+    "dc_forget_user",
+}
+INTER_PLUGIN_ENTRIES = {"account_identity"}
+EXPECTED_ENTRIES = LEGACY_ENTRIES | DEEPCHAT_ENTRIES | INTER_PLUGIN_ENTRIES
 
 #: 对 agent 隐藏的入口（braid/task_executor.py 的 _is_plugin_entry_agent_hidden 读这个标记）
-AGENT_HIDDEN = {"asset", "deploy"}
+AGENT_HIDDEN = {"asset", "deploy", "account_identity"}
 
 
 def _entry_attr_map() -> dict[str, str]:
@@ -129,12 +140,12 @@ def _plugin_entry_ids() -> set[str]:
     return set(_entry_attr_map())
 
 
-def test_entry_surface_is_exactly_seven():
+def test_entry_surface_matches_explicit_contract():
     """**收束成果的看门狗。**
 
-    48 → 7 是一次大重构换来的。没有这条，后续提交会一点点把入口长回去 ——
-    而涨回去的入口会重新进入 agent 的候选面、重新出现在宿主面板上。
-    确实要加新入口就改这个集合，改的时候你会看到这条提示。
+    48 → 7 是一次大重构换来的；后续加了 6 个 DeepChat 直参工具和只读身份接口。
+    没有这条，后续提交会一点点把入口长回去 —— 而涨回去的入口会重新进入 agent 的
+    候选面、重新出现在宿主面板上。确实要加新入口就改这个集合，改的时候你会看到这条提示。
     """
     assert _plugin_entry_ids() == EXPECTED_ENTRIES
 
@@ -165,7 +176,7 @@ def test_no_entry_name_shadows_a_base_class_instance_attribute():
 
 
 def test_agent_hidden_entries_carry_the_flag():
-    """asset / deploy 必须对 agent 隐藏 —— 前者是资源写入面，
+    """account_identity 是插件间只读接口，不增加模型工具候选；asset / deploy 必须对 agent 隐藏 —— 前者是资源写入面，
     后者装着会杀掉正在运行的 QQ 的 one_click 和会轮换 AppSecret 的 bind_*。"""
     from plugin.sdk.shared.core.decorators import EVENT_META_ATTR
 
@@ -176,7 +187,7 @@ def test_agent_hidden_entries_carry_the_flag():
         assert flags.get("agent_auto") is False, f"{name} 少了 agent_auto: False"
 
 
-def test_the_other_five_stay_agent_visible():
+def test_remaining_entries_stay_agent_visible():
     from plugin.sdk.shared.core.decorators import EVENT_META_ATTR
 
     attrs = _entry_attr_map()
@@ -187,14 +198,35 @@ def test_the_other_five_stay_agent_visible():
         assert flags.get("agent_hidden") is not True, f"{name} 不该隐藏"
 
 
-def test_every_entry_dispatches_on_action():
-    """7 个入口都是同一形状：`(self, action="", **kw)` + 一个 `_<entry>_dispatch`。"""
+def test_legacy_entries_dispatch_on_action():
+    """7 个 action 分发入口都是同一形状：`(self, action="", **kw)` + `_<entry>_dispatch`。"""
     import inspect
 
-    for name, attr in _entry_attr_map().items():
+    for name in LEGACY_ENTRIES:
+        attr = _entry_attr_map()[name]
         params = list(inspect.signature(getattr(QQAutoReplyPlugin, attr)).parameters)
         assert params == ["self", "action", "kw"], f"{name}（{attr}）: {params}"
         assert callable(getattr(QQAutoReplyPlugin, f"_{name}_dispatch", None)), name
+
+
+DEEPCHAT_SIGNATURES = {
+    "dc_view_state": ["self", "user_id", "kw"],
+    "dc_reset_user": ["self", "user_id", "kw"],
+    "dc_set_mood": ["self", "user_id", "mood", "kw"],
+    "dc_tune": ["self", "param", "value", "kw"],
+    "dc_recall": ["self", "query", "scope", "group_id", "user_id", "her_name", "limit", "kw"],
+}
+
+
+def test_deepchat_entries_are_direct_tools():
+    """5 个 DeepChat 入口是直参工具：不按 action 分发，也没有 `_<entry>_dispatch`。"""
+    import inspect
+
+    for name, expected in DEEPCHAT_SIGNATURES.items():
+        attr = _entry_attr_map()[name]
+        params = list(inspect.signature(getattr(QQAutoReplyPlugin, attr)).parameters)
+        assert params == expected, f"{name}（{attr}）: {params}"
+        assert not hasattr(QQAutoReplyPlugin, f"_{name}_dispatch"), name
 
 
 # ── 长流程入口必须自己声明超时 ───────────────────────────────

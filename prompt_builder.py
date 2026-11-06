@@ -97,7 +97,9 @@ class QQPromptBuilder:
         member_labels: dict[str, str] | None = None,
     ) -> str:
         if is_group and not group_facing:
-            return self.plugin._build_group_turn_message(
+            safety = getattr(self.plugin, "_group_send_safety", None)
+            style_hint = safety.style_hint(group_id) if safety is not None else ""
+            return style_hint + self.plugin._build_group_turn_message(
                 group_scene_mode=group_scene_mode,
                 user_title=user_title,
                 sender_id=sender_id,

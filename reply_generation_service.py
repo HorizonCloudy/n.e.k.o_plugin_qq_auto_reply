@@ -8,6 +8,7 @@ from main_logic.tool_calling import ToolResult
 from utils.llm_client import AIMessage, SystemMessage, create_chat_llm_async
 from utils.token_tracker import set_call_type
 
+from .companion_context_service import consent_enabled
 from .memory_tool_service import RECALL_TOOL_HTTP_TIMEOUT_SECONDS, RECALL_TOOL_NAME
 from .pipeline_models import (
     QQModelResult,
@@ -101,6 +102,34 @@ class QQReplyGenerationService:
 
     async def generate_fallback_from_context(self, context: QQReplyContext) -> Optional[str]:
         return await self.generate_reply_fallback_direct_llm(context=context)
+
+    async def writeback_deepchat(self, context: QQReplyContext) -> None:
+        """把一轮**成功**回复写回 DeepChat（情绪 / 关系 / 表达学习）。
+
+        所有成功路径（host session 主路径、direct 模式、两条 fallback）都必须
+        调用且只调用一次：primary 成功会在 ``run_primary_session_call`` 内部写回
+        并提前 return，所以走 fallback 时这里才补上。
+
+        合成控制轮（synthetic source）不写回——它不计入真实互动，写进去会把
+        关系曲线和表达学习一起带偏。
+
+        写回是**同步 SQLite + 纯 CPU** 的活儿，所以丢到线程里跑：直接在事件循环
+        里调用会阻塞同一 loop 上的心跳/定时任务（``decay_all`` 之类的批量结算
+        一旦变慢就更容易看出）。``to_thread`` 不改变语义，只把阻塞挪出 loop。
+        """
+        deepchat = getattr(self.plugin, "deepchat_service", None)
+        if deepchat is None or is_synthetic_source(getattr(context, "source_kind", "")):
+            return
+        try:
+            await asyncio.to_thread(
+                deepchat.writeback,
+                sender_id=context.sender_id,
+                text=context.message,
+                is_group=context.is_group,
+                group_id=context.group_id,
+            )
+        except Exception as deepchat_error:  # noqa: BLE001 —— 写回失败不得影响回复
+            self.plugin.logger.warning(f"[DeepChat] 情绪/关系写回失败: {deepchat_error}")
 
     async def run_primary_session_call(self, context: QQReplyContext) -> QQModelResult:
         session_key = self.plugin.session_runtime_service.build_generation_session_key(context)
@@ -204,6 +233,7 @@ class QQReplyGenerationService:
                 session_key=session_key, user_data=user_data, context=context,
                 reply_text=ai_reply,
             )
+            await self.writeback_deepchat(context)
             self.plugin.logger.info(f"AI 生成回复完成 (会话: {session_key}, length: {len(ai_reply)})")
             stage_trace.status = "success"
             stage_trace.metadata["reply_length"] = len(ai_reply)
@@ -330,6 +360,7 @@ class QQReplyGenerationService:
                 # 对齐；restore 保证持久会话仍保留创建时的原始 system 行。
                 always_refresh=(
                     context.is_group
+                    or bool(getattr(context, "companion_section", ""))
                     or bool(getattr(context, "cross_session_section", ""))
                     or user_data.get("private_memory_mode") == "participant"
                     or not bool(
@@ -964,6 +995,9 @@ class QQReplyGenerationService:
         depends on the switch too."""
         settings = getattr(self.plugin, "_qq_settings", {}) or {}
         snapshot: dict = {}
+        token = getattr(context, "companion_token", "")
+        if token and getattr(context, "companion_section", ""):
+            snapshot[token] = True
         if getattr(context, "cross_session_section", ""):
             snapshot["allow_cross_group_context"] = bool(
                 settings.get("allow_cross_group_context", False)
@@ -1015,9 +1049,8 @@ class QQReplyGenerationService:
         """True when a switch this prompt relied on went off since `before`."""
         if not before:
             return False
-        settings = getattr(self.plugin, "_qq_settings", {}) or {}
         return any(
-            was_enabled and not settings.get(key, False)
+            was_enabled and not consent_enabled(self.plugin, key)
             for key, was_enabled in before.items()
         )
 
@@ -1030,6 +1063,14 @@ class QQReplyGenerationService:
         session call, direct fallback) enforces the same boundary — the
         per-path rechecks kept diverging as new paths appeared."""
         settings = getattr(self.plugin, "_qq_settings", {}) or {}
+        token = getattr(context, "companion_token", "")
+        if token and not consent_enabled(self.plugin, token):
+            system_prompt = self._strip_section_text(system_prompt, getattr(context, "companion_section", ""))
+            context.system_prompt = self._strip_section_text(
+                context.system_prompt, getattr(context, "companion_section", ""),
+            )
+            context.companion_section = ""
+            context.companion_token = ""
         if not settings.get("allow_cross_group_context", False):
             # 私聊轮也可能带会话清单段（跨群开关打开时它会列出其他群与
             # 联系人）：非群轮不能在这里直接返回，否则那段撤不掉。
@@ -1348,12 +1389,16 @@ class QQReplyGenerationService:
         if context.is_group and context.group_id:
             from .group_send_safety import group_send_safety
 
-            if not group_send_safety(self.plugin).has_capacity(context.group_id):
-                emit_bridge_log(self.plugin, "INFO", f"[Pace] 群{context.group_id}发送额度已满，跳过本轮生成，不补发")
-                return QQModelResult(reply_text=None, source="none", traces=[
-                    QQPipelineStageTrace(stage="model_primary", status="skipped", detail="group_rate_limit"),
-                ])
+            async with group_send_safety(self.plugin).generation(context.group_id) as reason:
+                if reason:
+                    emit_bridge_log(self.plugin, "INFO", f"[Pace] 群{context.group_id}跳过生成：{reason}，不补发")
+                    return QQModelResult(reply_text=None, source="none", traces=[
+                        QQPipelineStageTrace(stage="model_primary", status="skipped", detail=reason),
+                    ])
+                return await self._generate_admitted_context(context)
+        return await self._generate_admitted_context(context)
 
+    async def _generate_admitted_context(self, context: QQReplyContext) -> QQModelResult:
         primary_result = await self.run_primary_session_call(context)
         if not primary_result.allow_fallback:
             return primary_result
@@ -1368,6 +1413,9 @@ class QQReplyGenerationService:
                 )
             )
             await self.run_fallback_memory_hooks(context, fallback_reply)
+            # direct fallback 也是"成功回复"，同样要回写（primary 成功已在
+            # run_primary_session_call 内写回并提前 return，不会重复）。
+            await self.writeback_deepchat(context)
             return QQModelResult(reply_text=fallback_reply, source="direct_llm_fallback", used_fallback=True, traces=primary_result.traces)
         primary_result.traces.append(
             QQPipelineStageTrace(
