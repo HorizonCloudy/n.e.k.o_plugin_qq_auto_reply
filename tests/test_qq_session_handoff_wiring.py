@@ -32,11 +32,15 @@ class _Recorder:
 
 
 class _Human:
+    type = "human"
+
     def __init__(self, content: str) -> None:
         self.content = content
 
 
 class _AI:
+    type = "ai"
+
     def __init__(self, content: str) -> None:
         self.content = content
 
@@ -284,3 +288,94 @@ def test_prompt_and_identity_discards_also_capture(tmp_path, reason):
     asyncio.run(service.discard_session(KEY, reason=reason))
 
     assert plugin.session_handoff_service.peek(KEY) is not None
+
+
+@pytest.mark.parametrize("settled", [True, False])
+def test_permission_invalidation_clears_note_even_on_settlement_return_or_retry(tmp_path, settled):
+    from plugin.plugins.qq_auto_reply.session_memory_service import QQSessionMemoryService
+
+    data = {
+        "session": _Session([_Human("admin context"), _AI("admin reply")]),
+        "memory_enabled": True, "private_memory_mode": "participant", "her_name": "cat",
+    }
+    plugin = _plugin(tmp_path, {KEY: data})
+    handoff = plugin.session_handoff_service
+    assert handoff.capture(KEY, data)
+    plugin._build_session_key = lambda **kw: KEY
+
+    async def locked(key, factory):
+        return await factory()
+
+    plugin._run_with_session_lock = locked
+    service = QQSessionMemoryService(plugin)
+
+    async def finalize(key, **kw):
+        assert handoff.peek(KEY) is None
+        # Same capture hook used by the real finalizer and later idle retries.
+        assert handoff.capture(key, data) is None
+        if settled:
+            plugin._user_sessions.pop(key)
+        return settled
+
+    service.finalize_user_memory_session = finalize
+    asyncio.run(service.invalidate_private_session("820040531"))
+    assert handoff.peek(KEY) is None
+    assert QQSessionHandoffService(handoff.plugin).peek(KEY) is None
+    assert handoff.capture(KEY, data) is None
+    assert (KEY in plugin._user_sessions) is not settled
+
+
+def test_permission_invalidation_forgets_note_without_a_live_session(tmp_path):
+    from plugin.plugins.qq_auto_reply.session_memory_service import QQSessionMemoryService
+
+    plugin = _plugin(tmp_path, {})
+    handoff = plugin.session_handoff_service
+    handoff.capture(KEY, {"session": _Session([_Human("old")]), "memory_enabled": True})
+    plugin._build_session_key = lambda **kw: KEY
+
+    async def locked(key, factory):
+        return await factory()
+
+    plugin._run_with_session_lock = locked
+    asyncio.run(QQSessionMemoryService(plugin).invalidate_private_session("820040531"))
+    assert handoff.peek(KEY) is None
+
+
+@pytest.mark.parametrize("mode", ["legacy", "participant"])
+@pytest.mark.parametrize("first_settled", [True, False])
+def test_real_finalizer_never_recreates_revoked_handoff(tmp_path, mode, first_settled):
+    from plugin.plugins.qq_auto_reply.session_memory_service import QQSessionMemoryService
+
+    data = {
+        "session": _Session([
+            _Human("old admin question"),
+            _AI("old admin answer"),
+        ]),
+        "sender_id": "820040531", "memory_enabled": True,
+        "private_memory_mode": mode, "her_name": "cat",
+    }
+    plugin = _plugin(tmp_path, {KEY: data})
+    plugin._build_session_key = lambda **kw: KEY
+
+    async def locked(key, factory):
+        return await factory()
+
+    plugin._run_with_session_lock = locked
+    service = QQSessionMemoryService(plugin)
+    service.post_memory_history = AsyncMock(return_value={"status": "ok" if first_settled else "error"})
+    service._settle_participant_digest_batches = AsyncMock(return_value=first_settled)
+    handoff = plugin.session_handoff_service
+    assert handoff.capture(KEY, data) is not None
+
+    async def run():
+        await service.invalidate_private_session("820040531")
+        assert handoff.peek(KEY) is None
+        if mode == "participant" and not first_settled:
+            assert KEY in plugin._user_sessions
+            service._settle_participant_digest_batches.return_value = True
+            assert await service.finalize_user_memory_session(KEY, reason="idle")
+        assert KEY not in plugin._user_sessions
+        assert handoff.peek(KEY) is None
+        assert QQSessionHandoffService(handoff.plugin).peek(KEY) is None
+
+    asyncio.run(run())

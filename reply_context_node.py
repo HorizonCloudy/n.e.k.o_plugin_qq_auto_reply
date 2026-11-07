@@ -6,6 +6,7 @@ from utils.config_manager import get_config_manager
 
 from .emotion_service import build_emotion_section
 from .group_identity import build_group_identity_section, speaker_permission
+from .group_private_memory import capture_private_memory_token, private_memory_token_live
 from .pipeline_models import QQPipelineStageTrace, QQReplyContext, is_synthetic_source
 
 if TYPE_CHECKING:
@@ -164,12 +165,19 @@ class QQReplyContextNode:
                 getattr(self.plugin, "_qq_settings", {}) or {}
             ).get("group_member_memory_enabled", False)
         member_memory_snapshot = bool(is_group and member_memory_at_receipt)
-        # 私聊 participant 记忆快照（对偶 member）：只对非 admin 私聊轮
-        # 生效——admin 私聊仍是 legacy 主人语料，群轮走上面那套。
+        # 私聊 participant 快照也门控群聊对当前发言人私聊域的只读访问；
+        # admin 仍走 legacy 主人语料，不能由群权限冒充其用户权限。
         if participant_memory_at_receipt is None:
             participant_memory_at_receipt = (
                 getattr(self.plugin, "_qq_settings", {}) or {}
             ).get("private_participant_memory_enabled", False)
+        group_private_memory_token = capture_private_memory_token(
+            self.plugin, sender_id=sender_id,
+            permission_at_receipt=group_speaker_permission_level_at_receipt,
+            member_at_receipt=member_memory_snapshot,
+            participant_at_receipt=bool(participant_memory_at_receipt),
+            synthetic=is_synthetic_source(source_kind),
+        ) if is_group else ""
         receipt_permission = (
             private_permission_level_at_receipt
             if private_permission_level_at_receipt is not None
@@ -375,6 +383,7 @@ class QQReplyContextNode:
             group_id=group_id,
             use_memory_context=should_use_memory_context,
             participant_memory=participant_memory_snapshot,
+            group_private_memory_token=group_private_memory_token,
             address_user_by_name=address_user_by_name,
             group_facing=effective_group_facing,
             shared_group_session=shared_group_session,
@@ -470,6 +479,15 @@ class QQReplyContextNode:
             if not core_memory_alive:
                 core_memory_text = ""
                 memory_context_used = False
+        if (
+            core_memory_text
+            and getattr(instruction_bundle, "used_group_private_memory", False)
+            and not private_memory_token_live(self.plugin, group_private_memory_token)
+        ):
+            system_prompt = system_prompt.replace(core_memory_text, "")
+            core_memory_text = ""
+            core_memory_alive = False
+            memory_context_used = False
         system_prompt, cross_group_alive = self._strip_cross_group_if_revoked(
             system_prompt,
             getattr(instruction_bundle, "cross_group_section", ""),
@@ -551,6 +569,10 @@ class QQReplyContextNode:
                 group_speaker_permission_level_at_receipt
             ),
             speaker_channel_at_receipt=speaker_channel_at_receipt,
+            group_private_memory_token=group_private_memory_token,
+            used_group_private_memory=bool(
+                core_memory_text and getattr(instruction_bundle, "used_group_private_memory", False)
+            ),
             participant_memory_enabled=participant_memory_snapshot,
             private_memory_mode=private_memory_mode,
             private_permission_level_at_receipt=(

@@ -77,6 +77,8 @@ def _plugin(
     emitted: list[tuple[str, str]] = []
     logged: list[str] = []
     plugin = SimpleNamespace(
+        permission_mgr=SimpleNamespace(get_permission_level=lambda sender: "admin"),
+        group_permission_mgr=SimpleNamespace(get_group_level=lambda group: "trusted"),
         plugins=_Plugins(),
         qq_client=client,
         _qq_settings={"qq_open_plugin_tools": dict(tiers or {})},
@@ -576,11 +578,14 @@ def test_tool_names_stay_inside_the_host_name_rule():
 # ── 5. 分发器：只能调本轮挂上的 entry ───────────────────────────────
 
 def _handler(plugin, mounted):
-    return plugin.plugin_tool_service.build_handler(mounted, session_key="private:x")
+    return plugin.plugin_tool_service.build_handler(
+        mounted, session_key="private:x",
+        conversation={"sender_id": "x", "permission_level": "admin"},
+    )
 
 
 def test_handler_calls_the_plugin_entry():
-    plugin = _plugin()
+    plugin = _plugin(tiers={"web_search": "all"})
     candidates = [{"plugin_id": "web_search", "entries": ["search"], "running": True}]
     handler = _handler(plugin, [(candidates[0], TIER_ALL)])
 
@@ -1246,3 +1251,82 @@ def test_gallery_owner_blacklist_and_unknown_sender():
     plugin.permission_mgr.get_permission_level.side_effect = RuntimeError("roster unavailable")
     assert not service._gallery_tools_allowed(context)
     assert not service._gallery_tools_allowed(SimpleNamespace(permission_level="admin"))
+
+
+@pytest.mark.parametrize("change", ["blacklist", "none", "downgrade", "remove_tool", "admin_only", "no_roster", "channel"])
+def test_old_handler_rechecks_authority_at_dispatch(change):
+    plugin = _plugin(tiers={"web_search": "admin" if change == "downgrade" else "all"})
+    level = ["admin" if change == "downgrade" else "normal"]
+    plugin.permission_mgr.get_permission_level = lambda sender: level[0]
+    handler = plugin.plugin_tool_service.build_handler(
+        [({"plugin_id": "web_search", "entries": ["search"]}, "all")],
+        conversation={"sender_id": "x", "permission_level": level[0]},
+    )
+    if change in ("blacklist", "none"):
+        level[0] = change
+    elif change == "downgrade":
+        level[0] = "normal"
+    elif change == "remove_tool":
+        plugin._qq_settings["qq_open_plugin_tools"].clear()
+    elif change == "admin_only":
+        plugin._qq_settings["qq_open_plugin_tools"]["web_search"] = "admin"
+    elif change == "no_roster":
+        plugin.permission_mgr = None
+    else:
+        plugin.qq_client = None
+    result = asyncio.run(handler(SimpleNamespace(
+        call_id="old", name="plugin_web_search", arguments={"entry_id": "search"},
+    )))
+    assert plugin.calls == []
+    assert "权限已失效" in result.output
+
+
+@pytest.mark.parametrize("change", ["blacklist", "group_removed"])
+def test_group_handler_rechecks_sender_blacklist_and_group_roster(change):
+    plugin = _plugin(tiers={"web_search": "all"})
+    handler = plugin.plugin_tool_service.build_handler(
+        [({"plugin_id": "web_search", "entries": ["search"]}, "all")],
+        conversation={"sender_id": "x", "is_group": True, "group_id": "g", "permission_level": "trusted"},
+    )
+    if change == "blacklist":
+        plugin.permission_mgr.get_permission_level = lambda sender: "blacklist"
+    else:
+        plugin.group_permission_mgr.get_group_level = lambda group: "none"
+    asyncio.run(handler(SimpleNamespace(name="plugin_web_search", arguments={"entry_id": "search"})))
+    assert plugin.calls == []
+
+
+def test_handler_without_conversation_fails_closed():
+    plugin = _plugin(tiers={"web_search": "all"})
+    handler = plugin.plugin_tool_service.build_handler(
+        [({"plugin_id": "web_search", "entries": ["search"]}, "all")],
+    )
+    asyncio.run(handler(SimpleNamespace(name="plugin_web_search", arguments={"entry_id": "search"})))
+    assert plugin.calls == []
+
+
+
+def test_old_handler_does_not_gain_admin_authority_from_a_later_upgrade():
+    plugin = _plugin(tiers={"web_search": "all"})
+    conversation = {"sender_id": "x", "permission_level": "normal"}
+    handler = plugin.plugin_tool_service.build_handler(
+        [({"plugin_id": "web_search", "entries": ["search"]}, "all")],
+        conversation=conversation,
+    )
+    # Both the roster and the caller-owned context can change after mounting.
+    conversation["permission_level"] = "admin"
+    plugin._qq_settings["qq_open_plugin_tools"]["web_search"] = "admin"
+    asyncio.run(handler(SimpleNamespace(name="plugin_web_search", arguments={"entry_id": "search"})))
+    assert plugin.calls == []
+
+
+def test_handler_fails_closed_when_roster_lookup_raises():
+    plugin = _plugin(tiers={"web_search": "all"})
+    handler = _handler(plugin, [({"plugin_id": "web_search", "entries": ["search"]}, "all")])
+
+    def unavailable(sender):
+        raise RuntimeError("roster unavailable")
+
+    plugin.permission_mgr.get_permission_level = unavailable
+    asyncio.run(handler(SimpleNamespace(name="plugin_web_search", arguments={"entry_id": "search"})))
+    assert plugin.calls == []

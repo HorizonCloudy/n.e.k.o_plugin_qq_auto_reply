@@ -154,3 +154,39 @@ def test_identity_never_uses_private_companion_configuration(plugin):
     section=build_group_identity_section(plugin,sender_id=MEMBER,permission_at_receipt='none',synthetic=False)
     assert CONFIRMED not in section
     assert 'PRIVATE' not in section
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('permission,receipt,expected', [
+    ('admin', False, True), ('trusted', True, True), ('trusted', False, False),
+])
+async def test_group_private_read_capability_is_read_only_and_receipt_bounded(plugin, permission, receipt, expected):
+    plugin._qq_settings.update(group_memory_enabled=True, group_member_memory_enabled=True,
+                               private_participant_memory_enabled=True)
+    plugin.permission_mgr.add_user(OWNER, permission)
+    c = await context(plugin, participant_memory_at_receipt=receipt)
+    assert bool(c.group_private_memory_token) is expected
+    assert not c.private_memory_mode and not c.participant_memory_enabled
+    assert c.permission_level == 'trusted'
+    assert plugin._build_qq_session_instructions.call_args.kwargs['group_private_memory_token'] == c.group_private_memory_token
+
+
+@pytest.mark.asyncio
+async def test_private_share_capability_does_not_appear_after_login_await(plugin):
+    plugin._qq_settings.update(group_memory_enabled=True, group_member_memory_enabled=True,
+                               private_participant_memory_enabled=False)
+    plugin.permission_mgr.add_user(OWNER, 'trusted')
+    async def opt_in():
+        plugin._qq_settings['private_participant_memory_enabled'] = True
+        return {}
+    plugin._fetch_login_status_payload.side_effect = opt_in
+    c = await context(plugin)
+    assert not c.group_private_memory_token
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('source', sorted(SYNTHETIC_SOURCE_KINDS))
+async def test_synthetic_context_does_not_mint_private_share_capability(plugin, source):
+    plugin._qq_settings.update(group_memory_enabled=True, group_member_memory_enabled=True,
+                               private_participant_memory_enabled=True)
+    c = await context(plugin, source_kind=source)
+    assert not c.group_private_memory_token

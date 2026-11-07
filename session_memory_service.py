@@ -2834,6 +2834,13 @@ class QQSessionMemoryService:
 
         async def _invalidate() -> None:
             user_data = self.plugin._user_sessions.get(session_key)
+            # Set before any await, including failed settlement/retry paths.
+            # Finalizers must never recreate a note from this permission era.
+            if user_data is not None:
+                user_data["handoff_revoked"] = True
+            handoff = getattr(self.plugin, "session_handoff_service", None)
+            if handoff is not None:
+                handoff.forget(session_key)
             buffer_service = getattr(
                 self.plugin, "reply_buffer_service", None,
             )
@@ -2875,15 +2882,11 @@ class QQSessionMemoryService:
                     return
 
             user_data = self.plugin._user_sessions.pop(session_key, None)
-            # 权限变更（移除用户 / 降级）：接续摘要里可能有撤权之前的原文，
-            # 不能留给下一个会话 —— 先捕获（若仍被授权）再无条件抹掉旧的。
+            # 权限变更后只清理，绝不能再捕获旧权限下的上下文。
             handoff = getattr(self.plugin, "session_handoff_service", None)
             if handoff is not None:
                 try:
-                    if user_data is not None and user_data.get("memory_enabled"):
-                        handoff.capture(session_key, user_data)
-                    else:
-                        handoff.forget(session_key)
+                    handoff.forget(session_key)
                 except Exception as handoff_err:  # noqa: BLE001
                     self.plugin.logger.warning(
                         f"[Handoff] 权限变更时处理接续摘要失败 ({session_key}): {handoff_err}"

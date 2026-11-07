@@ -370,6 +370,7 @@ class QQSessionInstructionService:
         group_id: Optional[str] = None,
         use_memory_context: Optional[bool] = None,
         participant_memory: bool = False,
+        group_private_memory_token: str = "",
         address_user_by_name: bool = True,
         group_facing: bool = False,
         shared_group_session: bool = False,
@@ -482,6 +483,7 @@ class QQSessionInstructionService:
         # 拿到后经 out-param 回传（同 used_member_subject_out 既有模式），
         # 不在这里复刻一份会漂移的影子条件。
         core_used_member: list = []
+        core_used_private: list = []
         core_memory_text = await self._build_core_memory_section(
             should_use_memory_context=should_use_memory_context,
             her_name=her_name,
@@ -492,7 +494,9 @@ class QQSessionInstructionService:
             sender_id=core_sender_id,
             locale=user_language,
             used_member_subject_out=core_used_member,
+            used_private_memory_out=core_used_private,
             participant_memory=participant_memory,
+            group_private_memory_token=group_private_memory_token,
         )
         used_member_subject = bool(core_used_member)
         if core_memory_text:
@@ -567,6 +571,7 @@ class QQSessionInstructionService:
             cross_group_section=cross_group_section,
             cross_session_section=cross_session_section,
             used_member_subject=used_member_subject and bool(core_memory_text),
+            used_group_private_memory=bool(core_used_private) and bool(core_memory_text),
         )
 
     def _compose_sections(self, sections: list[str]) -> str:
@@ -859,7 +864,9 @@ class QQSessionInstructionService:
         # QQ ever gains a real per-conversation locale.
         locale: str = "",
         used_member_subject_out: list | None = None,
+        used_private_memory_out: list | None = None,
         participant_memory: bool = False,
+        group_private_memory_token: str = "",
     ) -> str:
         if not should_use_memory_context:
             return ""
@@ -909,6 +916,30 @@ class QQSessionInstructionService:
                 ):
                     # 读后复检（对偶 execute_recall 的读后闸）：opt-out
                     # 落在 fetch 飞行期间时丢弃已读回的数据。
+                    return ""
+                # Directional read only: never write group rows into this private scope.
+                from .group_private_memory import (
+                    fetch_private_bootstrap,
+                    private_memory_token_live,
+                    render_private_memory,
+                )
+
+                private_text = await fetch_private_bootstrap(
+                    self.plugin, her_name, group_private_memory_token,
+                )
+                if private_text:
+                    if not private_memory_token_live(self.plugin, group_private_memory_token):
+                        return ""
+                    memory_context = "\n\n".join(filter(None, (
+                        memory_context, render_private_memory(private_text),
+                    )))
+                    if used_private_memory_out is not None:
+                        used_private_memory_out.append(True)
+                # The private request adds an await: recheck the group read as well.
+                settings_now = getattr(self.plugin, "_qq_settings", {}) or {}
+                if not settings_now.get("group_memory_enabled") or (
+                    used_member and not settings_now.get("group_member_memory_enabled")
+                ):
                     return ""
             elif participant_memory:
                 # 私聊 participant 轮：subject 组装与 tool handler 共用

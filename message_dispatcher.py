@@ -772,7 +772,7 @@ class QQMessageDispatcher:
                             settings_now.get("group_member_memory_enabled", False)
                         ) and bool(settings_now.get("group_memory_enabled", False))
                         # 私聊 participant 记忆政策的接收边界章（对偶上面
-                        # 两枚；群消息不消费它）。
+                        # 两枚；群消息也以它门控私聊记忆只读共享）。
                         message["_participant_memory_at_receipt"] = bool(
                             settings_now.get(
                                 "private_participant_memory_enabled", False,
@@ -1117,6 +1117,7 @@ class QQMessageDispatcher:
                     message.get("_group_memory_at_receipt")
                     if isinstance(message, dict) else None
                 ),
+                participant_memory_at_receipt=message.get("_participant_memory_at_receipt"),
                 member_memory_at_receipt=(
                     message.get("_member_memory_at_receipt")
                     if isinstance(message, dict) else None
@@ -1259,6 +1260,7 @@ class QQMessageDispatcher:
         forward_sub_count: int = 0,
         reply_context: str = "",
         is_reply_to_bot: bool = False,
+        participant_memory_at_receipt: bool | None = None,
         group_memory_at_receipt: bool | None = None,
         member_memory_at_receipt: bool | None = None,
         group_speaker_permission_level_at_receipt: str | None = None,
@@ -1271,6 +1273,12 @@ class QQMessageDispatcher:
         # 收到的发言不得因处理期间切 ON 获得入库授权——对偶 backlog 行的
         # group_memory_enabled_at_receipt。反向（处理期间切 OFF）由 prime
         # 门控与读点复检兜住。
+        if participant_memory_at_receipt is None:
+            participant_memory_at_receipt = bool(
+                (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                    "private_participant_memory_enabled", False,
+                )
+            )
         if group_memory_at_receipt is None:
             group_memory_at_receipt = bool(
                 (getattr(self.plugin, "_qq_settings", {}) or {}).get(
@@ -1406,6 +1414,7 @@ class QQMessageDispatcher:
             force_reply=force_reply,
             use_memory_context=group_memory_enabled,
             persist_memory=group_memory_enabled,
+            participant_memory_at_receipt=participant_memory_at_receipt,
             member_memory_at_receipt=member_memory_at_receipt,
             group_speaker_permission_level_at_receipt=(
                 group_speaker_permission_level_at_receipt

@@ -297,7 +297,7 @@ class QQSessionRuntimeService:
         if len(sessions) <= SESSION_HARD_LIMIT:
             return 0
         now = time.time()
-        candidates: list[tuple[float, str]] = []
+        candidates: list[tuple[float, str, dict]] = []
         for key, data in list(sessions.items()):
             if not isinstance(data, dict):
                 continue
@@ -310,7 +310,7 @@ class QQSessionRuntimeService:
             idle = now - float(data.get("last_activity_at") or 0.0)
             if idle < SESSION_REAP_MIN_IDLE_SECONDS:
                 continue
-            candidates.append((idle, key))
+            candidates.append((idle, key, data))
         if not candidates:
             return 0
         # 最久没动的先回收；只回收**刚好降回上限**的量（多杀是白白的重建成本），
@@ -319,10 +319,27 @@ class QQSessionRuntimeService:
         excess = len(sessions) - SESSION_HARD_LIMIT
         budget = min(excess, SESSION_REAP_MAX_PER_SWEEP)
         reaped = 0
-        for _idle, key in candidates[:budget]:
+        for _idle, key, candidate in candidates[:budget]:
             try:
-                await self.discard_session(key, reason="capacity_reap")
-                reaped += 1
+                lock = await self.get_session_lock(key)
+                async with lock:
+                    current = sessions.get(key)
+                    # The scan is only a hint. A message may have refreshed or
+                    # replaced this session while we waited for its lock.
+                    if len(sessions) <= SESSION_HARD_LIMIT:
+                        break
+                    if current is not candidate:
+                        continue
+                    if current.get("memory_enabled") or current.get("pending_disable_settle"):
+                        continue
+                    if any(k.startswith("pending_settle") for k in current):
+                        continue
+                    if self.plugin._has_pending_session_settlement(key):
+                        continue
+                    if time.time() - float(current.get("last_activity_at") or 0.0) < SESSION_REAP_MIN_IDLE_SECONDS:
+                        continue
+                    if await self.discard_session(key, reason="capacity_reap"):
+                        reaped += 1
             except Exception as exc:  # 单条失败不影响其余
                 self.plugin.logger.warning(f"[Reap] 回收会话失败 {key}: {exc}")
         if reaped:

@@ -70,7 +70,8 @@ def test_the_instruction_builder_passes_the_hint_and_gates_it_with_the_memory_se
     )
     # 记忆段本身只在 should_use_memory_context 为真时才产出（第 782 行那个早退）
     head = source.index("async def _build_core_memory_section")
-    guard = source[head:head + 900]
+    body = source.index("    ) -> str:", head)
+    guard = source[body:body + 150]
     assert "if not should_use_memory_context:" in guard, (
         "记忆段的闸挪走了 —— 召回指令会长在没有工具的那一轮里"
     )

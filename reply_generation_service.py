@@ -1210,6 +1210,9 @@ class QQReplyGenerationService:
         depends on the switch too."""
         settings = getattr(self.plugin, "_qq_settings", {}) or {}
         snapshot: dict = {}
+        private_token = getattr(context, "group_private_memory_token", "")
+        if private_token and getattr(context, "used_group_private_memory", False):
+            snapshot[private_token] = True
         token = getattr(context, "companion_token", "")
         if token and getattr(context, "companion_section", ""):
             snapshot[token] = True
@@ -1305,6 +1308,13 @@ class QQReplyGenerationService:
                 )
             return system_prompt, recalled_text
         core_text = getattr(context, "core_memory_text", "") or ""
+        private_token = getattr(context, "group_private_memory_token", "")
+        if getattr(context, "used_group_private_memory", False) and not consent_enabled(
+            self.plugin, private_token,
+        ):
+            recalled_text = ""
+            system_prompt = self._strip_section_text(system_prompt, core_text)
+
         if not settings.get("group_memory_enabled", False):
             # 群记忆关闭：scoped 召回与 bootstrap 段全部撤除。
             recalled_text = ""

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from config.prompts.prompts_memory import (
@@ -14,6 +15,8 @@ from config.prompts.prompts_sys import _loc
 from main_logic.tool_calling import ToolDefinition
 from utils.language_utils import get_global_language_full
 
+from .group_private_memory import private_memory_token_live, query_private_memory, render_private_memory
+from .memory_bridge import QQMemoryQueryResult
 from .pipeline_models import is_synthetic_source
 from .prompt_fragment_templates import LONG_TERM_MEMORY_SECTION
 
@@ -164,7 +167,8 @@ class QQMemoryToolService:
     Subjects are resolved host-side from the turn context — the server
     treats an omitted ``subjects`` field as the legacy PRIVATE corpus, so
     letting any model-controlled input reach the subject list would leak
-    the admin's private memories into group replies.
+    the admin's private memories into unrelated speakers' replies. The only
+    private -> group extension is an identity-bound, per-turn capability.
     """
 
     def __init__(self, plugin: Any):
@@ -316,14 +320,31 @@ class QQMemoryToolService:
         # 私聊 admin（use_memory_context 已按政策解析）：subjects=None 走
         # legacy 私聊主人语料。
 
+        private_token = (
+            str(getattr(context, "group_private_memory_token", "") or "")
+            if is_group and self._turn_memory_sender(context) else ""
+        )
+        private_result = QQMemoryQueryResult()
         try:
-            result = await self.plugin.memory_bridge.query_relevant_memory(
+            group_query = self.plugin.memory_bridge.query_relevant_memory(
                 getattr(context, "her_name", "") or "",
                 query,
                 subjects=subjects,
                 time_spec=time_spec,
                 timeout=RECALL_TOOL_HTTP_TIMEOUT_SECONDS,
             )
+            # Parallel HTTP reads retain the existing tool timeout budget.
+            if private_token:
+                result, private_result = await asyncio.gather(
+                    group_query,
+                    query_private_memory(
+                        self.plugin, getattr(context, "her_name", "") or "",
+                        private_token, query, time_spec=time_spec,
+                        timeout=RECALL_TOOL_HTTP_TIMEOUT_SECONDS,
+                    ),
+                )
+            else:
+                result = await group_query
         except Exception as exc:
             # 与本体对偶：召回失败绝不向 wire 抛异常（一次失败的 tool call
             # 会把模型整轮卡死），回"没有找到相关记忆"让对话继续。
@@ -350,6 +371,17 @@ class QQMemoryToolService:
             # 期间时，已读回的数据也不交给模型。
             return no_result, {}
 
+        if private_result.text:
+            if not private_memory_token_live(self.plugin, private_token):
+                return no_result, {}
+            result = QQMemoryQueryResult(
+                text="\n\n".join(filter(None, (result.text, render_private_memory(private_result.text)))),
+                hit_count=result.hit_count + private_result.hit_count,
+                elapsed_ms=max(result.elapsed_ms, private_result.elapsed_ms),
+                raw_results=result.raw_results + private_result.raw_results,
+                rendered_count=result.rendered_count + private_result.rendered_count,
+            )
+
         # INFO 只落元数据（命中数/耗时/是否带 time），原始 query 与召回原文
         # 走 DEBUG——与本体 handler 的隐私分层一致。
         self.plugin.logger.info(
@@ -368,6 +400,9 @@ class QQMemoryToolService:
             return no_result, {}
 
         consumed: dict[str, bool] = {}
+        if private_result.text:
+            consumed[private_token] = True
+            context.used_group_private_memory = True
         if is_group:
             # 只有真的把 scoped 内容交给模型时才记依赖：空结果不构成
             # 消费，撤销与它无关。

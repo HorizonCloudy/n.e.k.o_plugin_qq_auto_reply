@@ -224,8 +224,9 @@ class QQInstructionBundle:
     # 一并撤除、同样计入授权依赖（私聊轮的话题段恒为空，此前那条路径根本
     # 没有可撤的依赖）。
     cross_session_section: str = ""
-    # core memory 段是否含 participant 域内容：member 开关在后续 await
-    # 窗口里被关掉时，该段要按同样方式撤除。
+    # core memory 是否消费了只读的私聊背景（须另行复检发言人权限）。
+    used_group_private_memory: bool = False
+    # core memory 段是否含群成员域：member 撤权时整段撤除。
     used_member_subject: bool = False
 
 
@@ -268,6 +269,8 @@ class QQReplyContext:
     member_memory_enabled: bool = False
     group_speaker_permission_level_at_receipt: str | None = None
     speaker_channel_at_receipt: str | None = None
+    # Read-only private -> group capability, independent of persistence mode.
+    group_private_memory_token: str = ""
     # 本轮是否为私聊 participant 记忆轮（非 admin 私聊 + 接收时刻政策
     # ON）：读写都以对方的 participant 域为界，绝不落入 legacy 私聊主人
     # 语料（bridge 侧 subjects=None 的语义）。
@@ -280,8 +283,9 @@ class QQReplyContext:
     cross_group_section: str = ""
     # 同上，活跃会话清单段。
     cross_session_section: str = ""
-    # core memory 段是否含 participant 域：member 授权在生成前被撤销时
-    # 该段（及混合域召回）要一并撤除。
+    # 核心记忆或工具结果已消费私聊背景：生成与投递均复检 token。
+    used_group_private_memory: bool = False
+    # core memory 段是否含群成员域：member 撤权时连同混合域召回撤除。
     used_member_subject: bool = False
     # 本轮上下文的唯一标识：投递钩子的幂等键。绝不能用 id(context)——
     # CPython 会把刚释放的同尺寸对象原样发回，下一轮的 context 常常拿到

@@ -15,7 +15,7 @@
    `remember(...)`，把 `(插件, task_id, 查状态的 entry, 会话身份)` 落盘登记；
 2. **轮询**：后台协程按 `POLL_INTERVAL_SECONDS` 去问那个 entry，问出
    `done` / `error` 一类的终态就停；
-3. **回投**：用**同一场对话的身份**（与那一轮完全一致的 is_group / 目标 / 记忆策略）
+3. **回投**：用**同一场对话的身份**（同一 is_group / 目标；实时复核权限，降权时重算记忆策略）
    组一个 `plugin_tool_result` 合成轮，把结果塞进 prompt，让她用自己的话说出去。
 
 ## 四道闸（都是"能不发就不发"的方向）
@@ -40,6 +40,7 @@ import time
 from typing import Any
 
 from .pipeline_models import KIND_PLUGIN_TOOL_RESULT, QQReplyRequest
+from .plugin_authorization import current_conversation_permission, normalize_plugin_tiers
 from .plugin_tool_service import emit_bridge_log
 
 #: 落盘文件名（走 `plugin.data_path`）。宿主重启后仍在等的任务要能接着等 ——
@@ -490,9 +491,15 @@ class QQPluginToolFollowupService:
         if not target:
             return False, "没有可投递的会话"
         is_group = bool(convo.get("is_group"))
-        permission = str(convo.get("permission_level") or "").strip().lower()
-        if not is_group and permission in ("", "none"):
-            return False, "说话人已不在名册里"
+        permission = current_conversation_permission(self.plugin, convo)
+        tiers = normalize_plugin_tiers(
+            (self.plugin._qq_settings or {}).get("qq_open_plugin_tools")
+        )
+        tier = tiers.get(str(record.get("plugin_id") or ""))
+        allowed_tiers = {"all", "admin"} if permission == "admin" else {"all"}
+        if permission == "none" or tier not in allowed_tiers:
+            return False, "当前会话或插件权限已失效"
+        permission_changed = permission != str(convo.get("permission_level") or "").strip().lower()
         request = QQReplyRequest(
             message_text=self.render_followup_prompt(record),
             sender_id=str(convo.get("sender_id") or "") if not is_group else str(self._nominal_group_sender()),
@@ -500,15 +507,15 @@ class QQPluginToolFollowupService:
             group_id=str(convo.get("group_id") or "") if is_group else None,
             user_nickname=convo.get("user_nickname") or None,
             source_kind=KIND_PLUGIN_TOOL_RESULT,
-            # 与"那一轮"完全一致的记忆策略：这就是同一场对话的下一轮，
-            # 不是另起一个临时会话。
-            use_memory_context=convo.get("use_memory_context"),
-            persist_memory=convo.get("persist_memory"),
+            # A downgrade must resolve memory policy in the new permission
+            # domain rather than inherit the administrator's saved flags.
+            use_memory_context=None if permission_changed else convo.get("use_memory_context"),
+            persist_memory=None if permission_changed else convo.get("persist_memory"),
             ephemeral_session=bool(convo.get("ephemeral_session", False)),
             group_facing=is_group,
             group_scene_mode=str(convo.get("group_scene_mode") or ("group_collective" if is_group else "")),
             fallback_to_text_on_voice_failure=False,
-            permission_level_override=("trusted" if is_group else permission),
+            permission_level_override=permission,
             force_reply=True,
         )
         # 「正要发」的记号**先落盘再发**：主动消息宁可少一条，也不能重复。

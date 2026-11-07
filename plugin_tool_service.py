@@ -23,7 +23,7 @@
   **认不出来的人（`none`）一个工具都不给**。
 
 另有一条不是闸但要命的：handler 只认**本轮挂上去的 entry 清单**，
-模型不能自己编一个 entry id 来透传。
+模型不能自己编一个 entry id 来透传；执行前仍须复查当前名册、通道与工具白名单。
 
 ## 候选表为什么只走后台刷新
 
@@ -47,7 +47,7 @@ import re
 import time
 from typing import Any, Callable
 
-from .plugin_authorization import normalize_plugin_tiers
+from .plugin_authorization import current_conversation_permission, normalize_plugin_tiers
 from .plugin_context_providers import capability_hints
 
 #: 分级取值。``all`` = 所有人都能用；``admin`` = 只有管理员能用。
@@ -582,13 +582,14 @@ class QQPluginToolService:
         """这一轮的分发器：把模型的工具调用转成 `call_entry`。
 
         entry 只认**这一轮挂上去的那份清单**（模型不能自己编一个 entry 名来透传），
-        这是这条链路唯一的安全边界之一。
+        并在每次实际执行前重新核验实时权限与工具白名单。
 
         `conversation` 是**这一轮的会话身份**（谁/哪个群/什么权限/记忆策略）。
-        只有异步任务的结果回投需要它 —— 见 `plugin_tool_followup_service`。
+        执行时据此重新核验当前权限；异步任务回投也使用同一身份。
         """
         from main_logic.tool_calling import ToolResult
 
+        conversation = dict(conversation or {})
         allowed: dict[str, set[str]] = {
             self.tool_name(row["plugin_id"]): set(row.get("entries") or [])
             for row, _tier in mounted
@@ -622,6 +623,14 @@ class QQPluginToolService:
             if not isinstance(params, dict):
                 params = {}
             plugin_id = name[len(_TOOL_PREFIX):]
+            # No await between authorization and dispatch: a mounted handler
+            # is not a capability that survives roster/whitelist revocation.
+            permission = current_conversation_permission(self.plugin, conversation)
+            if (
+                not channel_allows_plugin_tools(getattr(self.plugin, "qq_client", None))
+                or self.tiers().get(plugin_id) not in self.allowed_tiers_for(permission)
+            ):
+                return ToolResult(call_id=call_id, name=name, output="当前权限已失效，不能调用这个工具。")
             output, payload = await self.call_plugin_entry_with_payload(
                 plugin_id, entry_id, params, session_key=session_key,
             )

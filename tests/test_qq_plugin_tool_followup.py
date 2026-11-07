@@ -130,9 +130,11 @@ def _plugin(
     emitted: list[tuple[str, str]] = []
     logged: list[str] = []
     outcomes: list = []
-    settings = {"qq_open_plugin_followup_enabled": enabled}
+    settings = {"qq_open_plugin_followup_enabled": enabled, "qq_open_plugin_tools": {"writer": "all"}}
     settings.update(extra_settings or {})
     plugin = SimpleNamespace(
+        permission_mgr=SimpleNamespace(get_permission_level=lambda sender: "admin"),
+        group_permission_mgr=SimpleNamespace(get_group_level=lambda group: "trusted"),
         plugins=_Plugins(),
         qq_client=client,
         reply_pipeline=_Pipeline(),
@@ -425,7 +427,7 @@ def test_a_group_followup_goes_back_to_the_same_group(tmp_path):
     assert request.is_group is True
     assert request.group_id == "g_openid_9"
     assert request.sender_id == "10001", "群聊回投借管理员的名义（与主动群发言同口径）"
-    assert request.permission_level_override == "trusted"
+    assert request.permission_level_override == "normal"
     assert request.group_scene_mode == "group_collective"
 
 
@@ -951,3 +953,43 @@ def test_the_followup_labels_exist_in_both_bundles():
         key = f"ui.openplat.plugintools.{required}"
         assert key in zh, f"中文 bundle 缺 {key}"
         assert key in en, f"英文 bundle 缺 {key}"
+
+
+@pytest.mark.parametrize("level", ["none", "blacklist"])
+def test_saved_admin_followup_cannot_bypass_live_revocation(tmp_path, level):
+    plugin = _plugin(tmp_path, poll_results=[_ok({"status": "done", "result": "secret"})])
+    _remember(plugin)
+    plugin.permission_mgr.get_permission_level = lambda sender: level
+    _tick_sync(plugin, 2)
+    assert plugin.requests == []
+
+
+def test_saved_admin_followup_uses_downgraded_permission_and_memory_policy(tmp_path):
+    plugin = _plugin(tmp_path, poll_results=[_ok({"status": "done", "result": "answer"})])
+    _remember(plugin)
+    plugin.permission_mgr.get_permission_level = lambda sender: "normal"
+    _tick_sync(plugin, 2)
+    assert len(plugin.requests) == 1
+    request = plugin.requests[0]
+    assert request.permission_level_override == "normal"
+    assert request.use_memory_context is None
+    assert request.persist_memory is None
+
+
+@pytest.mark.parametrize("change", ["remove_tool", "admin_only", "no_roster", "group_removed", "blacklisted_group_sender"])
+def test_followup_revalidates_plugin_and_group_authority(tmp_path, change):
+    plugin = _plugin(tmp_path, poll_results=[_ok({"status": "done", "result": "answer"})])
+    _remember(plugin, convo=_GROUP_CONVO if "group" in change else _CONVO)
+    if change == "remove_tool":
+        plugin._qq_settings["qq_open_plugin_tools"].clear()
+    elif change == "admin_only":
+        plugin._qq_settings["qq_open_plugin_tools"]["writer"] = "admin"
+        plugin.permission_mgr.get_permission_level = lambda sender: "normal"
+    elif change == "no_roster":
+        plugin.permission_mgr = None
+    elif change == "group_removed":
+        plugin.group_permission_mgr.get_group_level = lambda group: "none"
+    else:
+        plugin.permission_mgr.get_permission_level = lambda sender: "blacklist"
+    _tick_sync(plugin, 2)
+    assert plugin.requests == []

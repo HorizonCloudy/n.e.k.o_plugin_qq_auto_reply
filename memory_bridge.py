@@ -80,9 +80,9 @@ class QQMemoryBridge:
     def participant_subject(sender_id: object) -> dict[str, str]:
         """非 admin QQ 私聊对象的独立记忆主体（无群维度）。
 
-        与群成员的 group_participant 平行：同一个人在群里与私聊里是两个
-        隔离域（scope 由 subject_id 派生），跨域合并是单独的产品决定，
-        不在 schema 层顺手做。"""
+        与群成员的 group_participant 保持独立写入域（scope 由 subject_id
+        派生）。群聊可经身份和授权检查只读当前发言人的私聊域；私聊读侧
+        不包含任何 group_chat / group_participant 域。"""
         return {
             "subject_kind": "participant",
             "subject_id": f"qq:{str(sender_id or '').strip()}",

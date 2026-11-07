@@ -147,8 +147,15 @@ class QQSessionHandoffService:
         # 未授权区间之后的内容不进摘要（与会话结算同一道闸：撤权后的行不许落盘）。
         cutoff = int((user_data or {}).get("nonconsent_history_end", 0) or 0)
         rows = history[cutoff:] if 0 < cutoff <= len(history) else history
+        excluded = {
+            id(row)
+            for key in ("undelivered_draft_rows", "provisional_draft_rows")
+            for row in (user_data.get(key) or [])
+        }
         lines: list[tuple[str, str]] = []
         for row in rows:
+            if id(row) in excluded:
+                continue
             role = self._row_role(row)
             if not role:
                 continue  # system 行 / 工具行不进摘要
@@ -174,6 +181,9 @@ class QQSessionHandoffService:
     def capture(self, session_key: str, user_data: dict[str, Any]) -> Optional[dict[str, Any]]:
         """会话即将消失时调用。只对 `memory_enabled` 的会话留摘要。"""
         if not session_key or not isinstance(user_data, dict):
+            return None
+        if user_data.get("handoff_revoked") or user_data.get("pending_permission_discard"):
+            self.forget(session_key)
             return None
         if user_data.get("ephemeral_session"):
             # 一次性会话（主动发言那类合成轮）不是"一段对话"，别把她的主动搭话

@@ -40,6 +40,11 @@ def normalize_config(raw: Any) -> dict:
 
 def consent_enabled(plugin: Any, key: str) -> bool:
     """Shared by generation, direct delivery and buffered/merged delivery."""
+    from .group_private_memory import TOKEN_PREFIX as PRIVATE_MEMORY_PREFIX
+    from .group_private_memory import private_memory_token_live
+
+    if key.startswith(PRIVATE_MEMORY_PREFIX):
+        return private_memory_token_live(plugin, key)
     if key.startswith(TOKEN_PREFIX):
         service = getattr(plugin, "companion_context_service", None)
         return service is not None and service.token_live(key)

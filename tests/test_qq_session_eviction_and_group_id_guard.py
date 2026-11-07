@@ -114,6 +114,8 @@ def _reaper_plugin(sessions: dict, *, pending: set[str] | None = None):
 
     plugin = SimpleNamespace(
         _user_sessions=sessions,
+        _session_locks={},
+        _session_locks_guard=asyncio.Lock(),
         logger=log,
         _has_pending_session_settlement=lambda k: k in (pending or set()),
     )
@@ -264,3 +266,64 @@ def test_single_failure_does_not_stop_the_rest():
     reaped = asyncio.run(svc.reap_stale_sessions())
     assert reaped == 2, f"失败一条后应继续回收其余，实际 reaped={reaped}"
     assert any("[Reap]" in m and "失败" in m for m in log.warnings)
+
+
+@pytest.mark.parametrize("change", ["activity", "replacement", "memory", "pending_disable", "pending_settle", "delivery", "capacity"])
+def test_reaper_waits_for_session_lock_and_rechecks_candidate(change):
+    async def run():
+        sessions = {f"hot:{i}": _session_data(memory_enabled=False, idle_seconds=0)
+                    for i in range(SESSION_HARD_LIMIT)}
+        key = "old"
+        data = _session_data(memory_enabled=False, idle_seconds=99999)
+        sessions[key] = data
+        pending = set()
+        service, discarded, _ = _reaper_plugin(sessions, pending=pending)
+        lock = await service.get_session_lock(key)
+        await lock.acquire()
+        task = asyncio.create_task(service.reap_stale_sessions())
+        try:
+            await asyncio.sleep(0)
+            assert not task.done(), "reaper must not discard while the message owns its lock"
+            assert discarded == []
+            if change == "activity":
+                data["last_activity_at"] = time.time()
+            elif change == "replacement":
+                sessions[key] = _session_data(memory_enabled=False, idle_seconds=99999)
+            elif change == "memory":
+                data["memory_enabled"] = True
+            elif change == "pending_disable":
+                data["pending_disable_settle"] = True
+            elif change == "pending_settle":
+                data["pending_settle_buckets"] = {}
+            elif change == "delivery":
+                pending.add(key)
+            else:
+                sessions.pop("hot:0")
+        finally:
+            lock.release()
+        assert await task == 0
+        assert discarded == []
+        assert key in sessions
+
+    asyncio.run(run())
+
+
+def test_reaper_counts_only_successful_discards_and_holds_lock():
+    async def run():
+        sessions = {str(i): _session_data(memory_enabled=False, idle_seconds=99999)
+                    for i in range(SESSION_HARD_LIMIT + 1)}
+        service, _, _ = _reaper_plugin(sessions)
+
+        locks_held = []
+
+        async def retained(key, **kw):
+            lock = service.plugin._session_locks.get(key)
+            locks_held.append(lock is not None and lock.locked())
+            return False
+
+        service.discard_session = retained
+        assert await service.reap_stale_sessions() == 0
+        assert locks_held == [True]
+        assert len(sessions) == SESSION_HARD_LIMIT + 1
+
+    asyncio.run(run())

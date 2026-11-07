@@ -268,3 +268,26 @@ def test_render_section_contains_the_tail_and_a_gap_hint(tmp_path):
 
 def test_render_section_is_empty_without_a_note(tmp_path):
     assert _service(tmp_path).render_section("nope") == ""
+
+
+
+def test_handoff_excludes_failed_provisional_and_control_rows_by_identity(tmp_path):
+    delivered = _AI("同样的回复")
+    failed = _AI("同样的回复")
+    provisional = _AI("还没有发送的草稿")
+    control = _Human("内部汇总控制 prompt")
+    data = _user_data(
+        [_Human("问题"), delivered, failed, provisional, control],
+        undelivered_draft_rows=[failed, control], provisional_draft_rows=[provisional],
+    )
+    note = _service(tmp_path).capture("k", data)
+    assert note["lines"] == ["对方：问题", "你：同样的回复"]
+
+
+def test_handoff_revoked_session_cannot_recreate_a_note(tmp_path):
+    service = _service(tmp_path)
+    data = _user_data([_Human("旧权限上下文"), _AI("旧回复")])
+    assert service.capture("k", data)
+    data["handoff_revoked"] = True
+    assert service.capture("k", data) is None
+    assert _service(tmp_path).peek("k") is None
