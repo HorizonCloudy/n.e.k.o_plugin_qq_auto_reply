@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from plugin.plugins.qq_auto_reply import QQAutoReplyPlugin
+from plugin.plugins.qq_auto_reply import backlog_service as backlog_service_module
 from plugin.plugins.qq_auto_reply.backlog_service import QQBacklogService
 from plugin.plugins.qq_auto_reply.backlog_store import QQBacklogStore
 from plugin.plugins.qq_auto_reply.message_dispatcher import QQMessageDispatcher
@@ -51,7 +52,11 @@ async def test_group_traffic_after_old_cooldown_never_repushes_backlog(tmp_path,
     # Same old mention stays unreviewed as later unrelated messages arrive.
     for index, offset in enumerate((0, 903, 1806)):
         now = 1_794_000_000 + offset
-        monkeypatch.setattr("time.time", lambda: now)
+        # Scope the old notifier clock to its module, never the whole process.
+        # raising=False keeps this regression guard after its time import is removed.
+        monkeypatch.setattr(
+            backlog_service_module, "time", SimpleNamespace(time=lambda: now), raising=False,
+        )
         await dispatcher.handle_message({
             "message_type": "group", "group_id": "900000003", "user_id": "900000001",
             "content": "我是谁" if index == 0 else "普通群消息",
