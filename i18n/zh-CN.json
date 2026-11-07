@@ -1,4 +1,8 @@
 {
+  "ui.shared.btn.preview": "查看",
+  "ui.shared.sticker.unified_hint": "图库收集的图片和表情包在这里统一查看、删除；普通聊天图片不会自动加入可发送表情目录。",
+  "ui.group.sticker_collect": "允许自动收集表情包（默认关闭）",
+  "ui.group.sticker_save_failed": "保存失败，请重试；收集开关以刷新后的状态为准",
   "chat_env_prompt_section": "## 当前聊天会话信息（Chat Environment）\n- 当前平台：QQ\n- 当前平台适配器名称：qq_auto_reply\n- 当前聊天类型：{chat_type}\n- 你的账号 ID：{self_id}\n- 当前会话标题（即群名称或用户名或自定义备注名）：{session_title}\n- 当前会话描述：{session_description}",
   "core_memory_section": "## 核心记忆（Core Memory）\n以下是来自本体记忆系统的稳定记忆、人格背景或启动上下文。如果其中有相关内容，请自然地在回复中体现，但不要生硬地复述，也不要暴露内部记忆结构。\n{memory_context}\n{context_ready}\n{recall_hint}",
   "entries.asset.description": "表情包目录的读写与注意力读数。",
@@ -305,7 +309,7 @@
   "ui.attention.digest_interval.hint": "每隔这么久把这个群的会话增量推给长期记忆（开关在「群聊长期记忆」那一条，默认关闭）。推送本身按游标去重，多久推一次只影响及时性。",
   "ui.napcat.config.show_window": "前台启动 NapCat 窗口",
   "ui.napcat.config.sticker_collect": "表情包收集范围",
-  "ui.napcat.config.sticker_collect.hint": "控制她能不能自己从聊天里收表情包，以及允许跨多少个群收。",
+  "ui.napcat.config.sticker_collect.hint": "全局控制表情包收集范围；群聊还需在群列表逐群开启，默认关闭，任何全局档位都不能绕过群开关。",
   "ui.napcat.config.token_label": "访问令牌 (TOKEN)",
   "ui.napcat.config.url_label": "通信地址 (URL)",
   "ui.napcat.config.url_label_forward": "NapCat WebSocket 服务器地址",

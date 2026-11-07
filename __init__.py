@@ -5,7 +5,6 @@ from __future__ import annotations
 from . import _lib_bootstrap  # isort: skip
 
 import asyncio
-import json
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional
@@ -111,6 +110,8 @@ from .session_memory_service import QQSessionMemoryService
 from .session_runtime_service import QQSessionRuntimeService
 from .settings_service import QQSettingsService
 from .sticker_lab_service import QQStickerLab
+from .sticker_scope import entry_scope
+from .sticker_store import StickerStore
 from .targets import QQAutoReplyTargetsMixin
 from .targets import QQAutoReplyValidationError as QQAutoReplyValidationError
 from .time_context import build_time_context
@@ -279,8 +280,6 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         # 三个字段是更早那版"主动问候"的残骸：全仓库只写不读（2026-10-02 清掉）。
         # 主动搭话的真实状态由 `proactive_initiative_service` 自持并落盘。
         self._backlog_summary_threshold = 10
-        self._backlog_notify_cooldown_seconds = 900
-        self._backlog_issue_notify_threshold = 1
         self._relay_backlog_items: list[dict[str, Any]] = []
         self._recent_pipeline_traces: list[dict[str, Any]] = []
         self._poke_timestamps: dict[str, list[float]] = {}  # user_id → 最近回戳时间戳列表（5分钟窗口，每人最多2次）
@@ -1547,6 +1546,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             group_id=group_id,
             level=str(kw.get("level") or DEFAULT_GROUP_LEVEL),
             normal_relay_probability=kw.get("normal_relay_probability"),
+            sticker_collect_enabled=kw.get("sticker_collect_enabled"),
         )
 
     async def _trust_group_remove(self, kw: dict[str, Any]):
@@ -1751,9 +1751,6 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         """获取所有群的专属提示词映射。"""
         group_prompts = dict(self._qq_settings.get("group_prompts") or {})
         return Ok({"group_prompts": group_prompts})
-
-    async def _maybe_notify_backlog_summary(self, *, group_id: str) -> None:
-        await self.backlog_service.maybe_notify_summary(group_id=group_id)
 
     async def _process_messages(self):
         await self.message_dispatcher.process_messages()
@@ -2674,20 +2671,21 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     async def _asset_list_stickers(self, kw: dict[str, Any]):
         _ = kw
         """列出所有已注册表情包"""
-        sticker_json = str(self.data_path("sticker.json"))
         try:
-            with open(sticker_json, "r", encoding="utf-8") as f:
-                data = json.loads(f.read())
-        except Exception:
-            data = {}
-        if not isinstance(data, dict):
-            data = {}
+            gallery = getattr(self, "gallery_service", None)
+            if gallery is not None:
+                await gallery.start()  # Also migrate when managing assets before QQ starts.
+            data = StickerStore(self).read()
+        except Exception as exc:
+            return Err(SdkError(f"READ_FAILED: 无法读取表情包库存: {exc}"))
         items = []
         for sid, info in data.items():
             items.append({
                 "id": sid,
                 "desc": info.get("desc", "") if isinstance(info, dict) else str(info),
                 "path": info.get("path", "") if isinstance(info, dict) else "",
+                "kind": info.get("kind", "sticker") if isinstance(info, dict) else "sticker",
+                "scope": entry_scope(info),
             })
         return Ok({"stickers": items, "total": len(items)})
 
@@ -2702,26 +2700,20 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return Err(SdkError("INVALID_INPUT: image_path 不能为空"))
         if not description:
             return Err(SdkError("INVALID_INPUT: desc 不能为空"))
-        sticker_json = str(self.data_path("sticker.json"))
         sticker_dir = str(self.data_path("sticker"))
         full_path = os.path.join(sticker_dir, path)
         if not os.path.exists(full_path):
             return Err(SdkError(f"NOT_FOUND: 图片文件不存在: data/sticker/{path}"))
         try:
-            with open(sticker_json, "r", encoding="utf-8") as f:
-                data = json.loads(f.read())
-        except Exception:
-            data = {}
-        if not isinstance(data, dict):
-            data = {}
+            data = StickerStore(self).read()
+        except Exception as exc:
+            return Err(SdkError(f"READ_FAILED: 无法读取表情包库存: {exc}"))
         next_id = 1
         while str(next_id) in data:
             next_id += 1
         sid = str(next_id)
         data[sid] = {"desc": description, "path": path}
-        os.makedirs(os.path.dirname(sticker_json), exist_ok=True)
-        with open(sticker_json, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        StickerStore(self).write(data)
         self.session_instruction_service._sticker_catalog_cache = ""
         self.logger.info(f"注册表情包: id={sid}, path={path}, desc={description}")
         return Ok({"id": sid, "desc": description, "path": path, "total": len(data)})
@@ -2732,7 +2724,6 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         desc = str(kw.get("desc") or "")
         """上传表情包图片并注册"""
         import base64 as b64
-        import json as _json
         import os as _os
         fname = str(filename or "").strip()
         description = str(desc or "").strip()
@@ -2747,7 +2738,6 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return Err(SdkError("INVALID_INPUT: desc 不能为空"))
         # 走 SDK 状态根（data_path）；__file__ 相对路径指向代码根，迁移后写不到存档
         sticker_dir = str(self.data_path("sticker"))
-        sticker_json = str(self.data_path("sticker.json"))
         _os.makedirs(sticker_dir, exist_ok=True)
         # 处理 base64（可能带 data:image/...;base64, 前缀）
         if "," in raw_b64 and raw_b64.startswith("data:"):
@@ -2770,23 +2760,23 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             img_bytes = b64.b64decode(raw_b64)
         except Exception as e:
             return Err(SdkError(f"DECODE_FAILED: base64 解码失败: {e}"))
-        with open(dest_path, "wb") as f:
-            f.write(img_bytes)
-        # 注册到 sticker.json
+        # Validate the inventory before creating a file; never hide corruption.
         try:
-            with open(sticker_json, "r", encoding="utf-8") as f:
-                data = _json.loads(f.read())
-        except Exception:
-            data = {}
-        if not isinstance(data, dict):
-            data = {}
+            data = StickerStore(self).read()
+        except Exception as exc:
+            return Err(SdkError(f"READ_FAILED: 无法读取表情包库存: {exc}"))
         next_id = 1
         while str(next_id) in data:
             next_id += 1
         sid = str(next_id)
         data[sid] = {"desc": description, "path": dest_name}
-        with open(sticker_json, "w", encoding="utf-8") as f:
-            _json.dump(data, f, ensure_ascii=False, indent=2)
+        try:
+            with open(dest_path, "wb") as f:
+                f.write(img_bytes)
+            StickerStore(self).write(data)
+        except Exception as exc:
+            Path(dest_path).unlink(missing_ok=True)
+            return Err(SdkError(f"WRITE_FAILED: 保存图片失败: {exc}"))
         self.session_instruction_service._sticker_catalog_cache = ""
 
         # 自动描述：**先注册再升级**。VLM 失败（模型没配 / 超时 / 返回空）时，
@@ -2797,9 +2787,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 str(dest_path), prompt=STICKER_VLM_PROMPT, max_tokens=80,
             )
             if vlm_desc:
-                data[sid] = {"desc": vlm_desc, "path": dest_name}
-                with open(sticker_json, "w", encoding="utf-8") as f:
-                    _json.dump(data, f, ensure_ascii=False, indent=2)
+                if not StickerStore(self).update(sid, dest_name, {"desc": vlm_desc}):
+                    return Err(SdkError("NOT_FOUND: 图片在解析期间已被删除或替换"))
                 self.session_instruction_service._sticker_catalog_cache = ""
                 description = vlm_desc
                 vlm_used = True
@@ -2822,13 +2811,11 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         sid = str(kw.get("id") or "").strip()
         if not sid:
             return Err(SdkError("INVALID_INPUT: id 不能为空"))
-        sticker_json = str(self.data_path("sticker.json"))
         sticker_dir = str(self.data_path("sticker"))
         try:
-            with open(sticker_json, "r", encoding="utf-8") as f:
-                data = json.loads(f.read())
-        except Exception:
-            data = {}
+            data = StickerStore(self).read()
+        except Exception as exc:
+            return Err(SdkError(f"READ_FAILED: 无法读取表情包库存: {exc}"))
         if not isinstance(data, dict) or sid not in data:
             return Err(SdkError(f"NOT_FOUND: 没有 id={sid} 的表情包"))
         entry = data[sid]
@@ -2846,12 +2833,43 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 "VLM_FAILED: 没能解析出描述（对话模型未配置、不支持看图，或返回为空）"))
 
         previous = entry.get("desc", "") if isinstance(entry, dict) else ""
-        data[sid] = {"desc": desc, "path": raw_path}
-        with open(sticker_json, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        if not StickerStore(self).update(sid, raw_path, {"desc": desc}):
+            return Err(SdkError("NOT_FOUND: 图片在解析期间已被删除或替换"))
         self.session_instruction_service._sticker_catalog_cache = ""
         self.logger.info(f"[VLM] 表情包重新描述: id={sid}, {previous!r} -> {desc!r}")
         return Ok({"id": sid, "desc": desc, "previous": previous})
+
+    async def _asset_preview_sticker(self, kw: dict[str, Any]):
+        """On-demand preview through the existing hidden management entry."""
+        import base64
+        from io import BytesIO
+        from pathlib import Path
+
+        from PIL import Image
+
+        sid = str(kw.get("id") or "").strip()
+        if not sid:
+            return Err(SdkError("INVALID_INPUT: id 不能为空"))
+        try:
+            entry = StickerStore(self).read().get(sid)
+            if not isinstance(entry, dict):
+                return Err(SdkError(f"NOT_FOUND: 没有 id={sid} 的图片"))
+            root = Path(self.data_path("sticker")).resolve()
+            path = (root / str(entry.get("path") or "")).resolve()
+            if path.parent != root or not path.is_file():
+                return Err(SdkError("NOT_FOUND: 图片路径无效或文件不存在"))
+            with path.open("rb") as stream:
+                raw = stream.read(20 * 1024 * 1024 + 1)
+            if len(raw) > 20 * 1024 * 1024:
+                return Err(SdkError("TOO_LARGE: 图片超过 20 MB 预览上限"))
+            with Image.open(BytesIO(raw)) as image:
+                mime = {"PNG": "image/png", "JPEG": "image/jpeg", "GIF": "image/gif",
+                        "WEBP": "image/webp", "BMP": "image/bmp"}.get(image.format)
+            if not mime:
+                return Err(SdkError("INVALID_IMAGE: 不支持的图片格式"))
+            return Ok({"id": sid, "data_url": f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"})
+        except Exception as exc:
+            return Err(SdkError(f"PREVIEW_FAILED: 无法预览图片: {exc}"))
 
     async def _asset_delete_sticker(self, kw: dict[str, Any]):
         """删掉一个已注册表情包：先从 sticker.json 摘掉登记，再删磁盘上的图。
@@ -2865,22 +2883,17 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         sid = str(kw.get("id") or "").strip()
         if not sid:
             return Err(SdkError("INVALID_INPUT: id 不能为空"))
-        sticker_json = str(self.data_path("sticker.json"))
         sticker_dir = str(self.data_path("sticker"))
         try:
-            with open(sticker_json, "r", encoding="utf-8") as f:
-                data = json.loads(f.read())
-        except Exception:
-            data = {}
-        if not isinstance(data, dict):
-            data = {}
+            data = StickerStore(self).read()
+        except Exception as exc:
+            return Err(SdkError(f"READ_FAILED: 无法读取表情包库存: {exc}"))
         if sid not in data:
             return Err(SdkError(f"NOT_FOUND: 没有 id={sid} 的表情包"))
 
         entry = data.pop(sid)
         raw_path = entry.get("path", "") if isinstance(entry, dict) else ""
-        with open(sticker_json, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        StickerStore(self).write(data)
 
         removed_file = False
         # 同一个文件可能被登记了多次（register_sticker 允许这么做）；
@@ -2918,12 +2931,12 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     @plugin_entry(
         id="asset",
         name=tr("entries.asset.name", default="表情包与注意力"),
-        description=tr("entries.asset.description", default="表情包目录的读写与注意力读数。action 取 list_stickers / register_sticker / upload_sticker / describe_sticker / delete_sticker / attention。**此入口对 AI 隐藏。**"),
+        description=tr("entries.asset.description", default="表情包目录的读写与注意力读数。action 取 list_stickers / register_sticker / upload_sticker / describe_sticker / preview_sticker / delete_sticker / attention。**此入口对 AI 隐藏。**"),
         input_schema={"type": "object", "properties": {
             "action": {"type": "string",
-                       "enum": ["list_stickers", "register_sticker", "upload_sticker", "describe_sticker", "delete_sticker", "attention"],
-                       "description": "list_stickers=列出已注册表情包；register_sticker=登记磁盘上已有的图片；upload_sticker=上传 base64 图片并存档；describe_sticker=用 VLM 重新解析某张表情包的描述；delete_sticker=删除一个已注册表情包（连图一起删）；attention=读群注意力状态"},
-            "id": {"type": "string", "description": "describe_sticker / delete_sticker：表情包 id（取自 list_stickers）"},
+                       "enum": ["list_stickers", "register_sticker", "upload_sticker", "describe_sticker", "preview_sticker", "delete_sticker", "attention"],
+                       "description": "list_stickers=列出已注册表情包；register_sticker=登记磁盘上已有的图片；upload_sticker=上传 base64 图片并存档；describe_sticker=用 VLM 重新解析某张表情包的描述；preview_sticker=查看图片；delete_sticker=删除一个已注册表情包（连图一起删）；attention=读群注意力状态"},
+            "id": {"type": "string", "description": "describe_sticker / preview_sticker / delete_sticker：表情包 id（取自 list_stickers）"},
             "auto_desc": {"type": "boolean", "description": "upload_sticker：为 true 时用 VLM 自动生成描述并覆盖 desc；VLM 失败则沿用 desc"},
             "image_path": {"type": "string", "description": "register_sticker：data/sticker/ 下的图片文件名"},
             "filename": {"type": "string", "description": "upload_sticker：文件名（如 cat.png）"},
@@ -2944,6 +2957,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return await self._asset_upload_sticker(kw)
         if action == "describe_sticker":
             return await self._asset_describe_sticker(kw)
+        if action == "preview_sticker":
+            return await self._asset_preview_sticker(kw)
         if action == "delete_sticker":
             return await self._asset_delete_sticker(kw)
         if action == "attention":
@@ -2951,7 +2966,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         return Err(SdkError(
             f"BAD_ACTION: asset 不支持 {action!r}"
             f"（可选 list_stickers/register_sticker/upload_sticker/describe_sticker"
-            f"/delete_sticker/attention）"))
+            f"/preview_sticker/delete_sticker/attention）"))
 
     # ── send：收发 ──────────────────────────────────────────────
     #

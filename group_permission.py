@@ -42,6 +42,7 @@ class GroupPermissionManager:
                         self._groups[raw] = {
                             "level": DEFAULT_GROUP_LEVEL,
                             "normal_relay_probability": None,
+                            "sticker_collect_enabled": False,
                         }
                     continue
                 group_id = str(group.get("group_id", "") or "").strip()
@@ -50,6 +51,7 @@ class GroupPermissionManager:
                     self._groups[group_id] = {
                         "level": self._normalize_level(level),
                         "normal_relay_probability": self._normalize_probability(group.get("normal_relay_probability")),
+                        "sticker_collect_enabled": group.get("sticker_collect_enabled") is True,
                     }
 
     @classmethod
@@ -72,7 +74,10 @@ class GroupPermissionManager:
             return None
         return normalized
 
-    def add_group(self, group_id: str, level: str = DEFAULT_GROUP_LEVEL, normal_relay_probability: Any = None):
+    def add_group(
+        self, group_id: str, level: str = DEFAULT_GROUP_LEVEL,
+        normal_relay_probability: Any = None, sticker_collect_enabled: Optional[bool] = None,
+    ):
         """
         添加群聊
 
@@ -80,14 +85,26 @@ class GroupPermissionManager:
             group_id: 群号
             level: 权限等级 (trusted, normal)，省略时按 :data:`DEFAULT_GROUP_LEVEL`（trusted）
             normal_relay_probability: normal 群未被 @ 时转发给主人所使用的概率
-"""
+            sticker_collect_enabled: 显式开启收表情；省略时保留原值，新群默认关闭。
+        """
         normalized_group_id = str(group_id or "").strip()
         if not normalized_group_id:
             return
+        previous = self.is_sticker_collection_enabled(normalized_group_id)
         self._groups[normalized_group_id] = {
             "level": self._normalize_level(level),
             "normal_relay_probability": self._normalize_probability(normal_relay_probability),
+            "sticker_collect_enabled": previous if sticker_collect_enabled is None else sticker_collect_enabled is True,
         }
+
+    def is_sticker_collection_enabled(self, group_id: str) -> bool:
+        group = self._groups.get(str(group_id or "").strip()) or {}
+        return group.get("sticker_collect_enabled") is True
+
+    def set_sticker_collection_enabled(self, group_id: str, enabled: bool) -> None:
+        group = self._groups.get(str(group_id or "").strip())
+        if group is not None:
+            group["sticker_collect_enabled"] = enabled is True
 
     def remove_group(self, group_id: str):
         """移除群聊"""
@@ -126,7 +143,10 @@ class GroupPermissionManager:
         """列出所有群聊"""
         result: List[Dict[str, Any]] = []
         for group_id, group in self._groups.items():
-            item: Dict[str, Any] = {"group_id": group_id, "level": group.get("level", DEFAULT_GROUP_LEVEL)}
+            item: Dict[str, Any] = {
+                "group_id": group_id, "level": group.get("level", DEFAULT_GROUP_LEVEL),
+                "sticker_collect_enabled": group.get("sticker_collect_enabled") is True,
+            }
             normal_relay_probability = self._normalize_probability(group.get("normal_relay_probability"))
             if normal_relay_probability is not None:
                 item["normal_relay_probability"] = normal_relay_probability

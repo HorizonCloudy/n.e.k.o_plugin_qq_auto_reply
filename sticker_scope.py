@@ -31,9 +31,25 @@ def entry_scope(entry: Any) -> str:
 
 
 def sticker_allowed(entry: Any, *, target_type: str = "", target_id: str = "") -> bool:
+    if isinstance(entry, dict) and entry.get("sendable") is False:
+        return False  # Ordinary collected photos are managed here, not offered as stickers.
     scope = entry_scope(entry)
     return scope == "global" or (
         target_type in {"group", "private"}
         and bool(target_id)
         and scope == f"{target_type}:{target_id}"
     )
+
+
+def group_sticker_collection_allowed(plugin: Any, group_id: str) -> bool:
+    """Group collection is opt-in; private collection retains its own policy."""
+    if not str(group_id or "").strip():
+        return True
+    manager = getattr(plugin, "group_permission_mgr", None)
+    try:
+        settings = getattr(plugin, "_qq_settings", None) or {}
+        if str(settings.get("sticker_collect_policy") or "").strip().lower() == "off":
+            return False
+        return manager.is_sticker_collection_enabled(group_id) is True
+    except Exception:
+        return False

@@ -82,9 +82,6 @@ class _Recorder:
     async def _poke(self, *args, **kwargs):
         self.pokes.append((args, kwargs))
 
-    async def _maybe_notify_backlog_summary(self, *args, **kwargs):
-        return None
-
 
 def _dispatcher(level: str) -> tuple[QQMessageDispatcher, _Recorder]:
     plugin = _Recorder(level=level)

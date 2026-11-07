@@ -698,8 +698,6 @@ class QQSettingsService:
         self.plugin._ai_turn_timeout_seconds = max(5.0, float(settings.get("ai_turn_timeout_seconds", 60.0) or 60.0))
         self.plugin._handler_shutdown_timeout_seconds = max(1.0, float(settings.get("handler_shutdown_timeout_seconds", 10.0) or 10.0))
         self.plugin._backlog_summary_threshold = max(1, int(settings.get("backlog_summary_threshold", 10) or 10))
-        self.plugin._backlog_notify_cooldown_seconds = max(60, int(settings.get("backlog_notify_cooldown_seconds", 900) or 900))
-        self.plugin._backlog_issue_notify_threshold = max(1, int(settings.get("backlog_issue_notify_threshold", 1) or 1))
         # 前端日志：显示当前连接配置（token 脱敏），方便用户排查浏览器自动回填等问题
         url = str(settings.get("onebot_url") or "").strip()
         masked = self.plugin._mask_token(str(settings.get("token") or ""))

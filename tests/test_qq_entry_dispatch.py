@@ -46,7 +46,7 @@ async def test_routes_each_action_to_its_service_method():
         ("remove_trusted_user", dict(qq_number="111")),
         ("set_user_nickname", dict(qq_number="111", nickname="阿喵")),
         ("add_trusted_group", dict(group_id="222", level="trusted",
-                                   normal_relay_probability=None)),
+                                   normal_relay_probability=None, sticker_collect_enabled=None)),
         ("remove_trusted_group", dict(group_id="222")),
         ("list_identity_claims", dict()),
         ("bind_identity_account", dict(user_id="A", target_user_id="B")),

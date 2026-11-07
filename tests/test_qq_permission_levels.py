@@ -163,6 +163,6 @@ def test_group_level_defaults_to_trusted():
     mgr.add_group("3", "normal")
     assert mgr.get_group_level("3") == "normal"
     assert mgr.list_groups() == [
-        {"group_id": "2", "level": "trusted"},
-        {"group_id": "3", "level": "normal"},
+        {"group_id": "2", "level": "trusted", "sticker_collect_enabled": False},
+        {"group_id": "3", "level": "normal", "sticker_collect_enabled": False},
     ]

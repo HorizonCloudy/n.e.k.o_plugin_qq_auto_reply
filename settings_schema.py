@@ -488,9 +488,9 @@ MISC = (
     SettingSpec("backlog_summary_threshold", "int", 10, floor=1,
                 description="已废弃（解析了但从未被使用）"),
     SettingSpec("backlog_notify_cooldown_seconds", "int", 900, floor=60,
-                description="积压通知冷却（秒）"),
+                description="已废弃：仅兼容旧配置，QQ 集成不再推送桌面积压通知"),
     SettingSpec("backlog_issue_notify_threshold", "int", 1, floor=1,
-                description="多少条非 chat 标签的消息触发通知"),
+                description="已废弃：仅兼容旧配置，QQ 集成不再推送桌面积压通知"),
     SettingSpec("backlog_labels", "list", DEFAULT_BACKLOG_LABELS, saveable=True,
                 description="save：关键词/优先级标签表", handler="backlog_labels"),
     # ── 策略 ──

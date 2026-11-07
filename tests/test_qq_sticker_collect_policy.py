@@ -17,6 +17,7 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from plugin.plugins.qq_auto_reply.group_permission import GroupPermissionManager
 from plugin.plugins.qq_auto_reply.sticker_lab_service import (
     POLICY_ANY,
     POLICY_CURRENT,
@@ -44,6 +45,9 @@ class _Plugin:
         self._tmp = tmp_path
         self._qq_settings = dict(settings or {})
         self.logger = _Logger()
+        self.group_permission_mgr = GroupPermissionManager([
+            {"group_id": gid, "sticker_collect_enabled": True} for gid in ("111", "222")
+        ])
 
     def data_path(self, name: str = "") -> str:
         return str(self._tmp / name) if name else str(self._tmp)

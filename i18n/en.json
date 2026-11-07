@@ -1,4 +1,8 @@
 {
+  "ui.shared.btn.preview": "Preview",
+  "ui.shared.sticker.unified_hint": "Manage collected gallery images and stickers together here. Ordinary chat photos are not automatically offered as sendable stickers.",
+  "ui.group.sticker_collect": "Allow automatic sticker collection (off by default)",
+  "ui.group.sticker_save_failed": "Save failed. Retry; the refreshed switch shows the active state.",
   "chat_env_prompt_section": "## Chat Environment\n{chat_env}",
   "core_memory_section": "## Core Memory\nBelow is stable memory, personality context, or bootstrapping context from the memory system. If relevant, naturally reflect it in your reply — but do not recite it verbatim or expose the internal memory structure.\n{memory_context}\n{context_ready}\n{recall_hint}",
   "entries.asset.description": "Read and write the sticker catalog, and read attention state.",
@@ -305,7 +309,7 @@
   "ui.attention.digest_interval.hint": "How often this group's session delta is pushed to long-term memory (the opt-in switch is the group-memory setting, off by default). The push is cursor-deduped, so the interval only affects freshness.",
   "ui.napcat.config.show_window": "Show NapCat Window (foreground)",
   "ui.napcat.config.sticker_collect": "Sticker collection scope",
-  "ui.napcat.config.sticker_collect.hint": "Controls whether she can collect stickers from chats herself, and how many groups that may span.",
+  "ui.napcat.config.sticker_collect.hint": "Controls sticker collection scope. Each group must also opt in from the group list (off by default); no global policy bypasses that switch.",
   "ui.napcat.config.token_label": "Access Token",
   "ui.napcat.config.url_label": "WebSocket URL",
   "ui.napcat.config.url_label_forward": "NapCat WebSocket Server URL",

@@ -62,9 +62,6 @@ class _Recorder:
     async def _record_backlog(self, message):
         self.backlog.append(message)
 
-    async def _maybe_notify_backlog_summary(self, *args, **kwargs):
-        return None
-
 
 def _dispatcher(**kw):
     plugin = _Recorder(**kw)

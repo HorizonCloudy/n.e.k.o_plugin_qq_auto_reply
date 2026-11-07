@@ -73,9 +73,6 @@ class _Recorder:
     async def _poke(self, group_id, user_id):
         self.pokes.append((str(group_id), str(user_id)))
 
-    async def _maybe_notify_backlog_summary(self, *args, **kwargs):
-        return None
-
 
 def _dispatcher(*, self_id: str = BOT, level: str = "trusted"):
     plugin = _Recorder(self_id=self_id, level=level)

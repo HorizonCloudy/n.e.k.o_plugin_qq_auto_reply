@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from typing import Any
 
 from .backlog_models import QQBacklogMessage
@@ -166,68 +165,3 @@ class QQBacklogService:
             "group_id": group_id,
             "groups": summaries,
         }
-
-    async def maybe_notify_summary(self, *, group_id: str) -> None:
-        if not self.plugin._admin_qq:
-            return
-        state = await self.plugin.backlog_store.load()
-        groups = dict(state.get("groups") or {})
-        conversations = dict(state.get("conversations") or {})
-        group = groups.get(group_id)
-        if not isinstance(group, dict):
-            return
-        label_counts = dict(group.get("label_counts") or {})
-        label_map = self._label_map()
-        # 只推送关键词标签（非 chat 且非 mention 或 mention 但确实是 @bot 触发的）
-        issue_counts = {
-            lid: int(count or 0)
-            for lid, count in label_counts.items()
-            if str(lid or "").strip() and str(lid or "").strip() != "chat"
-        }
-        issue_count = sum(issue_counts.values())
-        if issue_count < self.plugin._backlog_issue_notify_threshold:
-            return
-        last_notified_at = int(group.get("last_notified_at") or 0)
-        now = int(time.time())
-        if now - last_notified_at < self.plugin._backlog_notify_cooldown_seconds:
-            return
-        summary = QQSummaryBuilder.build_group_summary(group, conversations, label_map=label_map)
-        highlights = list(summary.get("highlights") or [])[:3]
-        highlight_text = "；".join(highlights) if highlights else "暂无具体摘要"
-        # 替换 "点名" 标签为猫娘名字
-        from utils.config_manager import get_config_manager
-        try:
-            _, her_name, _, _, _, _, _, _, _ = get_config_manager().get_character_data()
-        except Exception:
-            her_name = "neko"
-        def _resolve_label(lid: str) -> str:
-            name = label_map.get(lid, lid)
-            if lid == "mention":
-                return f"@{her_name}"
-            return name
-        label_summary_parts = [
-            f"{_resolve_label(lid)} {cnt} 条"
-            for lid, cnt in issue_counts.items()
-            if cnt > 0
-        ]
-        unread_count = int(summary.get("unread_count") or 0)
-        label_summary_text = "，".join(label_summary_parts) if label_summary_parts else "已分类消息 0 条"
-        notify_text = (
-            f"[QQ backlog] {summary.get('display_name') or ('QQ群 ' + group_id)} "
-            f"关键词 {issue_count} 条：{label_summary_text}。"
-            f"重点：{highlight_text}"
-        )
-        self.plugin.push_message(
-            visibility=[],
-            ai_behavior="respond",
-            parts=[{"type": "text", "text": notify_text}],
-            source=self.plugin.plugin_id,
-            metadata={
-                "delivery_semantics": "passive",
-                "kind": "qq_backlog_summary",
-                "group_id": group_id,
-                "unread_count": unread_count,
-                "label_counts": label_counts,
-            },
-        )
-        await self.plugin.backlog_store.update_group_last_notified_at(group_id, now)

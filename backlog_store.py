@@ -229,7 +229,7 @@ class QQBacklogStore:
 
         ``None``（默认）保留"全标"语义，供 ``relay_service`` 与手动入口使用；
         显式传空集表示"本次什么都没消费"，不改任何 review_status，只刷新群级
-        统计与 ``last_notified_at``。
+        统计；旧版通知时间字段原样保留，不再更新。
         """
         async with self._lock:
             state = await self.load()
@@ -269,7 +269,6 @@ class QQBacklogStore:
                 for key in keys
             )
             group["label_counts"] = self._count_group_labels(conversations, keys)
-            group["last_notified_at"] = now
             groups[group_id] = group
             state["groups"] = groups
             state["conversations"] = conversations
@@ -310,22 +309,6 @@ class QQBacklogStore:
             if keys:
                 return state
             groups.pop(normalized_group_id, None)
-            state["groups"] = groups
-            await atomic_write_json_async(self._path, state)
-            return state
-
-    async def update_group_last_notified_at(self, group_id: str, timestamp: int) -> dict[str, Any]:
-        async with self._lock:
-            state = await self.load()
-            groups = state["groups"]
-            normalized_group_id = str(group_id or "").strip()
-            if not normalized_group_id:
-                return state
-            group = groups.get(normalized_group_id)
-            if not isinstance(group, dict):
-                return state
-            group["last_notified_at"] = int(timestamp or 0)
-            groups[normalized_group_id] = group
             state["groups"] = groups
             await atomic_write_json_async(self._path, state)
             return state

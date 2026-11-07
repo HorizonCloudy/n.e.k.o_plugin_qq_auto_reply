@@ -1,44 +1,19 @@
-"""本地图库：把她见过的图、表情包，连描述一起收进 Q 盘。
+"""图库工具是既有表情包库存的视图，不再维护第二套图片/索引。
 
-为什么要单独一层，而不是塞进 ``sticker_service``：
-
-- ``sticker.json`` 管的是「她要**发**的表情包」，每个条目带情绪和用法，
-  是为了「按感觉找一张甩出去」优化的；
-- 图库管的是「她**见过**的图」，是素材本身，除了发，还要能当头像、
-  能回看、能被检索。两张表的生命周期不一样：表情包会随手删，图库
-  希望尽量留着。
-
-存法（都在 ``<data>/gallery/`` 下）::
-
-    blobs/<md5>.<ext>     原图，按内容去重，同一张图只落一份
-    index.json            元数据，id → {md5, file, desc, kind, ...}
-
-**钱只花在描述上，而且只花一次**。收图时描述已经在识图那步拿过了，
-这里直接复用（``desc`` 参数），不额外调模型；只有库里出现「有图没描述」
-的老条目时，才由 ``describe_missing`` 批量补——那时也先查
-``vision.peek`` 的缓存，同一张图绝不问第二遍。
-
-## 搬到这个仓库时改的四处
-
-原实现跑在另一个分支的插件里，依赖两个宿主侧的东西，这里都换掉了：
-
-* ``vision_service.fetch_bytes`` → 自带的 ``_fetch_bytes``（httpx + file://）；
-* ``vision_service.describe`` → 插件的 ``_vlm_describe_locator``，复用既有模型配置，
-  不另拉一份；
-* ``vision.describe`` 的缓存查询（``peek``）→ 不需要了：只有 ``desc`` 为空时才补，
-  同一张图本来就不会问第二遍；
-* ``client.get_qq_avatar()`` → 直连 qlogo CDN。**上游连接器没有这个接口**
-  （部分 OneBot 实现才有），而反查头像必须能拿到当前头像，所以改成拼公开 URL。
+自动收图、手动上传共用 sticker.json 和 sticker/，原表情包管理页即可
+预览、描述、删除。旧 gallery/index.json 启动时迁移并归档，原图留作备份。
 """
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import re
 import time
 from pathlib import Path
 from typing import Any, Optional
+
+from .sticker_scope import collection_scope, group_sticker_collection_allowed
+from .sticker_store import StickerStore
 
 BROWSE_TOOL_NAME = "browse_gallery"
 AVATAR_TOOL_NAME = "set_avatar"
@@ -72,11 +47,8 @@ def _ext_from_bytes(data: bytes) -> str:
 class QQGalleryService:
     """图库。所有方法都假设跑在插件事件循环里。"""
 
-    INDEX_VERSION = 1
     #: 上限。一张 200KB 算，1200 张就是 240MB，差不多是能接受的尽头。
     MAX_ITEMS = 1200
-    #: 落盘去抖：收图是很频繁的事，不能每张都写一次 JSON。
-    SAVE_DEBOUNCE_SECONDS = 3.0
     #: 一次补描述最多补几张。补描述要花钱，不能一口气补两百张。
     DESCRIBE_BATCH = 6
     #: 换头像最多试几次。QQ 那边偶发「回执 ok 但没落地」，重试能过。
@@ -86,11 +58,8 @@ class QQGalleryService:
     def __init__(self, plugin: Any):
         self.plugin = plugin
         self.logger = getattr(plugin, "logger", None)
-        self._items: dict[str, dict[str, Any]] = {}
-        self._next_id = 1
+        self.store = StickerStore(plugin)
         self._loaded = False
-        self._dirty = False
-        self._save_task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
         self._start_lock = asyncio.Lock()
         #: 吞异常必须留数：分不清「没权限」「本来就没有」「调用失败」，
@@ -116,12 +85,20 @@ class QQGalleryService:
         return Path(self.plugin.data_path()) / "gallery"
 
     def blobs_dir(self) -> Path:
-        d = self.root_dir() / "blobs"
+        d = self.store.directory
         d.mkdir(parents=True, exist_ok=True)
         return d
 
     def _index_path(self) -> Path:
-        return self.root_dir() / "index.json"
+        return self.store.index
+
+    @property
+    def _items(self) -> dict[str, dict[str, Any]]:
+        # Read-through view: UI deletion/upload is immediately reflected here.
+        return {
+            f"g{sid}": {**item, "file": item.get("path", ""), "kind": item.get("kind", "sticker")}
+            for sid, item in self.store.read().items() if isinstance(item, dict)
+        }
 
     def inbox_dir(self) -> Path:
         """投喂目录：往里丢图，下次启动 / 调 import_inbox 就进库。
@@ -198,11 +175,11 @@ class QQGalleryService:
                 return
             self.root_dir().mkdir(parents=True, exist_ok=True)
             try:
-                await asyncio.to_thread(self._load_sync)
+                self._load_sync()
             except Exception as exc:
                 if self.logger:
                     self.logger.warning(f"[Gallery] 载入索引失败: {type(exc).__name__}: {exc}")
-                self._loaded = True
+                raise
         # 投喂目录里有图就顺手收进来。失败只记日志——图库读不了不该
         # 拖垮插件启动。
         try:
@@ -224,75 +201,48 @@ class QQGalleryService:
             )
 
     def _load_sync(self) -> None:
-        path = self._index_path()
-        if not path.exists():
-            self._loaded = True
-            return
         import json
 
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(raw, dict):
-            self._loaded = True
-            return
-        items = raw.get("items")
-        self._items = dict(items) if isinstance(items, dict) else {}
-        try:
-            self._next_id = int(raw.get("next_id") or 1)
-        except (TypeError, ValueError):
-            self._next_id = len(self._items) + 1
+        # Validate the canonical inventory before touching legacy data.
+        self.store.read()
+        legacy = self.root_dir() / "index.json"
+        if legacy.exists():
+            raw = json.loads(legacy.read_text(encoding="utf-8"))
+            items = raw.get("items") if isinstance(raw, dict) else None
+            if not isinstance(items, dict):
+                raise ValueError("Invalid legacy gallery index; original retained")
+            for old_id, item in items.items():
+                if not isinstance(item, dict):
+                    raise ValueError(f"Invalid gallery entry: {old_id}")
+                # Checkpointed entries aren't recreated if the user deleted them.
+                if item.get("migrated_to_sticker"):
+                    continue
+                name = str(item.get("file") or "")
+                root = (self.root_dir() / "blobs").resolve()
+                path = (root / name).resolve()
+                if not name or path.parent != root or not path.is_file():
+                    raise ValueError(f"Missing/unsafe legacy gallery file: {old_id}")
+                fields = {k: v for k, v in item.items() if k not in {"file", "md5"}}
+                # Legacy gallery did not record group_id. A sender alone cannot
+                # prove private provenance, so unknown incoming images stay restricted.
+                group = str(item.get("group") or item.get("group_id") or "")
+                fields.update(
+                    scope=("global" if item.get("source") == "upload" else
+                           f"group:{group}" if group else "restricted"),
+                    origin=str(item.get("sender") or ""), group=group,
+                    sendable=item.get("kind") == "sticker" or item.get("source") == "upload",
+                )
+                result = self.store.add(path.read_bytes(), path.suffix, fields)
+                item["migrated_to_sticker"] = result[0]
+                checkpoint = legacy.with_suffix(".json.tmp")
+                checkpoint.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+                checkpoint.replace(legacy)
+            legacy.replace(legacy.with_name("index.migrated.json"))
         self._loaded = True
 
-    def _save_sync(self) -> None:
-        import json
-
-        payload = {
-            "version": self.INDEX_VERSION,
-            "next_id": self._next_id,
-            "items": self._items,
-        }
-        path = self._index_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8"
-        )
-        tmp.replace(path)
-        self._dirty = False
-
-    def _schedule_save(self) -> None:
-        self._dirty = True
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-        if self._save_task and not self._save_task.done():
-            return
-        self._save_task = loop.create_task(self._delayed_save())
-
-    async def _delayed_save(self) -> None:
-        try:
-            await asyncio.sleep(self.SAVE_DEBOUNCE_SECONDS)
-            async with self._lock:
-                if self._dirty:
-                    await asyncio.to_thread(self._save_sync)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            if self.logger:
-                self.logger.warning(f"[Gallery] 写盘失败: {type(exc).__name__}: {exc}")
-
     async def flush(self) -> None:
-        if self._save_task and not self._save_task.done():
-            # 写盘可能已进入工作线程，cancel 不会停止线程。先 join，避免
-            # 两次保存争用同一个 index.json.tmp，或旧快照覆盖新索引。
-            await self._save_task
-        async with self._lock:
-            if self._dirty:
-                try:
-                    await asyncio.to_thread(self._save_sync)
-                except Exception as exc:
-                    if self.logger:
-                        self.logger.warning(f"[Gallery] 关闭前写盘失败: {type(exc).__name__}")
+        # Writes are durable before remember_bytes returns; no stale delayed flush.
+        return None
 
     async def remember_message(self, message: dict[str, Any], *, segments: Any = None) -> list[str]:
         """Collect inbound images after eligibility checks, reusing VLM descriptions."""
@@ -311,7 +261,9 @@ class QQGalleryService:
             locator = str(data.get("url") or data.get("file") or "").strip()
             if locator:
                 sticker = kind != "image" or str(data.get("subType", data.get("sub_type", ""))) == "1"
-                images[locator] = "sticker" if sticker else "image"
+                # Any sticker marker wins, regardless of duplicate segment order.
+                if sticker or images.get(locator) != "sticker":
+                    images[locator] = "sticker" if sticker else "image"
         for attachment in message.get("attachments") or []:
             if not isinstance(attachment, dict) or attachment.get("type") not in {"image", "image_url"}:
                 continue
@@ -320,9 +272,12 @@ class QQGalleryService:
                 images.setdefault(locator, "image")
         descriptions = message.get("_image_descriptions") or {}
         saved: list[str] = []
+        group_id = str(message.get("group_id") or "").strip()
         for locator, kind in list(images.items())[:3]:
+            if kind == "sticker" and not group_sticker_collection_allowed(self.plugin, group_id):
+                continue
             item_id = await self.remember(
-                locator, kind=kind, desc=str(descriptions.get(locator) or ""),
+                locator, group_id=group_id, kind=kind, desc=str(descriptions.get(locator) or ""),
                 sender_id=str(message.get("user_id") or ""),
                 sender_name=str(message.get("user_nickname") or ""),
             )
@@ -409,12 +364,15 @@ class QQGalleryService:
         source: str = "incoming",
         sender_id: str = "",
         sender_name: str = "",
+        group_id: str = "",
     ) -> Optional[str]:
         """把一张图收进图库，返回 id；收不下就返回 None。
 
         ``desc`` 传已有的描述（识图那步刚拿到的），这里不会再多花一次
         VLM 调用。真没有描述也能存，``describe_missing`` 事后补。
         """
+        if source == "incoming" and kind == "sticker" and not group_sticker_collection_allowed(self.plugin, group_id):
+            return None
         locator = str(locator or "").strip()
         if not locator:
             return None
@@ -436,6 +394,7 @@ class QQGalleryService:
             source=source,
             sender_id=sender_id,
             sender_name=sender_name,
+            group_id=group_id,
         )
 
     async def remember_bytes(
@@ -447,81 +406,45 @@ class QQGalleryService:
         source: str = "incoming",
         sender_id: str = "",
         sender_name: str = "",
+        group_id: str = "",
     ) -> Optional[str]:
         """已经拿到字节时走这条（UI 上传、本地文件都复用）。"""
         if not data:
             return None
+        if source == "incoming" and kind == "sticker" and not group_sticker_collection_allowed(self.plugin, group_id):
+            return None
         await self.start()
-        md5 = hashlib.md5(data).hexdigest()
+        settings = getattr(self.plugin, "_qq_settings", None) or {}
+        policy = str(settings.get("sticker_collect_policy") or "current").strip().lower()
+        if source == "incoming" and kind == "sticker" and policy == "off":
+            return None
+        scope = (collection_scope(group_id=group_id, sender_id=sender_id, policy=policy)
+                 if source == "incoming" else "global")
+        now = time.time()
         async with self._lock:
-            # 去重：同一张图群里转二十次也只占一份，但次数要记——
-            # 「这张又出现了」本身就是有用的信息。
-            for item_id, item in self._items.items():
-                if item.get("md5") != md5:
-                    continue
-                item["times"] = int(item.get("times") or 1) + 1
-                item["last_seen"] = time.time()
-                if desc and not item.get("desc"):
-                    item["desc"] = desc
-                self._diag["remember_dup"] += 1
-                self._schedule_save()
-                return item_id
-            if len(self._items) >= self.MAX_ITEMS:
-                self._evict_one()
-            ext = _ext_from_bytes(data)
-            name = f"{md5}.{ext}"
-            target = self.blobs_dir() / name
+            if source == "incoming" and kind == "sticker" and not group_sticker_collection_allowed(self.plugin, group_id):
+                return None
             try:
-                if not target.exists():
-                    await asyncio.to_thread(target.write_bytes, data)
+                result = self.store.add(data, _ext_from_bytes(data), {
+                    "kind": "sticker" if kind == "sticker" else "image",
+                    "desc": str(desc or "").strip(), "source": source,
+                    "sender": str(sender_id or ""), "sender_name": str(sender_name or ""),
+                    "origin": str(sender_id or ""), "group": str(group_id or ""), "scope": scope,
+                    "sendable": kind == "sticker" or source != "incoming",
+                    "added_at": now, "last_seen": now, "times": 1,
+                    "bytes": len(data), "avatar_at": 0.0,
+                }, limit=self.MAX_ITEMS)
             except Exception as exc:
                 self._diag["remember_fail"] += 1
                 if self.logger:
-                    self.logger.warning(
-                        f"[Gallery] 写图失败: {type(exc).__name__}: {exc}"
-                    )
+                    self.logger.warning(f"[Gallery] 写入统一表情包库存失败: {exc}")
                 return None
-            item_id = f"g{self._next_id}"
-            self._next_id += 1
-            now = time.time()
-            self._items[item_id] = {
-                "md5": md5,
-                "file": name,
-                "kind": "sticker" if kind == "sticker" else "image",
-                "desc": str(desc or "").strip(),
-                "source": source,
-                "sender": str(sender_id or ""),
-                "sender_name": str(sender_name or ""),
-                "added_at": now,
-                "last_seen": now,
-                "times": 1,
-                "bytes": len(data),
-                "avatar_at": 0.0,
-            }
-            self._diag["remember_ok"] += 1
-            self._schedule_save()
-            if self.logger:
-                brief = str(desc or "").strip()[:30] or "（还没描述）"
-                self.logger.info(f"[Gallery] 收进第 {item_id} 张: {brief}")
-        return item_id
-
-    def _evict_one(self) -> None:
-        """满了先淘汰「没描述、也从没被用过」的老图。
-
-        有描述的条目是检索的原料，用过的（发过/当过头像）是她的偏好，
-        都往后排；实在只剩这两种了，才动最老的一张。
-        """
-        def rank(item_id: str) -> tuple:
-            item = self._items.get(item_id) or {}
-            useful = 1 if item.get("desc") else 0
-            used = 1 if (item.get("avatar_at") or item.get("sent")) else 0
-            # 第二维用 added_at 原值：min 取最小 → 同优先级里淘汰**最老**的。
-            # 写成 -added_at 会淘汰最新的，跟"越老越该让位"正好相反。
-            return (useful + used, float(item.get("added_at") or 0))
-
-        victim = min(self._items, key=rank, default=None)
-        if victim:
-            self._items.pop(victim, None)
+            if result is None:
+                self._diag["remember_fail"] += 1
+                return None
+            sid, _entry, created = result
+            self._diag["remember_ok" if created else "remember_dup"] += 1
+            return f"g{sid}"
 
     # ── 查询 ────────────────────────────────────────────────
 
@@ -587,8 +510,9 @@ class QQGalleryService:
         name = str(item.get("file") or "").strip()
         if not name:
             return None
-        path = self.blobs_dir() / name
-        return path if path.exists() else None
+        root = self.blobs_dir().resolve()
+        path = (root / name).resolve()
+        return path if path.parent == root and path.is_file() else None
 
     def stats(self) -> dict[str, Any]:
         total = len(self._items)
@@ -606,7 +530,7 @@ class QQGalleryService:
             "stickers": stickers,
             "images": total - stickers,
             "bytes": size,
-            "root": str(self.root_dir()),
+            "root": str(self.store.directory),
             "diag": dict(self._diag),
         }
 
@@ -653,10 +577,9 @@ class QQGalleryService:
             if not desc:
                 self._diag["describe_fail"] += 1
                 continue
-            item["desc"] = desc
-            self._diag["describe_ok"] += 1
-            done += 1
-            self._schedule_save()
+            if self.store.update(item_id[1:], item["path"], {"desc": desc}):
+                self._diag["describe_ok"] += 1
+                done += 1
         return done
 
     # ── 换头像 ──────────────────────────────────────────────
@@ -764,8 +687,7 @@ class QQGalleryService:
         ok = call_ok and str((result or {}).get("status") or "").lower() != "failed"
         if ok:
             self._diag["avatar_ok"] += 1
-            item["avatar_at"] = time.time()
-            self._schedule_save()
+            self.store.update(item_id[1:], item["path"], {"avatar_at": time.time()})
             if verified is None:
                 self._diag["avatar_unverified"] += 1
         else:

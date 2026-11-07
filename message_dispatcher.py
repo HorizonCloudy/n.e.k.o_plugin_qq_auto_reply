@@ -1150,7 +1150,6 @@ class QQMessageDispatcher:
                 reply_context=reply_context,
                 is_reply_to_bot=is_reply_to_bot,
             )
-            await self.plugin._maybe_notify_backlog_summary(group_id=group_id)
 
     async def handle_private_message(
         self, sender_id: str, message_text: str,

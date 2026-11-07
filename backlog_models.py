@@ -53,6 +53,7 @@ class QQBacklogConversation:
     last_reviewed_at: int = 0
     last_reviewed_message_id: str = ""
     last_summary_at: int = 0
+    # Legacy persisted field; desktop backlog notifications have been removed.
     last_notified_at: int = 0
     messages: list[dict[str, Any]] = field(default_factory=list)
 

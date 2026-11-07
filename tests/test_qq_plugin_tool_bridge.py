@@ -865,7 +865,7 @@ def test_gallery_and_sticker_dispatch_without_a_plugin_bridge():
         set_avatar=AsyncMock(return_value={"ok": True, "verified": True, "id": "g1"}),
     )
     plugin.sticker_lab = SimpleNamespace(
-        should_offer_save=lambda: True,
+        should_offer_save=lambda **kw: True,
         build_save_definition=lambda: SimpleNamespace(name="save_sticker"),
         execute_save=AsyncMock(return_value="saved sticker"),
     )

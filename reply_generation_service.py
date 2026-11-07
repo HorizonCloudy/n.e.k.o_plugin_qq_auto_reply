@@ -628,7 +628,7 @@ class QQReplyGenerationService:
         sticker_tools: list[Any] = []
         sticker_handlers: dict[str, Any] = {}
         sticker_lab = getattr(self.plugin, "sticker_lab", None)
-        if sticker_lab is not None and sticker_lab.should_offer_save():
+        if sticker_lab is not None and sticker_lab.should_offer_save(group_id=str(getattr(context, "group_id", "") or "")):
             try:
                 sticker_tools.append(sticker_lab.build_save_definition())
                 sticker_handlers[STICKER_SAVE_TOOL_NAME] = (

@@ -62,7 +62,7 @@ class _Client:
 def _plugin(tmp_path: Path, *, client: _Client | None = None):
     client = client or _Client()
     plugin = SimpleNamespace(
-        data_path=lambda: str(tmp_path),
+        data_path=lambda name="": str(tmp_path / name),
         logger=_Logger(),
         qq_client=client,
         _admin_qq="12345",

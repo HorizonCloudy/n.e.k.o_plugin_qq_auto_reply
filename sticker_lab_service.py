@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
+import tempfile
 import time
 from collections import deque
 from pathlib import Path
@@ -34,7 +34,8 @@ from typing import Any, Optional
 
 import httpx
 
-from .sticker_scope import collection_scope, entry_scope
+from .sticker_scope import collection_scope, group_sticker_collection_allowed
+from .sticker_store import StickerStore
 
 #: 收集策略。名字与 ``settings_schema.STICKER`` 的 enum 严格一致。
 POLICY_OFF = "off"
@@ -234,6 +235,9 @@ class QQStickerLab:
         if policy == POLICY_OFF:
             self.diag["policy_block"] += 1
             return "我这边没在收集表情包，用文字接话就行。"
+        if not all(group_sticker_collection_allowed(self.plugin, gid) for gid in (item_group, current_group)):
+            self.diag["policy_block"] += 1
+            return "这个群没有开启自动收集表情包，我不会保存。"
         if policy == POLICY_ANY:
             return ""
         if str(item_group or "") != str(current_group or ""):
@@ -256,6 +260,8 @@ class QQStickerLab:
             if not isinstance(message, dict):
                 return
             group_id = str(message.get("group_id") or "").strip()
+            if not group_sticker_collection_allowed(self.plugin, group_id):
+                return
             sender_id = str(message.get("user_id") or "").strip()
             segments = message.get("message")
             if not isinstance(segments, list):
@@ -296,6 +302,8 @@ class QQStickerLab:
         """取最近媒体。group_id=None 不限会话，空串只匹配私聊。"""
         out: list[dict[str, Any]] = []
         for item in reversed(self._recent):
+            if not group_sticker_collection_allowed(self.plugin, item["group_id"]):
+                continue
             if sender_id and item["sender_id"] != sender_id:
                 continue
             if group_id is not None and item["group_id"] != group_id:
@@ -321,44 +329,29 @@ class QQStickerLab:
         if not self._recent:
             return False
         deadline = time.time() - window
-        return any(item["at"] >= deadline for item in self._recent)
+        return any(
+            item["at"] >= deadline and group_sticker_collection_allowed(self.plugin, item["group_id"])
+            for item in self._recent
+        )
 
-    def should_offer_save(self) -> bool:
+    def should_offer_save(self, *, group_id: str = "") -> bool:
         """这一轮该不该把 ``save_sticker`` 挂给模型。
 
         两个前提缺一不可：闸没关（``off`` 时收进来也没用），并且确实有新图。
         判据放在这里而不是生成层，是为了让"什么情况下她手上会有这个工具"
         只有一个出处——散在两层各判一半，迟早对不上。
         """
-        if self.policy() == POLICY_OFF:
+        if self.policy() == POLICY_OFF or not group_sticker_collection_allowed(self.plugin, group_id):
             return False
         return self.has_fresh()
 
     # ── 存取 ────────────────────────────────────────────────
 
     def _load_index(self) -> dict[str, Any]:
-        try:
-            with open(self._index_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except FileNotFoundError:
-            return {}
-        except Exception as exc:
-            self.logger.warning(f"[Sticker] 读 sticker.json 失败: {exc}")
-            return {}
-        return data if isinstance(data, dict) else {}
+        return StickerStore(self.plugin).read()
 
     def _write_index(self, data: dict[str, Any]) -> None:
-        self._index_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self._index_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        # 目录是缓存的（session_instruction_service._sticker_catalog_cache），
-        # 不清的话新收的表情要等到重启才进提示词。
-        service = getattr(self.plugin, "session_instruction_service", None)
-        if service is not None:
-            try:
-                service._sticker_catalog_cache = ""
-            except Exception:
-                pass
+        StickerStore(self.plugin).write(data)
 
     async def _download(self, locator: str) -> bytes:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
@@ -423,6 +416,9 @@ class QQStickerLab:
         ``note`` 是她自己给这张图起的名字。她自己说的通常比看图描述更贴她的用法
         （"就是那张无语的猫"），所以有 note 时放在前面。
         """
+        if self.policy() == POLICY_OFF or not group_sticker_collection_allowed(self.plugin, group_id):
+            self.diag["policy_block"] += 1
+            return None
         url = str(locator or "").strip()
         if not url:
             self.diag["download_fail"] += 1
@@ -444,66 +440,53 @@ class QQStickerLab:
             self.logger.info(f"[Sticker] 图太大跳过: {len(raw)} bytes")
             return None
 
-        digest = hashlib.md5(raw).hexdigest()[:12]
+        digest = hashlib.md5(raw).hexdigest()
         scope = collection_scope(group_id=group_id, sender_id=origin, policy=self.policy())
+        store = StickerStore(self.plugin)
         async with self._lock:
-            data = self._load_index()
-            # 同一作用域内去重；跨会话保留独立文件，避免删除互相影响。
-            for sid, entry in data.items():
-                if not isinstance(entry, dict):
-                    continue
-                if digest in str(entry.get("path") or "") and entry_scope(entry) == scope:
-                    self.diag["dup"] += 1
-                    return {"id": sid, **entry}
+            if self.policy() == POLICY_OFF or not group_sticker_collection_allowed(self.plugin, group_id):
+                self.diag["policy_block"] += 1
+                return None
+            found = store.find(store.read(), digest, scope)
+            if found and found[1].get("desc") and (self._dir / found[1]["path"]).is_file():
+                sid, entry = found
+                store.update(sid, entry["path"], {"kind": "sticker", "sendable": True})
+                self.diag["dup"] += 1
+                return {"id": sid, **entry, "kind": "sticker", "sendable": True}
 
-            ext = self._guess_ext(raw)
-            scope_digest = hashlib.sha256(scope.encode("utf-8")).hexdigest()[:12]
-            filename = f"sticker_{digest}_{scope_digest}{ext}"
-            target = self._dir / filename
+            # VLM may yield to gallery/UI operations: use a staging file, never
+            # delete a canonical image on description failure or permission revoke.
+            self._dir.mkdir(parents=True, exist_ok=True)
+            target = None
             try:
-                self._dir.mkdir(parents=True, exist_ok=True)
-                await asyncio.to_thread(target.write_bytes, raw)
+                with tempfile.NamedTemporaryFile(dir=self._dir, suffix=self._guess_ext(raw), delete=False) as stream:
+                    target = Path(stream.name)
+                    stream.write(raw)
+                desc = await self.describe(target)
+                if note:
+                    desc = f"{note} {desc}".strip()[:_MAX_DESC]
+                if self.policy() == POLICY_OFF or not group_sticker_collection_allowed(self.plugin, group_id):
+                    self.diag["policy_block"] += 1
+                    return None
+                if not desc:
+                    self.diag["describe_empty"] += 1
+                    return None
+                # Reload/commit with no await: preserves UI edits made during VLM.
+                sid, entry, _created = store.add(raw, self._guess_ext(raw), {
+                    "desc": desc, "added_at": time.time(), "sent": 0, "last_sent_at": 0.0,
+                    "origin": str(origin or ""), "group": str(group_id or ""),
+                    "scope": scope, "kind": "sticker", "sendable": True,
+                })
             except Exception:
                 self.diag["write_fail"] += 1
-                self.logger.warning("[Sticker] 写图片失败", exc_info=True)
+                self.logger.warning("[Sticker] 写入库存失败", exc_info=True)
                 return None
-
-            desc = await self.describe(target)
-            if note:
-                desc = f"{note} {desc}".strip()[:_MAX_DESC]
-            if not desc:
-                self.diag["describe_empty"] += 1
-                self.logger.info("[Sticker] 描述为空且没备注，不入库")
-                try:
+            finally:
+                if target is not None:
                     target.unlink(missing_ok=True)
-                except Exception:
-                    pass
-                return None
-
-            next_id = 1
-            while str(next_id) in data:
-                next_id += 1
-            sid = str(next_id)
-            entry = {
-                "desc": desc,
-                "path": filename,
-                "added_at": time.time(),
-                "sent": 0,
-                "last_sent_at": 0.0,
-                "origin": str(origin or ""),
-                "group": str(group_id or ""),
-                "scope": scope,
-            }
-            data[sid] = entry
-            try:
-                await asyncio.to_thread(self._write_index, data)
-            except Exception:
-                self.diag["write_fail"] += 1
-                self.logger.warning("[Sticker] 写索引失败", exc_info=True)
-                return None
 
         self.diag["save_ok"] += 1
-        self.logger.info(f"[Sticker] 收进第 {len(data)} 张: {desc[:30]}")
+        self.logger.info(f"[Sticker] 收进表情包 {sid}: {desc[:30]}")
         return {"id": sid, **entry}
 
     # ── 工具 ────────────────────────────────────────────────
@@ -558,6 +541,10 @@ class QQStickerLab:
         if policy == POLICY_OFF:
             self.diag["policy_block"] += 1
             return "我这边没在收集表情包，用文字接话就行。"
+
+        if not group_sticker_collection_allowed(self.plugin, group_id):
+            self.diag["policy_block"] += 1
+            return "这个群没有开启自动收集表情包，我不会保存。"
 
         # 找"要收哪一张"：先在当前会话里按人找，找不到再退到当前会话任何人。
         # 群聊里"这张存下来"经常指的不是当前发言者那张（A 发图、B 说这图好玩）。

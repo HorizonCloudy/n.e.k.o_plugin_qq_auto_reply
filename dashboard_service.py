@@ -12,6 +12,7 @@ from .group_permission import DEFAULT_GROUP_LEVEL
 class QQDashboardService:
     def __init__(self, plugin: Any):
         self.plugin = plugin
+        self._group_edit_lock = asyncio.Lock()
 
     def _build_open_ui_payload(self, *, available: bool) -> dict[str, Any]:
         path = f"/plugin/{self.plugin.plugin_id}/ui/" if available else ""
@@ -793,6 +794,7 @@ class QQDashboardService:
         group_id: str,
         level: str = DEFAULT_GROUP_LEVEL,
         normal_relay_probability: Optional[float] = None,
+        sticker_collect_enabled: Optional[bool] = None,
     ):
         if not self.plugin.group_permission_mgr:
             return Err(SdkError(f"NOT_INITIALIZED: {self.plugin.i18n.t('errors.group_permission_manager_not_initialized', default='群聊权限管理器未初始化')}"))
@@ -800,22 +802,41 @@ class QQDashboardService:
             value = float(normal_relay_probability)
             if value < 0.0 or value > 1.0:
                 return Err(SdkError(f"INVALID_ARGUMENT: {self.plugin.i18n.t('errors.invalid_probability', default='normal_relay_probability 必须在 0 到 1 之间')}"))
-        self.plugin.group_permission_mgr.add_group(group_id, level, normal_relay_probability=normal_relay_probability)
-        await self.plugin.backlog_store.ensure_group_placeholder(group_id, group_display_name=f"QQ群 {group_id}")
-        success = await self.plugin.settings_service.persist_business_config()
-        payload = await self.build_dashboard_state()
-        payload["persisted"] = success
-        return Ok(payload)
+        if sticker_collect_enabled is not None and not isinstance(sticker_collect_enabled, bool):
+            return Err(SdkError("INVALID_ARGUMENT: sticker_collect_enabled 必须是布尔值"))
+        async with self._group_edit_lock:
+            manager = self.plugin.group_permission_mgr
+            # Disabling is immediate; enabling is published only after a durable save.
+            manager.add_group(
+                group_id, level, normal_relay_probability=normal_relay_probability,
+                sticker_collect_enabled=False if sticker_collect_enabled is not None else None,
+            )
+            await self.plugin.backlog_store.ensure_group_placeholder(group_id, group_display_name=f"QQ群 {group_id}")
+            overlay = None
+            if sticker_collect_enabled is True:
+                groups = manager.list_groups()
+                for group in groups:
+                    if group["group_id"] == str(group_id).strip():
+                        group["sticker_collect_enabled"] = True
+                overlay = {"trusted_groups": groups}
+            success = await self.plugin.settings_service.persist_business_config(overlay=overlay)
+            if success and sticker_collect_enabled is True:
+                manager.set_sticker_collection_enabled(group_id, True)
+                self.plugin._qq_settings["trusted_groups"] = manager.list_groups()
+            payload = await self.build_dashboard_state()
+            payload["persisted"] = success
+            return Ok(payload)
 
     async def remove_trusted_group(self, *, group_id: str):
         if not self.plugin.group_permission_mgr:
             return Err(SdkError(f"NOT_INITIALIZED: {self.plugin.i18n.t('errors.group_permission_manager_not_initialized', default='群聊权限管理器未初始化')}"))
-        self.plugin.group_permission_mgr.remove_group(group_id)
-        await self.plugin.backlog_store.remove_group_placeholder(group_id)
-        success = await self.plugin.settings_service.persist_business_config()
-        payload = await self.build_dashboard_state()
-        payload["persisted"] = success
-        return Ok(payload)
+        async with self._group_edit_lock:
+            self.plugin.group_permission_mgr.remove_group(group_id)
+            await self.plugin.backlog_store.remove_group_placeholder(group_id)
+            success = await self.plugin.settings_service.persist_business_config()
+            payload = await self.build_dashboard_state()
+            payload["persisted"] = success
+            return Ok(payload)
 
     async def sync_qrcode(self):
         await self.plugin.napcat_service.sync_napcat_qrcode_into_static()
