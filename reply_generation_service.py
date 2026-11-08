@@ -10,6 +10,7 @@ from utils.token_tracker import set_call_type
 
 from .companion_context_service import consent_enabled
 from .gallery_service import AVATAR_TOOL_NAME, BROWSE_TOOL_NAME
+from .memory_recall_preflight import (explicit_memory_query, preflight_instruction, memory_promise_only_reply)
 from .memory_tool_service import RECALL_TOOL_HTTP_TIMEOUT_SECONDS, RECALL_TOOL_NAME
 from .pipeline_models import (
     QQModelResult,
@@ -79,9 +80,11 @@ class QQReplyGenerationService:
             )
             try:
                 set_call_type("conversation")
+                await self._ensure_explicit_memory_recall(context)
                 fb_prompt, fb_recalled = self._sanitize_for_live_consent(
                     context, context.system_prompt, context.recalled_memory_text,
                 )
+                fb_prompt += preflight_instruction(getattr(context, "memory_preflight_status", ""), has_memory=bool(fb_recalled))
                 # 与主会话路径对偶：清洗只保证"调用发起时"的授权，调用期间
                 # 撤销的话返回文本里仍带着那些内容。
                 consent_before = self._consent_dependency_snapshot(context)
@@ -90,7 +93,10 @@ class QQReplyGenerationService:
                     {"role": "system", "content": self._compose_turn_instructions(fb_prompt, fb_recalled)},
                     {"role": "user", "content": context.prompt_message},
                 ])
-                fallback_reply = getattr(response, "content", "") or ""
+                fallback_reply = memory_promise_only_reply(
+                    getattr(response, "content", "") or "",
+                    getattr(context, "memory_preflight_status", ""),
+                )
                 if fallback_reply and self._consent_dependency_revoked(
                     context, consent_before,
                 ):
@@ -309,6 +315,52 @@ class QQReplyGenerationService:
             if context.ephemeral_session:
                 await self.plugin.session_runtime_service.discard_session(session_key, reason="ephemeral_cleanup")
 
+    async def _ensure_explicit_memory_recall(self, context: Any) -> None:
+        """Run before generation, under the primary session lock; never widen scopes."""
+        if (getattr(context, "memory_preflight_status", "")
+                or not getattr(context, "use_memory_context", False)
+                or is_synthetic_source(getattr(context, "source_kind", ""))):
+            return
+        query = explicit_memory_query(getattr(context, "message", ""))
+        if not query:
+            return
+        # Set before awaiting so fallback cannot repeat a failed/cancelled read.
+        context.memory_preflight_status = "failed"
+        try:
+            _, consumed = await asyncio.wait_for(
+                self.plugin.memory_tool_service.execute_recall(context=context, arguments={"query": query}),
+                timeout=RECALL_TOOL_HTTP_TIMEOUT_SECONDS + 1.0,
+            )
+            self._store_consent_snapshot(context, consumed)
+            context.memory_preflight_status = (
+                "failed" if getattr(context, "memory_recall_failed", False) else
+                "hit" if getattr(context, "recalled_memory_used", False) else "empty"
+            )
+        except Exception as exc:
+            self.plugin.logger.warning("明确记忆问题预检失败: %s", type(exc).__name__)
+        trace = QQPipelineStageTrace(
+            stage="memory_recall_preflight", status=context.memory_preflight_status,
+            metadata={"recalled_memory_length": len(getattr(context, "recalled_memory_text", "") or "")},
+        )
+        traces = getattr(context, "traces", None)
+        if isinstance(traces, list):
+            traces.append(trace)
+        self.plugin.logger.info("memory_recall_preflight: status=%s length=%s",
+                                context.memory_preflight_status, trace.metadata["recalled_memory_length"])
+
+    @staticmethod
+    def _guard_memory_promise(context: Any, session: Any, chunks: list, history_before: int) -> None:
+        original = "".join(chunks)
+        replacement = memory_promise_only_reply(original, getattr(context, "memory_preflight_status", ""))
+        if replacement == original:
+            return
+        chunks[:] = [replacement]
+        for row in (getattr(session, "_conversation_history", []) or [])[history_before:]:
+            if getattr(row, "type", "") == "ai":
+                row.content = memory_promise_only_reply(row.content, context.memory_preflight_status)
+            elif isinstance(row, dict) and row.get("role") == "assistant" and not row.get("tool_calls"):
+                row["content"] = memory_promise_only_reply(row.get("content", ""), context.memory_preflight_status)
+
     def _compose_turn_instructions(self, system_prompt: str, recalled_memory_text: str) -> str:
         return "\n\n".join(part for part in [system_prompt, recalled_memory_text] if part)
 
@@ -334,6 +386,7 @@ class QQReplyGenerationService:
             # 生成前最后一道复检（集中在一处，读点/构建后/锁内三段窗口
             # 共用同一判据）：共享会话锁与附件排队可能让本轮等很久，其间
             # 任一授权被撤销，已注入 prompt 的对应段都不得用于生成。
+            await self._ensure_explicit_memory_recall(context)
             turn_system_prompt, turn_recalled_text = self._sanitize_for_live_consent(
                 context, context.system_prompt, context.recalled_memory_text,
             )
@@ -366,6 +419,9 @@ class QQReplyGenerationService:
                     tool_round_epoch = current_epoch
                     raw_pre_tool_text = "".join(reply_chunks)
 
+            turn_system_prompt += preflight_instruction(
+                getattr(context, "memory_preflight_status", ""), has_memory=bool(turn_recalled_text),
+            )
             restore_session_prompt = self._apply_turn_memory_context(
                 user_session, turn_system_prompt, turn_recalled_text,
                 # 私聊 participant 会话的 prompt 也是建会话时烙进去的：
@@ -373,7 +429,8 @@ class QQReplyGenerationService:
                 # 每轮都换成刚构建的 prompt，才能让生成内容与本轮依赖快照
                 # 对齐；restore 保证持久会话仍保留创建时的原始 system 行。
                 always_refresh=(
-                    context.is_group
+                    bool(getattr(context, "memory_preflight_status", ""))
+                    or context.is_group
                     or bool(getattr(context, "companion_section", ""))
                     or bool(getattr(context, "cross_session_section", ""))
                     or user_data.get("private_memory_mode") == "participant"
@@ -437,6 +494,7 @@ class QQReplyGenerationService:
                 )
 
                 completed = await self.plugin._wait_session_response_complete(user_session)
+                self._guard_memory_promise(context, user_session, reply_chunks, history_before)
                 if armed_bridge_tools:
                     self._finish_tool_audit(user_session, session_key, reply_chunks, history_before)
                 if self._consent_dependency_revoked(context, consent_before):
@@ -848,10 +906,9 @@ class QQReplyGenerationService:
         """Install this turn's recall_memory tool + handler on the client.
 
         Returns whether the tool is actually armed. This is the ONLY
-        recall channel: when arming fails the turn simply has no recall.
-        There is deliberately no build-time fallback recall to catch it —
-        that path fired a retrieval round-trip on every single turn, even
-        the ones whose reply never needed memory.
+        model-directed recall channel. Explicit retrospective requests have
+        already used the same authorized service in a bounded preflight.
+        Ordinary conversation still leaves recall to the model.
         """
         if not getattr(context, "use_memory_context", False):
             return False
@@ -1016,7 +1073,7 @@ class QQReplyGenerationService:
         # tool 轮——每次都是一段 5s HTTP，会击穿超时预算里"一次召回"的
         # 假设，而这条路径超时的代价是丢弃整个共享群会话。空参试探
         # （execute_recall 本就不发 HTTP）不烧额度。
-        recall_executed = [False]
+        recall_executed = [bool(getattr(context, "memory_preflight_status", ""))]
 
         async def _handle_recall_tool(tool_call: Any) -> ToolResult:
             tool_service = self.plugin.memory_tool_service
@@ -1024,12 +1081,18 @@ class QQReplyGenerationService:
             substantive = tool_service.has_recall_arguments(arguments)
             if substantive and recall_executed[0]:
                 self.plugin.logger.info(
-                    "recall_memory 本轮已执行过，追加调用返回空结果"
+                    "recall_memory 本轮已执行过，不再重复检索"
                 )
+                output = tool_service.no_result_text()
+                if getattr(context, "memory_preflight_status", ""):
+                    _, available = self._sanitize_for_live_consent(
+                        context, context.system_prompt, context.recalled_memory_text,
+                    )
+                    output = preflight_instruction(context.memory_preflight_status, has_memory=bool(available))
                 return ToolResult(
                     call_id=getattr(tool_call, "call_id", "") or "",
                     name=getattr(tool_call, "name", "") or "recall_memory",
-                    output=tool_service.no_result_text(),
+                    output=output,
                 )
             if substantive:
                 recall_executed[0] = True

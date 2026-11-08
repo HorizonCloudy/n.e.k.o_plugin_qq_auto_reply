@@ -351,6 +351,7 @@ class QQMemoryToolService:
             self.plugin.logger.warning(
                 f"recall_memory 工具召回失败（返回空结果）: {exc}"
             )
+            context.memory_recall_failed = True
             return no_result, {}
 
         if is_group:
@@ -415,8 +416,8 @@ class QQMemoryToolService:
             consumed["private_participant_memory_enabled"] = True
         # 回填给 direct fallback：主会话空回复时 fallback 只带
         # context.recalled_memory_text——本轮模型真的调过工具、读到了内容，
-        # 这份召回就该跟着 fallback 一起用（内容仍来自 tool call，不是
-        # 宿主的自动召回）。used_member_subject 一并置位：member 撤销时
+        # 这份召回就该跟着 fallback 一起用（包括明确记忆问题的预检）。
+        # used_member_subject 一并置位：member 撤销时
         # _sanitize_for_live_consent 才会把这段从 fallback prompt 里撤掉。
         try:
             context.recalled_memory_text = LONG_TERM_MEMORY_SECTION.format(

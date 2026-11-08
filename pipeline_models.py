@@ -259,6 +259,9 @@ class QQReplyContext:
     login_status: str
     login_self_id: str | None
     login_nickname: str | None
+    # One explicit-request preflight per turn, shared with direct fallback.
+    memory_preflight_status: str = ""
+    memory_recall_failed: bool = False
     current_message_id: str = ""
     force_reply: bool = False
     source_kind: str = ""

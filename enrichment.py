@@ -20,6 +20,7 @@ from urllib.parse import unquote
 
 import httpx
 
+from .media_reply_policy import render_image_description
 from .message_chain import (
     At,
     Emoji,
@@ -440,9 +441,10 @@ class QQMessageEnricher:
                         "INFO",
                         f"[VLM] 引用图描述: {desc[:40]}",
                     )
-                    chain.add(Text(f"[Image {desc}]"))
+                    chain.add(Text(render_image_description(seg, desc)))
                 else:
-                    chain.add(Image(url=img_url))
+                    marker = render_image_description(seg, "")
+                    chain.add(Text(marker) if marker else Image(url=img_url))
             elif st == "face":
                 chain.add(Emoji(emoji_id=str(data.get("id") or "")))
             elif st == "at":
@@ -793,42 +795,43 @@ class QQMessageEnricher:
         segments = self._message_segments(message)
         if not isinstance(segments, list):
             return
-        img_urls: list[str] = []
-        for seg in segments:
-            if isinstance(seg, dict) and seg.get("type") == "image":
-                sd = seg.get("data") or {}
-                u = str(sd.get("url") or sd.get("file") or "").strip()
-                if u:
-                    img_urls.append(u)
-        if img_urls:
-            self._emit_log("DEBUG", f"[VLM] 检测到 {len(img_urls)} 张主消息图片, 开始描述...")
+        images = [seg for seg in segments if isinstance(seg, dict) and seg.get("type") == "image"]
+        if images and self._image_describer:
+            self._emit_log("DEBUG", f"[VLM] 检测到 {len(images)} 张主消息图片, 开始描述...")
+        # Keep one slot per source image, including failures; otherwise a later
+        # successful caption can be attached to an earlier failed image/sticker.
         descriptions: list[str] = []
-        for img_url in img_urls:
-            try:
-                desc = await asyncio.wait_for(self._image_describer(img_url), timeout=8.0)
-                if desc:
-                    descriptions.append(f"[Image {desc}]")
-                    message.setdefault("_image_descriptions", {})[img_url] = desc
-                    self._emit_log("INFO", f"[VLM] 图片描述: {desc[:40]}")
-                else:
-                    self._emit_log("DEBUG", "[VLM] 图片描述返回为空")
-            except Exception as e:
-                self._emit_log("DEBUG", f"[VLM] 图片描述失败: {type(e).__name__}")
-        if not descriptions:
+        for seg in images:
+            sd = seg.get("data")
+            sd = sd if isinstance(sd, dict) else {}
+            img_url = str(sd.get("url") or sd.get("file") or "").strip()
+            desc = ""
+            if img_url and self._image_describer:
+                try:
+                    desc = await asyncio.wait_for(self._image_describer(img_url), timeout=8.0) or ""
+                    if desc:
+                        message.setdefault("_image_descriptions", {})[img_url] = desc
+                        self._emit_log("INFO", f"[VLM] 图片描述: {desc[:40]}")
+                    else:
+                        self._emit_log("DEBUG", "[VLM] 图片描述返回为空")
+                except Exception as e:
+                    self._emit_log("DEBUG", f"[VLM] 图片描述失败: {type(e).__name__}")
+            descriptions.append(render_image_description(seg, desc))
+        if not any(descriptions):
             return
         base = str(message.get("content") or message.get("raw_message") or "").strip()
         if base:
             _it = iter(descriptions)
 
             def _replace_image(match) -> str:
-                return next(_it, match.group(0))
+                return next(_it, "") or match.group(0)
 
             new_text = re.sub(r"\[CQ:image,[^\]]*\]", _replace_image, base)
-            leftover = list(_it)
+            leftover = [part for part in _it if part]
             if leftover:
                 new_text = f"{new_text} {' '.join(leftover)}".strip()
         else:
-            new_text = " ".join(descriptions)
+            new_text = " ".join(part for part in descriptions if part)
         message["raw_message"] = new_text
         message["content"] = new_text
 
@@ -867,6 +870,6 @@ class QQMessageEnricher:
                 self._emit_log("DEBUG", f"[File] 文件内容拉取超时或失败: {type(e).__name__}")
             message.pop("_pending_file_ids", None)
 
-        if self._image_describer:
-            await self._inject_image_descriptions(message)
+        # Transport sticker metadata remains useful even when VLM is disabled.
+        await self._inject_image_descriptions(message)
         return message

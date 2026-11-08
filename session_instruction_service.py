@@ -35,6 +35,7 @@ from .scene_prompt_templates import (
     SCENE_PRIVATE_CHAT,
 )
 from .sticker_scope import sticker_allowed
+from .media_reply_policy import media_conversation_instruction
 from .time_context import build_time_context  # noqa: E402  (由 ruff --fix 归位)
 
 
@@ -550,6 +551,8 @@ class QQSessionInstructionService:
             sections, group_id, is_group,
         )
         self._append_attention_context_section(sections, group_id, is_group)
+        # Interaction policy must also cover custom format templates and open-platform turns.
+        sections.append(media_conversation_instruction(user_language))
         sections.append(self._resolve_static_layer("detail_constraints_section", DETAIL_CONSTRAINTS_SECTION, user_language))
         sections.append(self._resolve_static_layer("output_prompt_section", OUTPUT_PROMPT_SECTION, user_language))
 
