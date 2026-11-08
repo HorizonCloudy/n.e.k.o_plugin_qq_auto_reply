@@ -516,6 +516,11 @@ class QQPluginToolService:
                 continue
             if not row.get("entries"):
                 continue
+            if plugin_id == "video_reader":
+                # Never offer desktop-push entries to a QQ conversation.
+                if "prepare_for_qq" not in row["entries"]:
+                    continue
+                row = {**row, "entries": ["prepare_for_qq"]}
             chosen.append((row, tier))
         return chosen[:MAX_MOUNTED_PLUGINS]
 
@@ -529,6 +534,8 @@ class QQPluginToolService:
         from main_logic.tool_calling import ToolDefinition
 
         entries = list(candidate.get("entries") or [])
+        if candidate.get("plugin_id") == "video_reader":
+            entries = [entry for entry in entries if entry == "prepare_for_qq"]
         hints = candidate.get("entry_hints") if isinstance(candidate.get("entry_hints"), dict) else {}
         name = str(candidate.get("name") or candidate.get("plugin_id") or "")
         description = str(candidate.get("description") or "").strip()
@@ -543,6 +550,13 @@ class QQPluginToolService:
             hint = str(hints.get(entry_id) or "").strip()
             lines.append(f"  - {entry_id}：{hint}" if hint else f"  - {entry_id}")
         lines.append("params 是一个 JSON 对象，内容按该 entry 自己的入参填。")
+        if candidate.get("plugin_id") == "video_reader":
+            lines.append(
+                "QQ 看视频仅用 prepare_for_qq，params 必填 source（用户给出的公开视频链接，支持 B站分享文本/Markdown），"
+                "可选 question、start_seconds、seconds（默认300秒）。每轮只看一个视频。"
+                "先实际调用，等待画面分析结果后在当前 QQ 会话一次性概括；不发送进度，不在桌面回复。"
+                "只分析抽样画面、不分析声音，长视频须说明本次观看范围，不可凭标题编造。"
+            )
         # 真机 16:53 的教训：使用者让她"用文本分析插件分析一下"，她回「好，我这就再帮你提交
         # 一次」，而那一轮**根本没有工具调用**（对端插件的日志里没有对应 entry）。
         # 光靠工具结果里那句话管不住这种情形 —— 得在**工具定义**里就写死这条：
@@ -595,6 +609,10 @@ class QQPluginToolService:
             self.tool_name(row["plugin_id"]): set(row.get("entries") or [])
             for row, _tier in mounted
         }
+        video_name = self.tool_name("video_reader")
+        if video_name in allowed:
+            allowed[video_name] &= {"prepare_for_qq"}
+        video_attempted = False
         #: 每个工具对应的"查异步任务"的 entry（同一插件里 id 含 status 的那个）。
         pollers: dict[str, str] = {}
         for row, _tier in mounted:
@@ -603,6 +621,7 @@ class QQPluginToolService:
                 pollers[self.tool_name(row["plugin_id"])] = poller
 
         async def _handle(tool_call: Any) -> Any:
+            nonlocal video_attempted
             call_id = getattr(tool_call, "call_id", "") or ""
             name = str(getattr(tool_call, "name", "") or "")
             entries = allowed.get(name)
@@ -632,6 +651,22 @@ class QQPluginToolService:
                 or self.tiers().get(plugin_id) not in self.allowed_tiers_for(permission)
             ):
                 return ToolResult(call_id=call_id, name=name, output="当前权限已失效，不能调用这个工具。")
+            if plugin_id == "video_reader":
+                if video_attempted:
+                    return ToolResult(call_id=call_id, name=name, output="本轮已尝试看一个视频，请依据已有结果回复；继续看需用户另发一条消息。")
+                video_attempted = True
+                from .video_tool_service import analyze_qq_video
+
+                def still_allowed() -> bool:
+                    level = current_conversation_permission(self.plugin, conversation)
+                    return (
+                        channel_allows_plugin_tools(getattr(self.plugin, "qq_client", None))
+                        and self.tiers().get(plugin_id) in self.allowed_tiers_for(level)
+                    )
+
+                output = await analyze_qq_video(self.plugin, params, still_allowed)
+                emit_bridge_log(self.plugin, "INFO", "[PluginTool] video_reader:prepare_for_qq -> text result")
+                return ToolResult(call_id=call_id, name=name, output=redact_text(output))
             output, payload = await self.call_plugin_entry_with_payload(
                 plugin_id, entry_id, params, session_key=session_key,
             )

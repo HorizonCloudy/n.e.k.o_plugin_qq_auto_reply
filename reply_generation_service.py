@@ -484,6 +484,7 @@ class QQReplyGenerationService:
                     from .plugin_tool_service import CALL_TIMEOUT_SECONDS
 
                     turn_timeout += CALL_TIMEOUT_SECONDS * 2
+                    turn_timeout += getattr(user_session, "_qq_video_tool_budget", 0.0)
                 if armed_builtin_tools:
                     # 收表情包是"下载 + 看图"两次网络往返，都不在 LLM 流的预算里。
                     # 不单独加的话，慢一点就会撞上超时——而这条路径超时的代价是
@@ -681,6 +682,7 @@ class QQReplyGenerationService:
         NapCat 那边是"群里什么样的人都有"的通道，多给一层工具面就多一层风险；
         等这边跑顺了再谈。
         """
+        user_session._qq_video_tool_budget = 0.0
         user_session._qq_tool_audit = {"started": 0, "returned": 0, "names": []}
         session_key = session_key or str(getattr(context, "session_key", "") or "")
         # 表情包：跟 recall / 插件工具是两条独立的线，但**不是常挂**——
@@ -815,6 +817,10 @@ class QQReplyGenerationService:
             f"（权限 {getattr(context, 'permission_level', '') or 'unknown'}）: "
             + "、".join(row["plugin_id"] for row, _tier in mounted),
         )
+        if bridge_tools and any(row.get("plugin_id") == "video_reader" for row, _ in mounted):
+            from .video_tool_service import VIDEO_TURN_BUDGET_SECONDS
+
+            user_session._qq_video_tool_budget = VIDEO_TURN_BUDGET_SECONDS
         return True, bool(bridge_tools), bool(sticker_tools or gallery_tools)
 
     @staticmethod
