@@ -5,13 +5,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-
-from plugin.plugins.qq_auto_reply.media_reply_policy import (
-    is_sticker_image, render_image_description, media_conversation_instruction,
-)
-from plugin.plugins.qq_auto_reply.enrichment import QQMessageEnricher
-from plugin.plugins.qq_auto_reply.connector_seam import OneBotClient
 from plugin.plugins.qq_auto_reply import session_instruction_service as instructions
+from plugin.plugins.qq_auto_reply.connector_seam import OneBotClient
+from plugin.plugins.qq_auto_reply.enrichment import QQMessageEnricher
+from plugin.plugins.qq_auto_reply.media_reply_policy import (
+    is_sticker_image,
+    media_conversation_instruction,
+    render_image_description,
+)
 
 
 def image(url="first", **metadata):

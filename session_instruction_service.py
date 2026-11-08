@@ -11,6 +11,7 @@ from config.prompts.prompts_sys import (
 )
 from utils.language_utils import get_global_language_full
 
+from .media_reply_policy import media_conversation_instruction
 from .pipeline_models import QQInstructionBundle
 from .prompt_fragment_templates import (
     ACCOUNTS_PROMPT_SECTION,
@@ -35,7 +36,6 @@ from .scene_prompt_templates import (
     SCENE_PRIVATE_CHAT,
 )
 from .sticker_scope import sticker_allowed
-from .media_reply_policy import media_conversation_instruction
 from .time_context import build_time_context  # noqa: E402  (由 ruff --fix 归位)
 
 

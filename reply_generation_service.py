@@ -10,7 +10,7 @@ from utils.token_tracker import set_call_type
 
 from .companion_context_service import consent_enabled
 from .gallery_service import AVATAR_TOOL_NAME, BROWSE_TOOL_NAME
-from .memory_recall_preflight import (explicit_memory_query, preflight_instruction, memory_promise_only_reply)
+from .memory_recall_preflight import explicit_memory_query, memory_promise_only_reply, preflight_instruction
 from .memory_tool_service import RECALL_TOOL_HTTP_TIMEOUT_SECONDS, RECALL_TOOL_NAME
 from .pipeline_models import (
     QQModelResult,
