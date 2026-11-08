@@ -1,4 +1,5 @@
 """Run the real initiative form handlers in Node (no live QQ or writes to user config)."""
+
 import json
 import shutil
 import subprocess
@@ -10,22 +11,37 @@ from _ui_source import fn_body
 PAGE = Path(__file__).resolve().parents[1] / "static" / "napcat.html"
 
 
-@pytest.mark.parametrize("scenario", [
-    "general_enable", "general_disable", "dedicated_failure", "transport_failure",
-    "dedicated_success", "dedicated_disable", "general_failure",
-    "independent_dirty", "input_and_refresh", "invalid_greeting_time", "midnight_greeting",
-    "multiple_windows", "remove_all", "legacy_migration", "escape_sample", "limit", "slot_dirty",
-])
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "general_enable",
+        "general_disable",
+        "dedicated_failure",
+        "transport_failure",
+        "dedicated_success",
+        "dedicated_disable",
+        "general_failure",
+        "independent_dirty",
+        "input_and_refresh",
+        "invalid_greeting_time",
+        "midnight_greeting",
+        "multiple_windows",
+        "remove_all",
+        "legacy_migration",
+        "escape_sample",
+        "limit",
+        "slot_dirty",
+    ],
+)
 def test_initiative_settings_handlers(scenario):
     node = shutil.which("node")
     if not node:
         pytest.skip("Node.js required for UI handler tests")
     html = PAGE.read_text(encoding="utf-8")
-    initiative = html[html.index("function initiativeHours"):]
-    initiative = initiative[:initiative.index("(function(){")]
+    initiative = html[html.index("function initiativeHours") :]
+    initiative = initiative[: initiative.index("(function(){")]
     save = "async function doSave(){" + fn_body(html, "doSave") + "}"
-    listener = next(line for line in html.splitlines()
-                    if line.startswith("document.addEventListener('input'"))
+    listener = next(line for line in html.splitlines() if line.startswith("document.addEventListener('input'"))
     harness = r"""
 const assert = require('node:assert/strict');
 let _settingsDirty = false, _initiativeDirty = false, currentPage = 'config';
@@ -187,9 +203,10 @@ function edit(enabled) {
 })().catch(error => {console.error(error); process.exitCode=1;});
 """
     escape = "function escapeHtml(s){" + fn_body(html, "escapeHtml") + "}"
-    source = harness + escape + initiative + save + listener + "\nconst scenario=" + json.dumps(scenario) + ";\n" + checks
-    result = subprocess.run([node, "-"], input=source, text=True, encoding="utf-8",
-                            capture_output=True, timeout=20)
+    source = (
+        harness + escape + initiative + save + listener + "\nconst scenario=" + json.dumps(scenario) + ";\n" + checks
+    )
+    result = subprocess.run([node, "-"], input=source, text=True, encoding="utf-8", capture_output=True, timeout=20)
     assert result.returncode == 0, result.stderr
 
 
@@ -206,16 +223,34 @@ def test_greeting_status_shows_server_plan(trigger, label):
     if not node:
         pytest.skip("Node.js required for UI handler tests")
     body = fn_body(PAGE.read_text(encoding="utf-8"), "renderInitiativeStatus")
-    source = r"""
+    source = (
+        r"""
 const assert=require('node:assert/strict');
 const el={style:{}};
 const document={getElementById:()=>el};
 function t(k,f){return f;}
 function tf(k,f,values){return f.replace(/\{(\w+)\}/g,(_,key)=>values[key]);}
-""" + "function renderInitiativeStatus(d){" + body + "}\n"
-    snapshot = {"enabled": True, "has_admin": True, "greeting": {"enabled": True, "slots": [
-        {"start": "09:00", "end": "10:00", "trigger": trigger, "planned_at": 1794101400,
-         "blocked_reason": "等待时间段内的随机时间"}]}}
+"""
+        + "function renderInitiativeStatus(d){"
+        + body
+        + "}\n"
+    )
+    snapshot = {
+        "enabled": True,
+        "has_admin": True,
+        "greeting": {
+            "enabled": True,
+            "slots": [
+                {
+                    "start": "09:00",
+                    "end": "10:00",
+                    "trigger": trigger,
+                    "planned_at": 1794101400,
+                    "blocked_reason": "等待时间段内的随机时间",
+                }
+            ],
+        },
+    }
     source += "renderInitiativeStatus(" + json.dumps(snapshot) + ");\n"
     source += "assert.ok(el.textContent.includes(" + json.dumps(label) + "));\n"
     source += "assert.ok(el.textContent.includes('09:00–10:00')); assert.ok(el.textContent.includes('计划'));\n"

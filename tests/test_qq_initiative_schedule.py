@@ -1,4 +1,5 @@
 """Multi-window scheduling: local-time boundaries, persistence, UI save and tools."""
+
 import asyncio
 import json
 from datetime import datetime
@@ -6,29 +7,57 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from plugin.sdk.plugin import Err, Ok, SdkError
 from plugin.plugins.qq_auto_reply.initiative_schedule import normalize_greeting_slots, slot_window
-from plugin.plugins.qq_auto_reply.proactive_initiative_service import QQProactiveInitiativeService, STATE_FILE
-from test_qq_proactive_initiative import ADMIN, _greeting_plugin, greeting_clock
+from plugin.plugins.qq_auto_reply.proactive_initiative_service import STATE_FILE, QQProactiveInitiativeService
+from plugin.sdk.plugin import Err, Ok, SdkError
+from test_qq_proactive_initiative import ADMIN, _greeting_plugin
+
+
+@pytest.fixture
+def greeting_clock(monkeypatch):
+    import time
+
+    clock = [datetime(2026, 11, 8, 9, 0, 30).timestamp()]
+    monkeypatch.setattr(time, "time", lambda: clock[0])
+    return clock
 
 
 def slot(sid="morning", **kw):
-    return dict(dict(id=sid, enabled=True, start="09:00", end="10:00",
-                     mode="greeting", sample="早安呀", topic=""), **kw)
+    return dict(
+        dict(id=sid, enabled=True, start="09:00", end="10:00", mode="greeting", sample="早安呀", topic=""), **kw
+    )
 
 
 def configured(tmp_path, slots, **kw):
-    settings = {"proactive_initiative_greeting_slots": slots,
-                "proactive_initiative_min_gap_seconds": 0,
-                "proactive_initiative_max_per_day": 12}
+    settings = {
+        "proactive_initiative_greeting_slots": slots,
+        "proactive_initiative_min_gap_seconds": 0,
+        "proactive_initiative_max_per_day": 12,
+    }
     settings.update(kw.pop("settings", {}))
     return _greeting_plugin(tmp_path, settings=settings, **kw)
 
 
-@pytest.mark.parametrize("value", [None, {}, "09:00", [None], [slot(start="9:00")],
-    [slot(end="24:00")], [slot(end="09:00")], [slot(enabled=1)], [slot(mode="bad")],
-    [slot(id="<bad>")], [slot(), slot()], [slot(sample="x"*501)],
-    [slot(topic="x"*301)], [slot(sample=None)], [slot(str(i)) for i in range(13)]])
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        {},
+        "09:00",
+        [None],
+        [slot(start="9:00")],
+        [slot(end="24:00")],
+        [slot(end="09:00")],
+        [slot(enabled=1)],
+        [slot(mode="bad")],
+        [slot(id="<bad>")],
+        [slot(), slot()],
+        [slot(sample="x" * 501)],
+        [slot(topic="x" * 301)],
+        [slot(sample=None)],
+        [slot(str(i)) for i in range(13)],
+    ],
+)
 def test_invalid_schedule_rejects_entire_edit(value):
     with pytest.raises(ValueError):
         normalize_greeting_slots(value)
@@ -39,12 +68,15 @@ def test_normalization_and_explicit_empty():
     assert normalize_greeting_slots([slot(sample="  hi  ", topic=" cats ")])[0] == slot(sample="hi", topic="cats")
 
 
-@pytest.mark.parametrize("clock, start, end", [
-    ("2026-11-08 23:30", "2026-11-08 23:30", "2026-11-09 00:30"),
-    ("2026-11-09 00:00", "2026-11-08 23:30", "2026-11-09 00:30"),
-    ("2026-11-09 00:29", "2026-11-08 23:30", "2026-11-09 00:30"),
-    ("2026-11-09 00:30", "2026-11-09 23:30", "2026-11-10 00:30"),
-])
+@pytest.mark.parametrize(
+    "clock, start, end",
+    [
+        ("2026-11-08 23:30", "2026-11-08 23:30", "2026-11-09 00:30"),
+        ("2026-11-09 00:00", "2026-11-08 23:30", "2026-11-09 00:30"),
+        ("2026-11-09 00:29", "2026-11-08 23:30", "2026-11-09 00:30"),
+        ("2026-11-09 00:30", "2026-11-09 23:30", "2026-11-10 00:30"),
+    ],
+)
 def test_overnight_start_date(clock, start, end):
     actual = slot_window(slot(start="23:30", end="00:30"), datetime.fromisoformat(clock).timestamp())
     assert actual == (datetime.fromisoformat(start), datetime.fromisoformat(end))
@@ -79,8 +111,12 @@ def test_disabled_slot_does_not_block_later_slot(tmp_path, greeting_clock):
 
 def test_overnight_dedup_and_next_occurrence(tmp_path, greeting_clock):
     plugin = configured(tmp_path, [slot(start="23:30", end="00:30")])
-    for text, count in [("2026-11-08 23:30",1), ("2026-11-09 00:10",1),
-                        ("2026-11-09 00:30",1), ("2026-11-09 23:30",2)]:
+    for text, count in [
+        ("2026-11-08 23:30", 1),
+        ("2026-11-09 00:10", 1),
+        ("2026-11-09 00:30", 1),
+        ("2026-11-09 23:30", 2),
+    ]:
         greeting_clock[0] = datetime.fromisoformat(text).timestamp()
         service = QQProactiveInitiativeService(plugin)
         asyncio.run(service.tick())
@@ -104,14 +140,16 @@ def test_blockers_can_defer_within_window(tmp_path, greeting_clock, blocker):
     assert not plugin.sent
     assert not service._greeting_slot_attempts
     greeting_clock[0] += 601
-    plugin._qq_settings.update(proactive_initiative_quiet_start_hour=0,
-                              proactive_initiative_quiet_end_hour=0,
-                              proactive_initiative_max_per_day=12)
+    plugin._qq_settings.update(
+        proactive_initiative_quiet_start_hour=0,
+        proactive_initiative_quiet_end_hour=0,
+        proactive_initiative_max_per_day=12,
+    )
     asyncio.run(service.tick())
     assert len(plugin.sent) == 1
 
 
-@pytest.mark.parametrize("time, expected", [("08:59",0),("09:00",1),("09:59",1),("10:00",0)])
+@pytest.mark.parametrize("time, expected", [("08:59", 0), ("09:00", 1), ("09:59", 1), ("10:00", 0)])
 def test_window_end_is_exclusive(tmp_path, greeting_clock, time, expected):
     greeting_clock[0] = datetime.fromisoformat("2026-11-08 " + time).timestamp()
     plugin = configured(tmp_path, [slot()])
@@ -128,7 +166,7 @@ def test_empty_or_corrupt_schedule_never_resurrects_legacy(tmp_path, greeting_cl
 
 
 def test_migration_preserves_legacy_attempt(tmp_path, greeting_clock):
-    (tmp_path / STATE_FILE).write_text(json.dumps({"greeting_attempt_days": {ADMIN:"2026-11-08"}}))
+    (tmp_path / STATE_FILE).write_text(json.dumps({"greeting_attempt_days": {ADMIN: "2026-11-08"}}))
     plugin = configured(tmp_path, None)
     service = plugin.proactive_initiative_service
     assert service.greeting_slots()[0]["id"] == "legacy"
@@ -177,11 +215,14 @@ def test_prompt_modes_and_snapshot(tmp_path, greeting_clock, mode):
 def test_dashboard_saves_normalized_windows(tmp_path):
     from plugin.plugins.qq_auto_reply.dashboard_service import QQDashboardService
     from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
+
     plugin = configured(tmp_path, [])
     settings = QQSettingsService(plugin)
+
     async def save(**kw):
         settings._apply_plain_settings(kw)
         return {"persisted": True}
+
     plugin.settings_service = SimpleNamespace(save_settings=save)
     dashboard = QQDashboardService(plugin)
     dashboard.build_dashboard_state = AsyncMock(return_value={"business_config": {}})
@@ -192,19 +233,23 @@ def test_dashboard_saves_normalized_windows(tmp_path):
 
 def test_invalid_save_fails_before_mutation(tmp_path):
     from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
+
     plugin = configured(tmp_path, [slot()])
     before = dict(plugin._qq_settings)
     with pytest.raises(ValueError):
-        asyncio.run(QQSettingsService(plugin)._save_settings_locked(
-            proactive_initiative_enabled=False,
-            proactive_initiative_greeting_slots=[slot(end="09:00")]))
+        asyncio.run(
+            QQSettingsService(plugin)._save_settings_locked(
+                proactive_initiative_enabled=False, proactive_initiative_greeting_slots=[slot(end="09:00")]
+            )
+        )
     assert plugin._qq_settings == before
 
 
 @pytest.mark.parametrize("authorized", [True, False])
 def test_proactive_private_keeps_existing_tool_permissions(authorized):
-    from test_qq_plugin_tool_bridge import _configured_plugin, _generation_service, _context, _Session
-    plugin = _configured_plugin(tiers={"web_search":"all"} if authorized else {})
+    from test_qq_plugin_tool_bridge import _configured_plugin, _context, _generation_service, _Session
+
+    plugin = _configured_plugin(tiers={"web_search": "all"} if authorized else {})
     service, session = _generation_service(plugin), _Session()
     context = _context()
     context.source_kind = "proactive_private"

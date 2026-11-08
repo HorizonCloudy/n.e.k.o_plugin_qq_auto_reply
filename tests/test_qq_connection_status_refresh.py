@@ -1,7 +1,9 @@
 """Execute connection refresh handlers without a live QQ connection."""
+
 import shutil
 import subprocess
 from pathlib import Path
+
 import pytest
 from _ui_source import fn_body
 
@@ -13,9 +15,30 @@ def test_napcat_runtime_refresh_updates_all_status_without_touching_edits():
     if not node:
         pytest.skip("Node.js required for UI tests")
     html = (STATIC / "napcat.html").read_text(encoding="utf-8")
-    names = ["applyRuntimeStatus", "updateStatusBar", "fetchDashboardSnapshot", "loadRuntimeStatus", "loadDashboard", "startStatusPoll"]
-    functions = "\n".join(("async " if name in ("loadRuntimeStatus", "loadDashboard") else "") + "function " + name + "(" + ("d" if name == "applyRuntimeStatus" else "") + "){" + fn_body(html, name) + "}" for name in names)
-    listeners = "\n".join(line for line in html.splitlines() if line.startswith(("document.addEventListener('visibilitychange'", "window.addEventListener('focus'")))
+    names = [
+        "applyRuntimeStatus",
+        "updateStatusBar",
+        "fetchDashboardSnapshot",
+        "loadRuntimeStatus",
+        "loadDashboard",
+        "startStatusPoll",
+    ]
+    functions = "\n".join(
+        ("async " if name in ("loadRuntimeStatus", "loadDashboard") else "")
+        + "function "
+        + name
+        + "("
+        + ("d" if name == "applyRuntimeStatus" else "")
+        + "){"
+        + fn_body(html, name)
+        + "}"
+        for name in names
+    )
+    listeners = "\n".join(
+        line
+        for line in html.splitlines()
+        if line.startswith(("document.addEventListener('visibilitychange'", "window.addEventListener('focus'"))
+    )
     harness = r"""
 const assert = require('node:assert/strict');
 const elements = new Map(), events = {}, timers = [];
@@ -76,8 +99,14 @@ async function call(){calls++;return pending||payload}
   count=calls;events.visibilitychange();await loadRuntimeStatus();assert.ok(calls>count);
 })().catch(e=>{console.error(e);process.exitCode=1});
 """
-    result = subprocess.run([node, "-"], input=harness+functions+listeners+checks,
-                            text=True, encoding="utf-8", capture_output=True, timeout=20)
+    result = subprocess.run(
+        [node, "-"],
+        input=harness + functions + listeners + checks,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+        timeout=20,
+    )
     assert result.returncode == 0, result.stderr
 
 
@@ -90,5 +119,5 @@ def test_status_page_subscribes_to_connection_changes_and_resume():
 
 def test_polling_starts_even_if_initial_dashboard_query_fails():
     html = (STATIC / "napcat.html").read_text(encoding="utf-8")
-    body = fn_body(html,"bootstrap")
+    body = fn_body(html, "bootstrap")
     assert body.index("startStatusPoll()") < body.index("try{")

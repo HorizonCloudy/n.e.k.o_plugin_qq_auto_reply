@@ -1,4 +1,5 @@
 """Host speech failure still degrades to QQ text without hiding programming errors."""
+
 from __future__ import annotations
 
 import asyncio
@@ -19,20 +20,25 @@ def test_voice_fallback_expands_cq_modifiers(monkeypatch, failure):
         send_group_message_segments=AsyncMock(return_value="mid"),
         send_group_record=AsyncMock(return_value=None),
     )
-    service = QQVoiceReplyService(SimpleNamespace(
-        qq_client=client,
-        _validate_outbound_message=lambda text: text,
-        _get_reply_mode=lambda: "voice",
-        logger=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None),
-    ))
+    service = QQVoiceReplyService(
+        SimpleNamespace(
+            qq_client=client,
+            _validate_outbound_message=lambda text: text,
+            _get_reply_mode=lambda: "voice",
+            logger=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None),
+        )
+    )
     synth = AsyncMock(return_value=("file:///voice.wav", "audio/wav"))
     if failure == "synthesis":
         synth.side_effect = RuntimeError("TTS failed")
     monkeypatch.setattr(service, "synthesize_reply_voice_file", synth)
-    assert asyncio.run(service.deliver_group_reply(
-        "123", "[CQ:reply,id=456][CQ:at,qq=789]你好[CQ:face,id=14]",
-        fallback_to_text_on_voice_failure=True,
-    ))
+    assert asyncio.run(
+        service.deliver_group_reply(
+            "123",
+            "[CQ:reply,id=456][CQ:at,qq=789]你好[CQ:face,id=14]",
+            fallback_to_text_on_voice_failure=True,
+        )
+    )
     assert client.send_group_message_segments.call_args.args[1] == [
         {"type": "reply", "data": {"id": "456"}},
         {"type": "at", "data": {"qq": "789"}},
@@ -66,6 +72,7 @@ def _node(client, synth):
     def _record(level):
         def _log(message, *args, **kwargs):
             logs.append((level, str(message), kwargs))
+
         return _log
 
     plugin = SimpleNamespace(

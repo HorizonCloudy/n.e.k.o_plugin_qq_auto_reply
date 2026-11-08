@@ -48,6 +48,7 @@ NO_QUIET = {
 
 # ── 夹具 ────────────────────────────────────────────────────────────
 
+
 def _plugin(tmp_path, *, enabled=True, admin=ADMIN, send_result=None, settings=None, running=True):
     sent: list[dict] = []
 
@@ -100,12 +101,13 @@ def _force_due(service, *, ago=60):
 
 # ── 1. 承诺识别：判据是内容，不是时间 ────────────────────────────────
 
+
 @pytest.mark.parametrize(
     "text, expect_due",
     [
         ("我晚点告诉你结果", 3 * 3600),
         ("明天给你看", 20 * 3600),
-        ("明天晚点给你看", 20 * 3600),          # 命中多个取最晚
+        ("明天晚点给你看", 20 * 3600),  # 命中多个取最晚
         ("等我查一下哈", 30 * 60),
         ("稍后把整理好的发你", 3600),
         ("回头跟你说", 2 * 3600),
@@ -121,10 +123,10 @@ def test_promise_phrases_are_recognised(text, expect_due):
 @pytest.mark.parametrize(
     "text",
     [
-        "等一下，我不是那个意思",        # 有时间词、没有交代类动词
-        "我先去告诉妈妈了",              # 有动词、没有时间词
+        "等一下，我不是那个意思",  # 有时间词、没有交代类动词
+        "我先去告诉妈妈了",  # 有动词、没有时间词
         "嗯嗯~",
-        "明天见",                        # 有交互没有承诺
+        "明天见",  # 有交互没有承诺
         "",
     ],
 )
@@ -133,6 +135,7 @@ def test_non_promises_are_not_recorded(text):
 
 
 # ── 2. 登记范围：只认管理员私聊的非合成轮 ────────────────────────────
+
 
 def test_admin_private_turn_with_a_promise_is_recorded(tmp_path):
     service = _service(_plugin(tmp_path))
@@ -192,8 +195,9 @@ def test_a_reply_without_a_promise_keeps_the_existing_item(tmp_path):
 
 # ── 3. 判据：时间只做到期与刹车 ──────────────────────────────────────
 
+
 def test_blocked_reasons_are_ordered_and_shared_with_the_send_path(tmp_path):
-    plugin = _plugin(tmp_path, enabled=False)          # 默认是关的
+    plugin = _plugin(tmp_path, enabled=False)  # 默认是关的
     service = _service(plugin)
     assert service.blocked_reason() == "开关关着"
 
@@ -266,8 +270,9 @@ def test_daily_cap_and_gap_and_attempts_brake_the_send(tmp_path):
     service.budget.restore({"today": datetime.now().strftime("%Y-%m-%d"), "today_count": 1})
     assert service.blocked_reason() == "今天已经说够了"
 
-    service.budget.restore({"today": datetime.now().strftime("%Y-%m-%d"),
-                            "today_count": 0, "last_sent_at": datetime.now().timestamp()})
+    service.budget.restore(
+        {"today": datetime.now().strftime("%Y-%m-%d"), "today_count": 0, "last_sent_at": datetime.now().timestamp()}
+    )
     assert service.blocked_reason() == "距上次太近"
 
     service.budget.restore({})
@@ -276,6 +281,7 @@ def test_daily_cap_and_gap_and_attempts_brake_the_send(tmp_path):
 
 
 # ── 4. 开口：由头必须进提示词，结清后不再提 ──────────────────────────
+
 
 def test_tick_sends_the_quote_and_settles_the_item(tmp_path):
     plugin = _plugin(tmp_path)
@@ -337,6 +343,7 @@ def test_disabled_switch_never_sends(tmp_path):
 
 # ── 5. 落盘往返 ─────────────────────────────────────────────────────
 
+
 def test_pending_item_and_counter_survive_a_restart(tmp_path):
     plugin = _plugin(tmp_path)
     service = _service(plugin)
@@ -345,7 +352,7 @@ def test_pending_item_and_counter_survive_a_restart(tmp_path):
     service._last_admin_activity_at = 0.0
     asyncio.run(service.tick())
 
-    _turn(service, text="明天给你看")          # 再记一条，看计数与待办是否都留住
+    _turn(service, text="明天给你看")  # 再记一条，看计数与待办是否都留住
     stored = json.loads((tmp_path / STATE_FILE).read_text(encoding="utf-8"))
     assert stored["today_count"] == 1
 
@@ -356,10 +363,12 @@ def test_pending_item_and_counter_survive_a_restart(tmp_path):
 
 # ── 6. 接线：维护循环当心跳，查询给界面 ───────────────────────────────
 
+
 def test_the_maintenance_tick_drives_the_initiative(tmp_path):
     plugin = _plugin(tmp_path)
     plugin.attention_service = SimpleNamespace(
-        _current_time=lambda: 0, _normalized_groups=lambda: [],
+        _current_time=lambda: 0,
+        _normalized_groups=lambda: [],
     )
     gate = QQAttentionGateService(plugin)
     service = _service(plugin)
@@ -375,7 +384,8 @@ def test_the_maintenance_tick_drives_the_initiative(tmp_path):
 def test_nothing_to_say_means_no_send_from_the_tick(tmp_path):
     plugin = _plugin(tmp_path)
     plugin.attention_service = SimpleNamespace(
-        _current_time=lambda: 0, _normalized_groups=lambda: [],
+        _current_time=lambda: 0,
+        _normalized_groups=lambda: [],
     )
     asyncio.run(QQAttentionGateService(plugin).run_maintenance_tick())
     assert plugin.sent == []
@@ -384,8 +394,17 @@ def test_nothing_to_say_means_no_send_from_the_tick(tmp_path):
 def test_snapshot_is_json_friendly(tmp_path):
     service = _service(_plugin(tmp_path))
     snap = service.snapshot()
-    for key in ("enabled", "admin", "has_admin", "pending", "blocked_reason",
-                "sent_today", "max_per_day", "quiet_start_hour", "quiet_end_hour"):
+    for key in (
+        "enabled",
+        "admin",
+        "has_admin",
+        "pending",
+        "blocked_reason",
+        "sent_today",
+        "max_per_day",
+        "quiet_start_hour",
+        "quiet_end_hour",
+    ):
         assert key in snap, f"界面要的字段缺了 {key}"
     json.dumps(snap)  # 必须能直接进 Ok({...}) 的返回
 
@@ -399,6 +418,7 @@ def test_snapshot_is_json_friendly(tmp_path):
 #   · 超过 7 天的由头按"过去太久"丢掉（"晚点告诉你"隔一周再说已经没意义）；
 #   · 「他刚说过话」的宽限也落盘，否则重启会把它清掉、立刻翻旧账。
 
+
 def test_the_countdown_uses_an_absolute_deadline_and_survives_a_restart(tmp_path):
     plugin = _plugin(tmp_path)
     service = _service(plugin)
@@ -410,11 +430,9 @@ def test_the_countdown_uses_an_absolute_deadline_and_survives_a_restart(tmp_path
     # 「插件关着的这段时间」里到期了
     _force_due(service)
 
-    restarted = _service(plugin)          # 同一份 data_path = 宿主重启
+    restarted = _service(plugin)  # 同一份 data_path = 宿主重启
     assert restarted.pending() is not None, "重启把待办弄丢了"
-    assert restarted.blocked_reason() == "刚跟她说过话", (
-        "重启后宽限失效 —— 刚聊完重启就会立刻抖出旧由头"
-    )
+    assert restarted.blocked_reason() == "刚跟她说过话", "重启后宽限失效 —— 刚聊完重启就会立刻抖出旧由头"
 
     restarted._last_admin_activity_at = 0.0
     asyncio.run(restarted.tick())
@@ -462,7 +480,7 @@ def test_stop_start_does_not_stack_up_messages(tmp_path):
     """每人只留最新一条 + 每天上限 → 停机三天回来最多补一次，不会刷一串。"""
     plugin = _plugin(tmp_path, settings={"proactive_initiative_max_per_day": 1})
     service = _service(plugin)
-    for _ in range(3):                      # 同一件事被反复承诺
+    for _ in range(3):  # 同一件事被反复承诺
         _turn(service, text="我晚点告诉你结果")
     assert len(service._items) == 1, "同一人堆了多条待办"
 
@@ -488,8 +506,7 @@ def test_the_grace_window_is_the_documented_length(tmp_path):
     """宽限是个有声明的常量（默认 10 分钟），不是随手一个数。"""
     assert ACTIVITY_GRACE_SECONDS == 600
 
-
-# ── 7. 结构契约：这是新功能，不是破冰复活 ──────────────────────────def test_the_new_settings_exist_and_the_deleted_icebreaker_keys_stay_dead():
+    # ── 7. 结构契约：这是新功能，不是破冰复活 ──────────────────────────def test_the_new_settings_exist_and_the_deleted_icebreaker_keys_stay_dead():
     from plugin.plugins.qq_auto_reply import settings_schema
 
     for key in (
@@ -525,6 +542,7 @@ def test_default_is_off(tmp_path):
 
 
 # ── 8. 界面契约：napcat 面板上的那张卡 ──────────────────────────────
+
 
 def _page() -> str:
     from pathlib import Path
@@ -583,8 +601,12 @@ def test_initiative_card_is_immediately_before_normal_relay_in_params():
     assert parser.cards[index + 1] == ("normal-relay-card", parents)
     assert text.count('data-i18n="ui.initiative.title"') == 1
     for control in (
-        "cfg-initiative-on", "cfg-initiative-quiet-start", "cfg-initiative-quiet-end",
-        "cfg-initiative-max-per-day", "cfg-initiative-min-gap-hours", "initiative-status",
+        "cfg-initiative-on",
+        "cfg-initiative-quiet-start",
+        "cfg-initiative-quiet-end",
+        "cfg-initiative-max-per-day",
+        "cfg-initiative-min-gap-hours",
+        "initiative-status",
     ):
         assert text.count(f'id="{control}"') == 1
 
@@ -593,7 +615,7 @@ def test_the_panel_saves_all_initiative_keys():
     """界面提交的键必须包含原有搭话和定时问候设置 —— 少一个就是"能改但存不下去"。"""
     text = _page()
     assert text.count("...initiativeSettingsPayload()") == 2, "两个保存入口必须共用载荷"
-    block = text[text.index("function initiativeSettingsPayload"):]
+    block = text[text.index("function initiativeSettingsPayload") :]
     block = block[: block.index("\n}")]
     for key in (
         "proactive_initiative_enabled",
@@ -634,18 +656,22 @@ def test_every_initiative_label_exists_in_both_bundles():
 
 # ── 每日定时问候：显式开启、共享额度、先落盘再发送 ────────────────
 
+
 @pytest.fixture
 def greeting_clock(monkeypatch):
     import time
+
     clock = [datetime(2026, 11, 8, 9, 0, 30).timestamp()]
     monkeypatch.setattr(time, "time", lambda: clock[0])
     return clock
 
 
 def _greeting_plugin(tmp_path, **kwargs):
-    settings = {"proactive_initiative_greeting_enabled": True,
-                "proactive_initiative_greeting_hour": 9,
-                "proactive_initiative_greeting_minute": 0}
+    settings = {
+        "proactive_initiative_greeting_enabled": True,
+        "proactive_initiative_greeting_hour": 9,
+        "proactive_initiative_greeting_minute": 0,
+    }
     settings.update(kwargs.pop("settings", {}))
     return _plugin(tmp_path, settings=settings, **kwargs)
 
@@ -678,15 +704,17 @@ def test_greeting_needs_no_promise_and_survives_restart(tmp_path, greeting_clock
     assert len(plugin.sent) == 2
 
 
-@pytest.mark.parametrize("kwargs, reason", [
-    ({"enabled": False}, "总开关"),
-    ({"running": False}, "值班已停"),
-    ({"admin": ""}, "还没有管理员"),
-    ({"settings": {"proactive_initiative_greeting_enabled": False}}, "未开启"),
-    ({"settings": {"proactive_initiative_quiet_start_hour": 8,
-                   "proactive_initiative_quiet_end_hour": 10}}, "静音"),
-    ({"settings": {"proactive_initiative_max_per_day": 0}}, "已经说够"),
-])
+@pytest.mark.parametrize(
+    "kwargs, reason",
+    [
+        ({"enabled": False}, "总开关"),
+        ({"running": False}, "值班已停"),
+        ({"admin": ""}, "还没有管理员"),
+        ({"settings": {"proactive_initiative_greeting_enabled": False}}, "未开启"),
+        ({"settings": {"proactive_initiative_quiet_start_hour": 8, "proactive_initiative_quiet_end_hour": 10}}, "静音"),
+        ({"settings": {"proactive_initiative_max_per_day": 0}}, "已经说够"),
+    ],
+)
 def test_greeting_respects_switches_admin_and_limits(tmp_path, greeting_clock, kwargs, reason):
     plugin = _greeting_plugin(tmp_path, **kwargs)
     assert reason in plugin.proactive_initiative_service.greeting_blocked_reason()
@@ -704,8 +732,9 @@ def test_greeting_window_does_not_backfill(tmp_path, greeting_clock, offset, exp
 
 def test_greeting_midnight_and_minute(tmp_path, greeting_clock):
     greeting_clock[0] = datetime(2026, 11, 9, 0, 17, 20).timestamp()
-    plugin = _greeting_plugin(tmp_path, settings={"proactive_initiative_greeting_hour": 0,
-                                               "proactive_initiative_greeting_minute": 17})
+    plugin = _greeting_plugin(
+        tmp_path, settings={"proactive_initiative_greeting_hour": 0, "proactive_initiative_greeting_minute": 17}
+    )
     asyncio.run(plugin.proactive_initiative_service.tick())
     assert len(plugin.sent) == 1
     assert plugin.proactive_initiative_service.snapshot()["greeting"]["time"] == "00:17"
@@ -779,15 +808,18 @@ def test_greeting_does_not_clear_existing_promise(tmp_path, greeting_clock):
 
 def test_greeting_settings_reach_dashboard_and_plain_settings(tmp_path):
     from unittest.mock import AsyncMock
+
+    from plugin.plugins.qq_auto_reply import settings_schema
     from plugin.plugins.qq_auto_reply.dashboard_service import QQDashboardService
     from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
-    from plugin.plugins.qq_auto_reply import settings_schema
 
     plugin = _plugin(tmp_path)
-    values = {"proactive_initiative_greeting_enabled": True,
-              "proactive_initiative_greeting_hour": 6,
-              "proactive_initiative_greeting_minute": 35,
-              "proactive_initiative_enabled": True}
+    values = {
+        "proactive_initiative_greeting_enabled": True,
+        "proactive_initiative_greeting_hour": 6,
+        "proactive_initiative_greeting_minute": 35,
+        "proactive_initiative_enabled": True,
+    }
     service = QQSettingsService(plugin)
     captured = {}
 
@@ -806,8 +838,9 @@ def test_greeting_settings_reach_dashboard_and_plain_settings(tmp_path):
         assert key in settings_schema.input_schema_properties()
         assert captured[key] == value
         assert plugin._qq_settings[key] == value
-    service._apply_plain_settings({"proactive_initiative_greeting_hour": 99,
-                                   "proactive_initiative_greeting_minute": -1})
+    service._apply_plain_settings(
+        {"proactive_initiative_greeting_hour": 99, "proactive_initiative_greeting_minute": -1}
+    )
     assert plugin._qq_settings["proactive_initiative_greeting_hour"] == 23
     assert plugin._qq_settings["proactive_initiative_greeting_minute"] == 0
 
@@ -839,7 +872,8 @@ def test_old_state_without_greeting_data_loads(tmp_path, greeting_clock):
 def test_greeting_uses_maintenance_heartbeat(tmp_path, greeting_clock):
     plugin = _greeting_plugin(tmp_path)
     plugin.attention_service = SimpleNamespace(
-        _current_time=lambda: greeting_clock[0], _normalized_groups=lambda: [],
+        _current_time=lambda: greeting_clock[0],
+        _normalized_groups=lambda: [],
     )
     asyncio.run(QQAttentionGateService(plugin).run_maintenance_tick())
     assert len(plugin.sent) == 1
