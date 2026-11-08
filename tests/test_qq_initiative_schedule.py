@@ -7,6 +7,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from fake_clock import patch_module_clock
+from plugin.plugins.qq_auto_reply import proactive_budget as budget_module
+from plugin.plugins.qq_auto_reply import proactive_initiative_service as initiative_module
 from plugin.plugins.qq_auto_reply.initiative_schedule import normalize_greeting_slots, slot_window
 from plugin.plugins.qq_auto_reply.proactive_initiative_service import STATE_FILE, QQProactiveInitiativeService
 from plugin.sdk.plugin import Err, Ok, SdkError
@@ -15,10 +18,11 @@ from test_qq_proactive_initiative import ADMIN, _greeting_plugin
 
 @pytest.fixture
 def greeting_clock(monkeypatch):
-    import time
-
     clock = [datetime(2026, 11, 8, 9, 0, 30).timestamp()]
-    monkeypatch.setattr(time, "time", lambda: clock[0])
+    def now():
+        return clock[0]
+    patch_module_clock(monkeypatch, initiative_module, time=now)
+    patch_module_clock(monkeypatch, budget_module, time=now)
     return clock
 
 
@@ -255,3 +259,5 @@ def test_proactive_private_keeps_existing_tool_permissions(authorized):
     context.source_kind = "proactive_private"
     asyncio.run(service._arm_turn_tools(context=context, user_session=session, consent_before={}))
     assert ("plugin_web_search" in [tool.name for tool in session.tools or []]) is authorized
+
+

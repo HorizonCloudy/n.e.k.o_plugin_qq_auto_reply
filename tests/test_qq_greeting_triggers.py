@@ -5,6 +5,8 @@ import json
 from datetime import datetime
 
 import pytest
+from fake_clock import patch_module_clock
+from plugin.plugins.qq_auto_reply import proactive_budget as budget_module
 from plugin.plugins.qq_auto_reply import proactive_initiative_service as module
 from plugin.plugins.qq_auto_reply.proactive_initiative_service import STATE_FILE, QQProactiveInitiativeService
 from test_qq_initiative_schedule import configured, slot
@@ -13,10 +15,11 @@ from test_qq_proactive_initiative import ADMIN
 
 @pytest.fixture
 def greeting_clock(monkeypatch):
-    import time
-
     clock = [datetime(2026, 11, 8, 9, 0, 30).timestamp()]
-    monkeypatch.setattr(time, "time", lambda: clock[0])
+    def now():
+        return clock[0]
+    patch_module_clock(monkeypatch, module, time=now)
+    patch_module_clock(monkeypatch, budget_module, time=now)
     return clock
 
 
@@ -403,3 +406,5 @@ async def test_scheduler_recovers_after_one_round_raises(tmp_path, greeting_cloc
     with pytest.raises(asyncio.CancelledError):
         await s._greeting_loop()
     assert len(calls) == 2 and len(p.sent) == 1
+
+
