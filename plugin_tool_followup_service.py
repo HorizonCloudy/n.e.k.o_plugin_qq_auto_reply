@@ -393,6 +393,8 @@ class QQPluginToolFollowupService:
         changed = str(record.get("status") or "") != (token or state)
         record["status"] = token or state
         if state == "done":
+            from .topic_source_service import prepare_async_topic_sources
+            prepare_async_topic_sources(self.plugin, record, payload)
             record["output"] = extract_result(payload)
             if not record["output"]:
                 # 说是完成了却没有正文：不能编，按"跟丢了"处理。
@@ -536,6 +538,8 @@ class QQPluginToolFollowupService:
             record.pop("delivering_at", None)
             self._save()
             return False, why
+        from .topic_source_service import commit_async_topic_sources
+        commit_async_topic_sources(self.plugin, record, outcome)
         record["delivered_at"] = time.time()
         record["delivered_text"] = str(getattr(outcome, "reply_text", "") or "")[:500]
         try:

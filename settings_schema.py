@@ -593,6 +593,17 @@ MISC = (
                     "save：两次有由头主动搭话之间至少隔多少秒；"
                     "深聊自主联系也读这个间隔，但计数各记各的"
                 )),
+    SettingSpec("proactive_initiative_greeting_enabled", "bool", False, saveable=True,
+                description="save：开启管理员私聊每日定时问候（仍受主动搭话总开关和频率限制）"),
+    SettingSpec("proactive_initiative_greeting_hour", "int", 9, saveable=True,
+                floor=0, ceiling=23,
+                description="save：每天问候的小时（宿主本机时间，24 小时制）"),
+    SettingSpec("proactive_initiative_greeting_minute", "int", 0, saveable=True,
+                floor=0, ceiling=59,
+                description="save：每天问候的分钟"),
+    # None preserves migration from the old single time; [] explicitly removes all slots.
+    SettingSpec("proactive_initiative_greeting_slots", "list", None, saveable=True,
+                description="save：每日问候时间段列表（最多12个；id/enabled/start/end/mode/sample/topic）"),
     # ── 深聊（deepchat）：暂走 dc_tune ──
     # 这些键会写独立的 deepchat.sqlite3，但 dashboard save_settings / 前端 UI 还没有
     # 对应字段；为不破坏 settings 保存链，暂不放进 MISC/SAVEABLE_KEYS。

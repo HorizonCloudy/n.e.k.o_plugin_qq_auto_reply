@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import io
-import json
 import random
 import re
 import time
@@ -11,45 +9,19 @@ import wave
 from pathlib import Path
 from typing import Any
 
-import websockets
-from utils.api_config_loader import get_free_voices
+import httpx
 from utils.config_manager import get_reserved
+from utils.http.internal_client import get_internal_http_client
 
-#: 宿主用 ``gsv:<raw>`` 标记 GPT-SoVITS 音色（见宿主的 ``config.GSV_VOICE_PREFIX``）。
-#: 插件的语音管线**没有这一路** —— 它只有：本地 ws SoVITS/CosyVoice、MiMo、MiniMax、
-#: Gemini native、免费音色、DashScope（百炼）。撞到这种 id 要当场说清楚，别拿它去问百炼
-#: （那边只会回一个"音色不存在"，看起来像网络问题）。
-GSV_VOICE_PREFIX = "gsv:"
-
-try:
-    from utils.api_config_loader import get_new_character_default_voice_id
-except (ImportError, ModuleNotFoundError):
-    get_new_character_default_voice_id = None
-
-try:
-    from utils.tts.native_voice_registry import get_active_realtime_native_provider_for_ui
-except (ImportError, ModuleNotFoundError):
-    get_active_realtime_native_provider_for_ui = None
-try:
-    from utils.tts.providers.gemini import normalize_gemini_tts_voice
-except (ImportError, ModuleNotFoundError):
-    normalize_gemini_tts_voice = None
-try:
-    from utils.voice_clone import (
-        MimoVoiceCloneClient,
-        MimoVoiceCloneError,
-        MinimaxVoiceCloneClient,
-        MinimaxVoiceCloneError,
-    )
-except (ImportError, ModuleNotFoundError):
-    MimoVoiceCloneClient = MinimaxVoiceCloneClient = None
-    class _MissingVoiceCloneError(Exception):
-        pass
-    MimoVoiceCloneError = MinimaxVoiceCloneError = _MissingVoiceCloneError
 try:
     from utils.voice_config import read_legacy_voice_id
 except (ImportError, ModuleNotFoundError):
     read_legacy_voice_id = None
+
+# The host owns voice selection, credentials, provider routing and synthesis.
+# These are transport bounds, not a second TTS implementation.
+MAX_HOST_AUDIO_BYTES = 16 * 1024 * 1024
+HOST_SPEECH_TIMEOUT_SECONDS = 140.0
 
 
 class QQVoiceReplyService:
@@ -75,6 +47,7 @@ class QQVoiceReplyService:
                     self.plugin.logger.warning(f"清理过期 QQ 语音缓存失败: {path} err={exc}")
 
     async def get_current_voice_id(self) -> str:
+        """兼容旧调用方的查询接口；语音合成不读取或使用这里的结果。"""
         try:
             from utils.config_manager import get_config_manager
             config_manager = get_config_manager()
@@ -91,314 +64,54 @@ class QQVoiceReplyService:
             self.plugin.logger.warning(f"读取当前猫娘 voice_id 失败: {exc}")
             return ""
 
-    async def _synthesize_local_tts(self, text: str) -> tuple[bytes, str] | None:
-        """尝试本地 SoVITS/CosyVoice WebSocket TTS，成功返回 (wav_bytes, mime)，失败返回 None。"""
-        try:
-            from utils.config_manager import get_config_manager
-            cm = get_config_manager()
-            tts_config = cm.get_model_api_config("tts_custom")
-            base_url = str(tts_config.get("base_url", "")).strip()
-            if not base_url or (not base_url.startswith("ws://") and not base_url.startswith("wss://")):
-                return None
-
-            voice_id = str(await self.get_current_voice_id() or "").strip() or "default"
-            voice_name = str(tts_config.get("voice_name") or voice_id)
-
-            import io
-            import json as _json
-            import wave
-
-            import websockets
-            ws_url = base_url.rstrip("/") + "/v1/audio/speech/stream"
-
-            async with websockets.connect(ws_url, ping_interval=20, ping_timeout=10) as ws:
-                await ws.send(_json.dumps({"voice": voice_name, "speed": 1.0}))
-                await ws.send(_json.dumps({"text": text}))
-                await ws.send(_json.dumps({"event": "end"}))
-
-                chunks: list[bytes] = []
-                async with asyncio.timeout(15.0):
-                    async for msg in ws:
-                        if isinstance(msg, bytes):
-                            chunks.append(msg)
-                        elif isinstance(msg, str):
-                            try:
-                                data = _json.loads(msg)
-                                if data.get("type") == "error":
-                                    self.plugin.logger.warning(f"本地TTS错误: {data.get('message', '')}")
-                                    return None
-                            except Exception:
-                                pass
-
-                if not chunks:
-                    return None
-
-                combined = b"".join(chunks)
-                out = io.BytesIO()
-                with wave.open(out, "wb") as wf:
-                    wf.setnchannels(1)
-                    wf.setsampwidth(2)
-                    wf.setframerate(22050)
-                    wf.writeframes(combined)
-                return out.getvalue(), "audio/wav"
-        except Exception as e:
-            self.plugin.logger.warning(f"本地TTS失败: {e}")
-            return None
-
     async def synthesize_reply_voice_audio(self, text: str) -> tuple[bytes, str]:
-        normalized_text = str(text or "").strip()
-        if not normalized_text:
+        """Ask the host to synthesize silently with its current character voice."""
+        from config import MAIN_SERVER_PORT
+
+        text = str(text or "").strip()
+        if not text:
             raise RuntimeError("语音合成文本不能为空")
+        if len(text) > 2000:
+            raise RuntimeError("语音合成文本过长（最多 2000 字符）")
+        url = f"http://127.0.0.1:{int(MAIN_SERVER_PORT)}/api/speech/synthesize"
         try:
-            from main_logic.tts_client.workers.free import (
-                _adjust_free_tts_url,
-                _build_step_tts_create_data,
-            )
-            from utils.config_manager import get_config_manager
-            from utils.tts.providers.stepfun import STEPFUN_TTS_DEFAULT_VOICE, is_stepfun_tts_voice
-
-            config_manager = get_config_manager()
-
-            # 这条合成路径会分两次读区域敏感配置：先按目录挑音色/provider，之后
-            # _adjust_free_tts_url 再按区域拼 TTS 端点。判定若在两者之间落定，就会
-            # 把大陆 free_voices 的音色 ID 发去 lanlan.app（或反过来），而两套目录不
-            # 相交，这条语音回复直接失败。先落定，让整次合成用同一结论。已落定时零
-            # 开销；自配 API 用户不会因此发起探测。fail-open：落定不了也继续按当前
-            # 配置合成，最坏是这一条回复失败、下一条就好了。
-            try:
-                if not await config_manager.aensure_region_resolved():
-                    self.plugin.logger.warning(
-                        "[GeoIP] 语音回复合成开始时区域判定仍未落定；若结论恰在本次合成中途到达，"
-                        "音色与线路可能不匹配导致这条语音失败"
-                    )
-            except Exception as e:
-                self.plugin.logger.warning(f"[GeoIP] 语音回复区域落定失败，按当前配置继续: {e}")
-
-            # 优先尝试本地 SoVITS/CosyVoice
-            local_result = await self._synthesize_local_tts(normalized_text)
-            if local_result:
-                return local_result
-
-            voices = config_manager.get_voices_for_current_api()
-            voice_id = str(await self.get_current_voice_id() or "").strip()
-            if voice_id.startswith(GSV_VOICE_PREFIX):
-                # 走到这里说明本地那条 ws 线路没产出音频（没配端点或合成失败），而
-                # GPT-SoVITS 只存在于宿主自己的 TTS 里 —— 插件这条链上没有它。
-                raise RuntimeError(
-                    f"当前音色是宿主的 GPT-SoVITS 音色（{GSV_VOICE_PREFIX}…），插件的语音管线没有这一路："
-                    "要么把 tts_custom 指向 ws://… 用本地合成，要么在角色上换成插件支持的音色"
-                    "（百炼 / MiniMax / MiMo / Gemini / 免费音色）"
-                )
-            active_native_provider = (
-                get_active_realtime_native_provider_for_ui(config_manager)
-                if get_active_realtime_native_provider_for_ui else None
-            )
-            default_free_voice = False
-            if not voice_id:
-                # 服务名不是音色 ID。仅为空配置补默认值，不覆盖用户已选的音色，
-                # 也不写回角色配置；区域判定和本地 TTS 已在上面处理。
-                if active_native_provider == "gemini" and normalize_gemini_tts_voice:
-                    voice_id, _ = normalize_gemini_tts_voice("")
-                else:
-                    if get_new_character_default_voice_id:
-                        voice_id = get_new_character_default_voice_id()
-                    else:
-                        # 兼容尚未提供默认角色音色 helper 的宿主。
-                        free_voices = get_free_voices() or {}
-                        voice_id = (
-                            free_voices.get("cuteGirl")
-                            or next((value for value in free_voices.values() if value), "")
-                            or STEPFUN_TTS_DEFAULT_VOICE
-                        )
-                    # 默认值可能不在展示目录里，仍须走免费 TTS，不能误投百炼。
-                    default_free_voice = True
-            voice_data = voices.get(voice_id) if isinstance(voices, dict) else None
-            provider = (voice_data or {}).get("provider", "")
-            text = normalized_text
-
-            try:
-                tts_custom_config = config_manager.get_model_api_config("tts_custom")
-                audio_api_key = tts_custom_config.get("api_key", "")
-            except Exception:
-                audio_api_key = ""
-            if not audio_api_key:
-                core_config = await config_manager.aget_core_config()
-                audio_api_key = core_config.get("AUDIO_API_KEY", "")
-            preview_core_config = await config_manager.aget_core_config()
-
-            logger = self.plugin.logger
-            logger.info(f"正在为音色 {voice_id} 生成回复语音...")
-
-            if provider == "mimo":
-                sample_b64 = (voice_data or {}).get("clone_sample_b64") or ""
-                if not sample_b64:
-                    raise RuntimeError(f"MiMo 克隆音色缺少参考样本，无法生成回复语音: {voice_id}")
-                mimo_api_key = config_manager.get_tts_api_key("mimo")
-                if not mimo_api_key:
-                    raise RuntimeError("MIMO_API_KEY_MISSING")
-                if str(preview_core_config.get("assistApi") or "").strip().lower() == "mimo":
-                    mimo_base_url = (preview_core_config.get("OPENROUTER_URL") or "").strip()
-                else:
-                    mimo_base_url = str((voice_data or {}).get("mimo_base_url") or "").strip()
-                sample_bytes = base64.b64decode(sample_b64)
-                if not MimoVoiceCloneClient:
-                    raise RuntimeError("MIMO_VOICE_CLONE_UNAVAILABLE")
-                mimo_client = MimoVoiceCloneClient(api_key=mimo_api_key, base_url=mimo_base_url or None)
-                audio_data = await mimo_client.synthesize_preview(
-                    sample_bytes,
-                    (voice_data or {}).get("clone_sample_mime") or "audio/wav",
-                    text=text,
-                )
-                return audio_data, "audio/wav"
-
-            if provider in ("minimax", "minimax_intl"):
-                minimax_api_key = config_manager.get_tts_api_key(provider)
-                if not minimax_api_key:
-                    raise RuntimeError("MINIMAX_API_KEY_MISSING")
-                from utils.voice_clone import get_minimax_base_url
-                minimax_base_url = (voice_data or {}).get("minimax_base_url") or get_minimax_base_url(provider)
-                if not MinimaxVoiceCloneClient:
-                    raise RuntimeError("MINIMAX_VOICE_CLONE_UNAVAILABLE")
-                minimax_client = MinimaxVoiceCloneClient(api_key=minimax_api_key, base_url=minimax_base_url)
-                audio_data = await minimax_client.synthesize_preview(voice_id=voice_id, text=text)
-                return audio_data, "audio/mpeg"
-
-            if active_native_provider and normalize_gemini_tts_voice:
-                native_voice_id, recognized = normalize_gemini_tts_voice(voice_id)
-                if active_native_provider == "gemini" and recognized:
-                    from main_routers.characters_router import _synthesize_gemini_native_voice_preview
-                    core_config = await config_manager.aget_core_config()
-                    native_audio_api_key = (core_config or {}).get("CORE_API_KEY", "")
-                    if not native_audio_api_key:
-                        raise RuntimeError("TTS_AUDIO_API_KEY_MISSING")
-                    audio_data = await _synthesize_gemini_native_voice_preview(
-                        voice_id=native_voice_id,
-                        preview_line=text,
-                        audio_api_key=native_audio_api_key,
-                    )
-                    return audio_data, "audio/wav"
-
-            if not audio_api_key:
-                raise RuntimeError("TTS_AUDIO_API_KEY_MISSING")
-
-            free_voice_ids = set((get_free_voices() or {}).values())
-            # free_voices 是当前区域的展示目录，不包含所有仍可用的旧版音色。
-            # 旧 StepFun 预置音色仍走免费协议，不能落入默认的百炼分支。
-            legacy_free_voice = (
-                provider in ("", "free", "free_intl")
-                and bool(voice_id)
-                and is_stepfun_tts_voice(voice_id)
-            )
-            if default_free_voice or voice_id in free_voice_ids or legacy_free_voice:
-                tts_url = _adjust_free_tts_url("wss://www.lanlan.tech/tts")
-                headers = {"Authorization": f"Bearer {audio_api_key or ''}"}
-                lang_hint = None
-                is_lanlan_app = "lanlan.app" in tts_url
-                session_id = ""
-                pcm_chunks: list[bytes] = []
-                wav_meta: tuple[int, int, int] | None = None
-                async with asyncio.timeout(20):
-                    async with websockets.connect(tts_url, additional_headers=headers) as ws:
-                        while True:
-                            raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
-                            if isinstance(raw, bytes):
-                                continue
-                            event = json.loads(raw)
-                            event_type = event.get("type")
-                            if event_type == "tts.connection.done":
-                                session_id = event.get("data", {}).get("session_id") or ""
-                                break
-                            if event_type == "tts.response.error":
-                                raise RuntimeError(str(event.get("data") or event))
-                        if not session_id:
-                            raise RuntimeError("TTS 连接未返回 session_id")
-                        create_data = _build_step_tts_create_data(session_id, voice_id or STEPFUN_TTS_DEFAULT_VOICE, lang_hint, is_lanlan_app)
-                        await ws.send(json.dumps({"type": "tts.create", "data": create_data}))
-                        await ws.send(json.dumps({"type": "tts.text.delta", "data": {"session_id": session_id, "text": text}}))
-                        await ws.send(json.dumps({"type": "tts.text.done", "data": {"session_id": session_id}}))
-                        while True:
-                            raw = await asyncio.wait_for(ws.recv(), timeout=12.0)
-                            if isinstance(raw, bytes):
-                                continue
-                            event = json.loads(raw)
-                            event_type = event.get("type")
-                            if event_type == "tts.response.error":
-                                raise RuntimeError(str(event.get("data") or event))
-                            if event_type == "tts.response.audio.delta":
-                                audio_b64 = event.get("data", {}).get("audio", "")
-                                if audio_b64:
-                                    with wave.open(io.BytesIO(base64.b64decode(audio_b64)), "rb") as wav_file:
-                                        pcm_data = wav_file.readframes(wav_file.getnframes())
-                                        channels = wav_file.getnchannels()
-                                        sample_width = wav_file.getsampwidth()
-                                        sample_rate = wav_file.getframerate()
-                                    pcm_chunks.append(pcm_data)
-                                    wav_meta = wav_meta or (channels, sample_width, sample_rate)
-                            elif event_type in ("tts.response.done", "tts.response.audio.done"):
-                                break
-                if not pcm_chunks or wav_meta is None:
-                    raise RuntimeError("TTS 未返回音频")
-                channels, sample_width, sample_rate = wav_meta
-                out = io.BytesIO()
-                with wave.open(out, "wb") as wav_file:
-                    wav_file.setnchannels(channels)
-                    wav_file.setsampwidth(sample_width)
-                    wav_file.setframerate(sample_rate)
-                    wav_file.writeframes(b"".join(pcm_chunks))
-                return out.getvalue(), "audio/wav"
-
-            cosyvoice_base_url = ""
-            if provider in ("cosyvoice", "cosyvoice_intl"):
-                cosyvoice_runtime = config_manager.get_cosyvoice_clone_runtime(provider)
-                runtime_key = (cosyvoice_runtime.get("api_key") or "").strip()
-                if runtime_key:
-                    audio_api_key = runtime_key
-                elif provider == "cosyvoice_intl":
-                    raise RuntimeError("TTS_AUDIO_API_KEY_MISSING")
-                cosyvoice_base_url = (voice_data or {}).get("dashscope_base_url") or cosyvoice_runtime.get("base_url", "")
-            try:
-                tts_api_config = config_manager.get_model_api_config("tts_custom")
-            except Exception:
-                tts_api_config = {}
-            if not voice_id:
-                raise RuntimeError(
-                    "当前猫娘未配置 voice_id，而这条 TTS 线路需要音色"
-                    "（本地 SoVITS/CosyVoice 已经先试过：没配 ws:// 端点，或者合成没成）"
-                )
-            preview_base_url = cosyvoice_base_url or tts_api_config.get("base_url", "")
-            from utils.api_config_loader import get_cosyvoice_clone_model
-            clone_model = (voice_data or {}).get("clone_model") or get_cosyvoice_clone_model(provider)
-
-            def _do_synthesize():
-                import dashscope
-                from dashscope.audio.tts_v2 import SpeechSynthesizer
-                from utils.dashscope_region import DASHSCOPE_GLOBAL_LOCK, configure_dashscope_sdk_urls
-                with DASHSCOPE_GLOBAL_LOCK:
-                    dashscope.api_key = audio_api_key
-                    try:
-                        configure_dashscope_sdk_urls(dashscope, preview_base_url, websocket_path="inference")
-                    except Exception:
-                        configure_dashscope_sdk_urls(dashscope, "", websocket_path="inference")
-                    synthesizer = SpeechSynthesizer(model=clone_model, voice=voice_id)
-                    return synthesizer.call(text)
-
-            audio_data = await asyncio.to_thread(_do_synthesize)
-            if not audio_data:
-                raise RuntimeError("语音合成未返回音频数据")
-            return audio_data, "audio/mpeg"
-        except (MimoVoiceCloneError, MinimaxVoiceCloneError) as e:
-            raise RuntimeError(str(e)) from e
+            async with asyncio.timeout(HOST_SPEECH_TIMEOUT_SECONDS):
+                client = get_internal_http_client()
+                async with client.stream(
+                    "POST", url, json={"text": text},
+                    timeout=httpx.Timeout(135.0, connect=5.0), follow_redirects=False,
+                ) as response:
+                    if response.status_code in {404, 405}:
+                        raise RuntimeError("本体未提供统一语音接口，请更新并重启本体后重试；插件不再自行合成语音")
+                    if response.status_code == 429:
+                        raise RuntimeError("本体语音合成忙，请稍后重试")
+                    if response.status_code == 504:
+                        raise RuntimeError("本体语音合成超时")
+                    if response.status_code != 200:
+                        raise RuntimeError(f"本体语音合成失败（HTTP {response.status_code}），请检查本体 TTS 设置及日志")
+                    mime = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+                    if mime != "audio/wav":
+                        raise RuntimeError("本体语音接口未返回 WAV 音频")
+                    audio = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        if len(audio) + len(chunk) > MAX_HOST_AUDIO_BYTES:
+                            raise RuntimeError("本体返回的语音文件过大")
+                        audio.extend(chunk)
+        except (TimeoutError, httpx.TimeoutException):
+            raise RuntimeError("请求本体语音合成超时") from None
+        except httpx.HTTPError:
+            raise RuntimeError("无法连接本体语音接口，请确认本体已启动") from None
+        # Reject empty/malformed responses before creating a QQ record file.
+        try:
+            with wave.open(io.BytesIO(audio), "rb") as wav:
+                if wav.getnframes() <= 0 or not wav.readframes(1):
+                    raise ValueError("empty WAV")
+        except (wave.Error, EOFError, ValueError):
+            raise RuntimeError("本体语音接口返回了空音频或无效 WAV") from None
+        return bytes(audio), "audio/wav"
 
     async def synthesize_reply_voice_file(self, text: str) -> tuple[str, str]:
-        """合成一条语音并落成文件，返回 ``(file:// uri, mime)``。
-
-        **这里不再要求角色必须有 ``voice_id``**（2026-09-29 改）。以前第一件事就是
-        `if not voice_id: raise`，而它挡住的是**本地那条路**：`_synthesize_local_tts`
-        （自建 SoVITS/CosyVoice，音色取自 ``tts_custom.voice_name``，缺 voice_id 时用
-        ``"default"``）本来就排在最前面、本来就不需要角色音色 —— GSV/自建 TTS 的用户因此
-        永远发不出语音，日志里只留一句"当前猫娘未配置 voice_id"，像是配置错了。
-        要求现在留在真正需要它的地方：云端各分支自己有守卫（DashScope 那条见下）。
-        """
+        """保存本体生成的音频，返回 QQ 发送所需的 ``(file:// URI, MIME)``。"""
         normalized_text = str(text or "").strip()
         if not normalized_text:
             raise RuntimeError("语音合成文本不能为空")

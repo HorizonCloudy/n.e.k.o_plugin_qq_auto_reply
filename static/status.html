@@ -638,6 +638,8 @@ function setAuto(on) {
 }
 
 document.getElementById('auto').addEventListener('change', e => setAuto(e.target.checked));
+document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
+window.addEventListener('focus', () => { load(); });
 document.getElementById('btn-refresh').addEventListener('click', load);
 document.getElementById('btn-qr').addEventListener('click', async () => {
   busy('btn-qr', true);
@@ -675,6 +677,7 @@ document.getElementById('btn-add-group').addEventListener('click', async () => {
 /* 部署反馈走 SSE：下载可能几十秒起步，没有实时输出用户会以为卡死。
    这个页面只剩自动化相关的东西 —— 进度/运行状态/流水那些只读面板已移除。 */
 if (window.UISSE && typeof UISSE.on === 'function') {
+  UISSE.on('status', () => { load(); });
   UISSE.on('deploy_progress', ev => {
     const d = (ev && ev.data) || {};
     const label = d.label || d.step || '';

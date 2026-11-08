@@ -105,11 +105,18 @@ class QQAttentionGateService:
             self._maintenance_loop(interval),
         )
         _set_maintenance_owner(self)
+        self._initiative_scheduler = getattr(self.plugin, "proactive_initiative_service", None)
+        if self._initiative_scheduler is not None:
+            await self._initiative_scheduler.start_scheduler()
 
     async def stop_proactive_loop(self) -> None:
         """停掉维护循环（插件停止/重载时调用）。"""
         if _maintenance_owner() is self:
             _set_maintenance_owner(None)
+        initiative = getattr(self, "_initiative_scheduler", None)
+        self._initiative_scheduler = None
+        if initiative is not None:
+            await initiative.stop_scheduler()
         task = getattr(self, "_maintenance_task", None)
         self._maintenance_task = None
         if task is None:

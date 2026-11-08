@@ -578,6 +578,7 @@ class QQPluginToolService:
         *,
         session_key: str = "",
         conversation: dict[str, Any] | None = None,
+        on_result: Callable[[str, str, Any], None] | None = None,
     ) -> Callable[[Any], Any]:
         """这一轮的分发器：把模型的工具调用转成 `call_entry`。
 
@@ -634,6 +635,11 @@ class QQPluginToolService:
             output, payload = await self.call_plugin_entry_with_payload(
                 plugin_id, entry_id, params, session_key=session_key,
             )
+            if on_result is not None:
+                try:
+                    on_result(plugin_id, entry_id, payload)
+                except Exception:
+                    self.plugin.logger.warning("话题来源提取失败（不影响工具结果）", exc_info=True)
             registered = await self._register_followup(
                 payload, plugin_id=plugin_id, entry_id=entry_id,
                 poller=pollers.get(name, ""), conversation=conversation,

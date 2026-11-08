@@ -945,6 +945,8 @@ class QQReplyBufferService:
                         self.plugin._emit_log(
                             "WARN", f"[Buffer] fallback 历史行补写失败: {e}",
                         )
+                from .topic_source_service import commit_topic_sources
+                commit_topic_sources(self.plugin, pending.mention_context, delivered_text)
                 # mention 计数绑定实际投递：单条路径此刻才真正送达。
                 try:
                     await self.plugin.reply_generation_service.record_scoped_mentions_on_delivery(

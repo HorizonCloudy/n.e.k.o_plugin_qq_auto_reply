@@ -27,30 +27,6 @@ from plugin.sdk.plugin import (
 if TYPE_CHECKING:
     from .connector_seam import OneBotConnector
 
-try:
-    from utils.tts.native_voice_registry import (
-        get_active_realtime_native_provider_for_ui,
-    )
-except (ImportError, ModuleNotFoundError):
-    get_active_realtime_native_provider_for_ui = None
-try:
-    from utils.tts.providers.gemini import normalize_gemini_tts_voice
-except (ImportError, ModuleNotFoundError):
-    normalize_gemini_tts_voice = None
-try:
-    from utils.voice_clone import (
-        MimoVoiceCloneClient,
-        MimoVoiceCloneError,
-        MinimaxVoiceCloneClient,
-        MinimaxVoiceCloneError,
-    )
-except (ImportError, ModuleNotFoundError):
-    MimoVoiceCloneClient = MimoVoiceCloneError = MinimaxVoiceCloneClient = MinimaxVoiceCloneError = None
-try:
-    from utils.voice_config import read_legacy_voice_id
-except (ImportError, ModuleNotFoundError):
-    read_legacy_voice_id = None
-
 from . import settings_schema
 from .attention_gate_service import QQAttentionGateService
 from .attention_service import QQAttentionService

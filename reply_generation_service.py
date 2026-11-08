@@ -25,6 +25,7 @@ from .plugin_tool_turn_guard import (
     unexecuted_search_promise,
 )
 from .session_bootstrap_service import MAX_TOOL_ITERATIONS
+from .topic_source_service import capture_topic_sources, topic_source_prompt
 
 #: 表情包收集工具名。与 ``sticker_lab_service.build_save_definition`` 里的一致。
 STICKER_SAVE_TOOL_NAME = "save_sticker"
@@ -85,6 +86,7 @@ class QQReplyGenerationService:
                     context, context.system_prompt, context.recalled_memory_text,
                 )
                 fb_prompt += preflight_instruction(getattr(context, "memory_preflight_status", ""), has_memory=bool(fb_recalled))
+                fb_prompt += topic_source_prompt(self.plugin, context)
                 # 与主会话路径对偶：清洗只保证"调用发起时"的授权，调用期间
                 # 撤销的话返回文本里仍带着那些内容。
                 consent_before = self._consent_dependency_snapshot(context)
@@ -419,9 +421,11 @@ class QQReplyGenerationService:
                     tool_round_epoch = current_epoch
                     raw_pre_tool_text = "".join(reply_chunks)
 
+            topic_prompt = topic_source_prompt(self.plugin, context)
             turn_system_prompt += preflight_instruction(
                 getattr(context, "memory_preflight_status", ""), has_memory=bool(turn_recalled_text),
             )
+            turn_system_prompt += topic_prompt
             restore_session_prompt = self._apply_turn_memory_context(
                 user_session, turn_system_prompt, turn_recalled_text,
                 # 私聊 participant 会话的 prompt 也是建会话时烙进去的：
@@ -429,7 +433,8 @@ class QQReplyGenerationService:
                 # 每轮都换成刚构建的 prompt，才能让生成内容与本轮依赖快照
                 # 对齐；restore 保证持久会话仍保留创建时的原始 system 行。
                 always_refresh=(
-                    bool(getattr(context, "memory_preflight_status", ""))
+                    bool(topic_prompt)
+                    or bool(getattr(context, "memory_preflight_status", ""))
                     or context.is_group
                     or bool(getattr(context, "companion_section", ""))
                     or bool(getattr(context, "cross_session_section", ""))
@@ -757,6 +762,9 @@ class QQReplyGenerationService:
                 mounted,
                 session_key=session_key,
                 conversation=self._bridge_conversation(context),
+                on_result=lambda plugin_id, entry_id, payload: capture_topic_sources(
+                    self.plugin, context, plugin_id, entry_id, payload,
+                ),
             )
 
         async def _dispatch(tool_call: Any) -> Any:

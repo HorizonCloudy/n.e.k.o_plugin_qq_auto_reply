@@ -327,6 +327,34 @@ body{display:flex;height:100vh;overflow:hidden}
         <div class="form-group"><label class="form-check"><input type="checkbox" id="cfg-private-participant-memory"> <span data-i18n="ui.shared.config.private_participant_memory">记录私聊好友长期记忆（非管理员私聊；以对方为主体单独建档）</span></label></div>
         <div class="form-group"><label class="form-check"><input type="checkbox" id="cfg-cross-group-context"> <span data-i18n="ui.memory.cross_group">允许跨群实时话题上下文</span></label></div>
     </div>
+    <div class="card" id="initiative-card"><div class="card-title" data-i18n="ui.initiative.title">主动搭话（私聊）</div>
+        <p style="color:var(--text-secondary);font-size:12px;margin-bottom:12px" data-i18n="ui.initiative.hint">仅对管理员私聊生效。有由头模式会在她之前承诺的事情到期后主动联系；也可单独勾选下方的每日定时问候。两种模式均受总开关、静音时段、每天上限、最小间隔和近期聊天限制。</p>
+        <label style="display:block;margin-bottom:10px"><input id="cfg-initiative-on" type="checkbox"> <span data-i18n="ui.initiative.enabled">允许她主动搭话（默认关）</span></label>
+        <div class="form-row">
+            <div class="form-group"><label class="form-label" data-i18n="ui.initiative.quiet">静音时段（小时，起=止 表示不静音）</label>
+                <div style="display:flex;gap:6px;align-items:center">
+                    <input class="form-input" id="cfg-initiative-quiet-start" type="number" min="0" max="23" step="1" style="width:76px">
+                    <span style="color:var(--text-secondary)">&rarr;</span>
+                    <input class="form-input" id="cfg-initiative-quiet-end" type="number" min="0" max="23" step="1" style="width:76px">
+                </div>
+            </div>
+            <div class="form-group"><label class="form-label" data-i18n="ui.initiative.max_per_day">每天最多几次</label>
+                <input class="form-input" id="cfg-initiative-max-per-day" type="number" min="0" max="12" step="1"></div>
+            <div class="form-group"><label class="form-label" data-i18n="ui.initiative.min_gap">两次之间至少隔几小时</label>
+                <input class="form-input" id="cfg-initiative-min-gap-hours" type="number" min="0" max="24" step="0.5"></div>
+        </div>
+        <div style="border-top:1px solid var(--border);padding-top:12px;margin-top:12px">
+            <label class="form-check"><input id="cfg-initiative-greeting-enabled" type="checkbox"> <span data-i18n="ui.initiative.greeting_enabled">启用定时问候 / 找话题</span></label>
+            <div id="initiative-slots" style="margin-top:10px"></div>
+            <button type="button" class="btn btn-sm btn-ghost" onclick="addInitiativeSlot()" data-i18n="ui.initiative.slot_add">+ 添加时间段</button>
+            <p style="color:var(--text-secondary);font-size:12px" data-i18n="ui.initiative.greeting_hint">按本机时间：QQ 插件在时间段内上线时触发；提前在线则在段内随机时间触发。两种触发合计每段每天最多尝试一次，跨零点按开始日期计数；错过不补发，重连/重启不重复已尝试的问候。样例只作参考，不是原文直发。搜索/视频模式复用已启用并授权给 QQ 的工具；无可用结果时退回普通问候。各段共享每天上限、最小间隔、静音及近期聊天限制，受限时仅在本段内等待。</p>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
+            <button class="btn btn-primary btn-sm" onclick="saveInitiativeSettings()" data-i18n="ui.initiative.save">保存主动搭话设置</button>
+            <button class="btn btn-sm btn-ghost" onclick="loadInitiativeStatus()" data-i18n="ui.shared.btn.refresh">刷新</button>
+            <span id="initiative-status" style="font-size:12px;color:var(--text-secondary)"></span>
+        </div>
+    </div>
     <div class="card" id="normal-relay-card"><div class="card-title" data-i18n="ui.shared.card.normal_relay">普通群转发</div>
         <div class="form-row"><div class="form-group"><label class="form-label" data-i18n="ui.shared.label.normal_relay_prob">普通转发概率</label><span class="param-hint" data-hint="ui.shared.label.normal_relay_prob.hint">?</span><input class="form-input" id="cfg-normal-prob" type="number" min="0" max="1" step="0.01"></div></div>
     </div>
@@ -403,28 +431,6 @@ body{display:flex;height:100vh;overflow:hidden}
     <div class="card"><div class="card-title" data-i18n="ui.shared.card.accounts">信任用户</div>
         <button class="btn btn-primary btn-sm" onclick="showModal('user')" style="margin-bottom:10px" data-i18n="ui.shared.btn.add">+ 添加</button>
         <table class="data-table"><thead><tr><th data-i18n="ui.shared.table.qq">QQ</th><th data-i18n="ui.shared.table.qq_nickname">昵称</th><th data-i18n="ui.shared.table.qq_level">级别</th><th data-i18n="ui.shared.table.actions">操作</th></tr></thead><tbody id="user-table"></tbody></table>
-    </div>
-    <div class="card"><div class="card-title" data-i18n="ui.initiative.title">主动搭话（私聊）</div>
-        <p style="color:var(--text-secondary);font-size:12px;margin-bottom:12px" data-i18n="ui.initiative.hint">只对管理员的私聊生效，而且必须**有由头**：她自己在私聊里说过「晚点告诉你 / 明天给你看 / 等我查一下」，到点才会主动找你说那件事。时间只用来定「到期」和刹车（静音时段、每天上限、最小间隔）—— 不会因为「好久没聊了」就开口。她说没什么可说的就不会发。</p>
-        <label style="display:block;margin-bottom:10px"><input id="cfg-initiative-on" type="checkbox"> <span data-i18n="ui.initiative.enabled">允许她主动搭话（默认关）</span></label>
-        <div class="form-row">
-            <div class="form-group"><label class="form-label" data-i18n="ui.initiative.quiet">静音时段（小时，起=止 表示不静音）</label>
-                <div style="display:flex;gap:6px;align-items:center">
-                    <input class="form-input" id="cfg-initiative-quiet-start" type="number" min="0" max="23" step="1" style="width:76px">
-                    <span style="color:var(--text-secondary)">&rarr;</span>
-                    <input class="form-input" id="cfg-initiative-quiet-end" type="number" min="0" max="23" step="1" style="width:76px">
-                </div>
-            </div>
-            <div class="form-group"><label class="form-label" data-i18n="ui.initiative.max_per_day">每天最多几次</label>
-                <input class="form-input" id="cfg-initiative-max-per-day" type="number" min="0" max="12" step="1"></div>
-            <div class="form-group"><label class="form-label" data-i18n="ui.initiative.min_gap">两次之间至少隔几小时</label>
-                <input class="form-input" id="cfg-initiative-min-gap-hours" type="number" min="0" max="24" step="0.5"></div>
-        </div>
-        <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
-            <button class="btn btn-primary btn-sm" onclick="saveInitiativeSettings()" data-i18n="ui.initiative.save">保存主动搭话设置</button>
-            <button class="btn btn-sm btn-ghost" onclick="loadInitiativeStatus()" data-i18n="ui.shared.btn.refresh">刷新</button>
-            <span id="initiative-status" style="font-size:12px;color:var(--text-secondary)"></span>
-        </div>
     </div>
 </div>
 <div class="page" id="page-config-groups">
@@ -580,12 +586,28 @@ function switchSub(sub){currentSub=sub;document.getElementById('content').scroll
    整函数 return 是安全的：派生 UI（策略卡显隐、radio 选中态、记忆父子联动）各自有
    onchange/click 监听，不依赖本函数；而进入配置页时会清脏标记，首次填充照常发生。 */
 if(_settingsDirty)return;state.backend=s.onebot_backend||'napcat';let _skc=document.getElementById('cfg-sticker-collect');if(_skc)_skc.value=['off','current','any'].includes(s.sticker_collect_policy)?s.sticker_collect_policy:'current';document.getElementById('cfg-backend').value=state.backend;state.replyMode=['text','voice','both'].includes(s.reply_mode)?s.reply_mode:'text';document.getElementById('cfg-url').value=s.onebot_url||'';document.getElementById('cfg-token').value=s.token||'';document.getElementById('cfg-path').value=s[onebotBackend(state.backend).directoryKey]||'';document.getElementById('cfg-show-napcat').checked=!!s[onebotBackend(state.backend).windowKey];document.getElementById('cfg-normal-prob').value=s.normal_relay_probability??.1;document.querySelectorAll('#reply-mode-cards .radio-card').forEach(c=>c.classList.toggle('selected',c.dataset.mode===state.replyMode));document.getElementById('cfg-retro-max-msgs').value=s.retroactive_review_max_messages??30;document.getElementById('cfg-retro-max-reply').value=s.retroactive_review_max_reply??5;document.getElementById('cfg-retro-min-unreviewed').value=s.retroactive_review_min_unreviewed??5;document.getElementById('cfg-retro-cooldown').value=s.retroactive_review_cooldown_seconds??300;document.getElementById('cfg-att-focus-threshold').value=s.attention_focus_threshold??4;document.getElementById('cfg-att-focus-send').value=s.attention_focus_hold_threshold??2;document.getElementById('cfg-att-maintenance-interval').value=s.attention_maintenance_interval_seconds??60;document.getElementById('cfg-gm-digest-interval').value=s.group_memory_digest_interval_seconds??300;document.getElementById('cfg-dormancy-idle').value=s.dormancy_idle_seconds??1800;document.getElementById('cfg-dormancy-wake-score').value=s.dormancy_wake_score??2;document.getElementById('cfg-dormancy-on').checked=s.dormancy_enabled!==!1;document.getElementById('cfg-att-freq-target-gap').value=s.attention_frequency_target_gap??30;document.getElementById('cfg-att-freq-min-mult').value=s.attention_frequency_min_multiplier??0.15;document.getElementById('cfg-att-freq-max-mult').value=s.attention_frequency_max_multiplier??3;document.getElementById('cfg-att-lock-seconds').value=s.attention_lock_seconds??90;document.getElementById('cfg-att-emotion-multipliers').value=JSON.stringify(s.attention_emotion_multipliers??{},null,2);document.getElementById('cfg-local-stt-url').value=s.local_stt_url||'';document.getElementById('cfg-group-memory').checked=s.group_memory_enabled===!0;document.getElementById('cfg-group-member-memory').checked=s.group_member_memory_enabled===!0;document.getElementById('cfg-private-participant-memory').checked=!!s.private_participant_memory_enabled;document.getElementById('cfg-cross-group-context').checked=s.allow_cross_group_context===!0;state.mode=(s.qq_connection_mode==='napcat_forward')?'napcat_forward':'napcat';document.querySelectorAll('#conn-direction-cards .radio-card').forEach(c=>c.classList.toggle('selected',c.dataset.direction===(state.mode==='napcat_forward'?'forward':'reverse')));updateDirectionUI();document.getElementById('cfg-catchup-enabled').checked=s.catchup_enabled!==!1;document.getElementById('cfg-buffer-group').checked=s.group_buffer_enabled!==!1;document.getElementById('cfg-buffer-private').checked=s.private_buffer_enabled!==!1;document.getElementById('cfg-burst-window').value=s.reply_burst_window_seconds??60;document.getElementById('cfg-burst-max').value=s.reply_burst_max_replies??3;document.getElementById('cfg-buffer-mean').value=s.buffer_delay_mean_seconds??1;document.getElementById('cfg-buffer-mean-private').value=s.buffer_delay_private_seconds??0.6;document.getElementById('cfg-buffer-max-count').value=s.buffer_max_count??17;document.getElementById('cfg-buffer-collect').value=s.buffer_collect_window_seconds??3;document.getElementById('cfg-buffer-collect-private').value=s.buffer_collect_window_private_seconds??1;syncGroupMemoryDeps();applyAttentionHints();/* buffer UI hidden — 延迟改由 sample_wait_seconds() 正态取样，尚未接到这些输入框 */}
-function applyDashboard(d){let s=d.settings||{},rt=d.runtime||{},lg=d.login||{};state.settings=s;state.backendWebuiUrl=rt.backend_webui_url||'';state.loginOnline=lg.status==='online';state.running=rt.auto_reply_running||!1;state.onebotOk=rt.onebot_connected||!1;state.napcatPid=rt.napcat_pid||null;state.backendRuntime=rt;state.selfId=lg.self_id||'';state.nickname=lg.nickname||'';state.users=(d.permissions||{}).trusted_users||[];state.groups=(d.permissions||{}).trusted_groups||[];state.backlogItems=d.backlog_items||[];state.backlogLabels=Array.isArray(s.backlog_labels)?s.backlog_labels:[];applySettings(s);updateStatusBar();renderUsers();renderGroups();renderKeywords();let qr=rt.qrcode_url||'';document.getElementById('qr-img').src=qr?(qr+'?_ts='+Date.now()):'';document.getElementById('qr-img').style.display=qr?'':'none';document.getElementById('qr-empty').style.display=qr?'none':'';updateGuide();applyBackendUI();let traces=d.recent_pipeline_trace_summaries||[];if(traces.length)document.getElementById('traces-list').innerHTML=traces.map(t=>`<div style="padding:4px 0;border-bottom:1px solid var(--border-subtle)">[${escapeHtml(t.result_kind)||'?'}] ${escapeHtml(t.source)} -> ${escapeHtml(t.delivery_mode)}</div>`).join('')}
+function applyRuntimeStatus(d){
+  let rt=d.runtime||{},lg=d.login||{};
+  state.backendWebuiUrl=rt.backend_webui_url||'';
+  state.loginOnline=lg.status==='online';
+  state.running=rt.auto_reply_running===true;
+  state.onebotOk=rt.onebot_connected===true;
+  state.napcatPid=rt.napcat_pid||null;state.backendRuntime=rt;
+  state.selfId=lg.self_id||'';state.nickname=lg.nickname||'';
+  updateStatusBar();applyBackendUI();updateGuide();
+  let qr=state.loginOnline?'':(rt.qrcode_url||'');
+  let img=document.getElementById('qr-img');
+  img.src=qr?(qr+'?_ts='+Date.now()):'';
+  img.style.display=qr?'':'none';
+  document.getElementById('qr-empty').style.display=qr?'none':'';
+  let traces=d.recent_pipeline_trace_summaries||[];
+  document.getElementById('traces-list').innerHTML=traces.map(t=>`<div style="padding:4px 0;border-bottom:1px solid var(--border-subtle)">[${escapeHtml(t.result_kind)||'?'}] ${escapeHtml(t.source)} -> ${escapeHtml(t.delivery_mode)}</div>`).join('');
+}
+function applyDashboard(d){let s=d.settings||{};state.settings=s;state.users=(d.permissions||{}).trusted_users||[];state.groups=(d.permissions||{}).trusted_groups||[];state.backlogItems=d.backlog_items||[];state.backlogLabels=Array.isArray(s.backlog_labels)?s.backlog_labels:[];applySettings(s);applyRuntimeStatus(d);renderUsers();renderGroups();renderKeywords()}
 async function updateGuide(){
 var done=0,total=9,items=[];
 function add(id,label,ok,hint){items.push({id:id,label:label,ok:ok,hint:hint});if(ok)done++}
-var url="",qr=document.getElementById("qr-img").src||"";state._napcatUrl="";
-try{var d=await call('query',{action:'napcat_webui'});url=d.url||"";state._napcatUrl=url}catch(e){}
+var url=state.backendWebuiUrl||"";state._napcatUrl=url;
 var hasUrl=!!url,hasCfg=!!(state.settings.onebot_url)&&!!(state.settings.token),hasU=state.users&&state.users.length>0,isRun=state.running;
 add("step-napcat",onebotBackend(state.backend).label+' 进程',hasUrl||isRun,hasUrl?t("ui.napcat.guide.step_napcat_ok","WebUI 已就绪"):t("ui.napcat.guide.step_napcat_wait","等待启动"));
 add("step-onebot",t("ui.napcat.guide.step_onebot","OneBot 连接"),hasCfg,(hasCfg?t("ui.napcat.guide.step_onebot_ok","已配置"):t("ui.napcat.guide.step_onebot_fail","未配置")));
@@ -635,7 +657,16 @@ function renderKeywords(){let tb=document.getElementById('kw-table');let lbls=st
 async function loadAttention(){try{let d=await call('asset',{action:'attention'});let el=document.getElementById("att-content");if(!d.groups||!d.groups.length){el.innerHTML=d.global_sleep?t("ui.shared.attention.global_sleep_all","<span style=color:var(--danger)>全局休眠 - 所有群注意力过低</span>"):t("ui.shared.attention.no_data","<span style=color:var(--text-secondary)>暂无注意力数据</span>");return}var head="";if(d.global_sleep)head+="<div style=font-size:12px;color:var(--danger);margin-bottom:8px>"+t("ui.shared.attention.global_sleep","全局休眠中")+"</div>";el.innerHTML=head+d.groups.map(g=>{var maxScore=(state.settings&&state.settings.attention_max_score)||10;var s=g.attention_score||0,pct=Math.min(100,Math.round(s/maxScore*100));var dims='<span style="font-size:9px;color:var(--text-secondary);margin-right:4px">热度:'+({warm:'热聊中',cooling:'凉下来了',dormant:'休眠'}[g.heat]||g.heat||'—')+'</span>';if(g.emotion&&g.emotion!=='calm')dims+='<span style="font-size:9px;color:var(--warning);margin-right:4px">情绪:'+g.emotion+'</span>';var emo=(g.emotion_display||g.emotion||'calm');var emoColor={'calm':'var(--text-secondary)','arguing':'#f43f5e','proud':'#f59e0b','excited':'#fbbf24','happy':'#22c55e','annoyed':'#f97316','playful':'#ec4899','curious':'#8b5cf6','sad':'#3b82f6','bored':'#64748b','embarrassed':'#ef4444','sulking':'#a855f7'}[emo]||'var(--text-secondary)';var emoTag='<span style=\"font-size:10px;color:'+emoColor+';margin-left:4px\" title=\"'+emo+'\">'+emo+'</span>';return"<div style=display:flex;align-items:center;gap:8px;padding:4px 0;"+"><span style=width:100px;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap title=\""+escapeHtml(g.group_id)+"\">"+escapeHtml(g.group_id||"?")+"</span><div style=flex:1><div style=height:8px;background:var(--border-subtle);border-radius:var(--radius-pill)><div style=height:8px;background:"+(s>=4?"var(--accent)":s>=1?"var(--warning)":"var(--border)")+";width:"+pct+"%;border-radius:var(--radius-pill)></div></div><div style=margin-top:2px>"+dims+"</div></div><span style=font-size:11px;width:40px>"+s.toFixed(1)+"</span>"+emoTag+"<span style=display:inline-flex;align-items:center;gap:4px;margin-left:6px><button class='btn btn-sm btn-ghost' onclick=\"adjustAttention('"+escapeOnclick(g.group_id)+"',1)\" title='+1'>+1</button><button class='btn btn-sm btn-ghost' onclick=\"adjustAttention('"+escapeOnclick(g.group_id)+"',-1)\" title='-1'>-1</button><input type=number step=0.5 style=width:56px;font-size:11px;padding:2px 4px id='att-delta-"+escapeOnclick(g.group_id)+"'><button class='btn btn-sm btn-ghost' onclick=\"applyAttentionInput('"+escapeOnclick(g.group_id)+"')\" title='"+t("ui.shared.attention.adjust","应用")+"'>"+t("ui.shared.attention.adjust","应用")+"</button></span></div>"}).join("")}catch(e){document.getElementById("att-content").innerHTML=t("ui.shared.attention.load_failed","<span style=color:var(--text-secondary)>加载失败</span>")}}
 async function adjustAttention(groupId,delta){try{await call('config',{action:'attention_adjust',group_id:groupId,delta:delta});loadAttention()}catch(e){toast(t("ui.shared.attention.adjust_failed","调整失败")+": "+e.message)}}
 function applyAttentionInput(groupId){let v=parseFloat(document.getElementById('att-delta-'+groupId).value);if(isNaN(v)||!v)return toast(t("ui.shared.attention.adjust_noop","请输入非零数值"));adjustAttention(groupId,v)}
-async function loadDashboard(){try{let d=await call('query', {action:'dashboard'});applyDashboard(d)}catch(e){console.error('loadDashboard failed',e)}}
+var _dashboardRequest=null;
+function fetchDashboardSnapshot(){
+  if(!_dashboardRequest)_dashboardRequest=call('query',{action:'dashboard'}).finally(function(){_dashboardRequest=null});
+  return _dashboardRequest;
+}
+async function loadDashboard(){try{
+  // A save/navigation refresh needs a new snapshot, not a poll started before that save.
+  if(_dashboardRequest)await _dashboardRequest.catch(function(){});
+  applyDashboard(await fetchDashboardSnapshot());
+}catch(e){console.error('loadDashboard failed',e)}}
  function isMaskedTokenPlaceholder(v){return /^[*●•]{3,8}$/.test(String(v||'').trim())}
 async function doSave(){try{let tokenValue=document.getElementById('cfg-token').value;/* 情绪倍率表(JSON)必须在提交前解析并校验：以前是内联的 try/catch 返回 undefined，而 JSON.stringify 会整体省略 undefined 属性 → 后端收不到这个键 → 整键被静默丢弃，但下面照样弹「设置已保存」并回填旧值。用户打错一个逗号，改动没了却被告知成功。这里改成：不合法就报错并中止整次保存。 */let emoRaw=document.getElementById('cfg-att-emotion-multipliers'),emoParsed;if(emoRaw&&emoRaw.value.trim()!==''){try{emoParsed=JSON.parse(emoRaw.value)}catch(e){toast(t('ui.shared.toast.emotion_json_invalid','情绪倍率表不是合法 JSON，已中止保存：')+e.message);return}}let args={catchup_enabled:document.getElementById('cfg-catchup-enabled').checked,sticker_collect_policy:((document.getElementById('cfg-sticker-collect')||{}).value||'current'),...initiativeSettingsPayload(),group_buffer_enabled:document.getElementById('cfg-buffer-group').checked,private_buffer_enabled:document.getElementById('cfg-buffer-private').checked,reply_burst_window_seconds:intVal('cfg-burst-window',60),reply_burst_max_replies:intVal('cfg-burst-max',3),buffer_delay_mean_seconds:floatVal('cfg-buffer-mean',1),buffer_delay_private_seconds:floatVal('cfg-buffer-mean-private',0.6),buffer_max_count:intVal('cfg-buffer-max-count',17),buffer_collect_window_seconds:floatVal('cfg-buffer-collect',3),buffer_collect_window_private_seconds:floatVal('cfg-buffer-collect-private',1),onebot_url:document.getElementById('cfg-url').value.trim(),onebot_backend:state.backend||'napcat',[onebotBackend(state.backend).directoryKey]:document.getElementById('cfg-path').value.trim(),[onebotBackend(state.backend).windowKey]:document.getElementById('cfg-show-napcat').checked,qq_connection_mode:currentMode(),reply_mode:state.replyMode,normal_relay_probability:floatVal('cfg-normal-prob',.1),retroactive_review_max_messages:intVal('cfg-retro-max-msgs',30),retroactive_review_max_reply:intVal('cfg-retro-max-reply',5),retroactive_review_min_unreviewed:intVal('cfg-retro-min-unreviewed',5),retroactive_review_cooldown_seconds:intVal('cfg-retro-cooldown',300),attention_focus_threshold:floatVal('cfg-att-focus-threshold',4),attention_focus_hold_threshold:floatVal('cfg-att-focus-send',2),attention_maintenance_interval_seconds:floatVal('cfg-att-maintenance-interval',60),group_memory_digest_interval_seconds:intVal('cfg-gm-digest-interval',300),dormancy_enabled:document.getElementById('cfg-dormancy-on').checked,dormancy_idle_seconds:intVal('cfg-dormancy-idle',1800),dormancy_wake_score:floatVal('cfg-dormancy-wake-score',2),attention_frequency_target_gap:floatVal('cfg-att-freq-target-gap',30),attention_frequency_min_multiplier:floatVal('cfg-att-freq-min-mult',0.15),attention_frequency_max_multiplier:floatVal('cfg-att-freq-max-mult',1.8),attention_lock_seconds:intVal('cfg-att-lock-seconds',90),attention_emotion_multipliers:emoParsed,local_stt_url:document.getElementById('cfg-local-stt-url').value.trim(),group_memory_enabled:document.getElementById('cfg-group-memory').checked,group_member_memory_enabled:document.getElementById('cfg-group-memory').checked&&document.getElementById('cfg-group-member-memory').checked,private_participant_memory_enabled:document.getElementById('cfg-private-participant-memory').checked,allow_cross_group_context:document.getElementById('cfg-cross-group-context').checked};if(!isMaskedTokenPlaceholder(tokenValue))args.token=tokenValue;if(state.backlogLabels&&state.backlogLabels.length)args.backlog_labels=state.backlogLabels;let r=await call('config',{action:'save',...args});if(r&&r.persisted===!1)toast(t('ui.shared.toast.save_failed','保存失败（写入磁盘失败）'));else{toast(t('ui.shared.toast.saved','设置已保存'),!0);_settingsDirty=!1;_initiativeDirty=!1}await loadDashboard()}catch(e){toast(t('ui.shared.toast.save_failed_prefix','保存失败: ')+e.message)}}
 async function doStart(){try{var mode=currentMode();/* 先捕获方向再刷新：loadDashboard 会用已保存配置重置方向卡片，晚读就拿到旧方向 */await loadDashboard();await call('config', {action:'save', qq_connection_mode:mode});await call('runtime',{action:'start'});toast(t('ui.shared.toast.started','已启动'),!0);await loadDashboard();startStatusPoll()}catch(e){toast(t('ui.shared.toast.start_failed_prefix','启动失败: ')+e.message)}}
@@ -685,14 +716,16 @@ async function loadGroupMemory(){try{let d=await call('query', {action:'dashboar
 async function doForgetGroupMemory(gid){if(!await UIConfirm.ask(tf('ui.review.memory.forget_confirm','确定要清除群 {gid} 的全部长期记忆吗？此操作不可撤销。',{gid:gid})))return;try{let d=await call('config', {action:'memory_forget', group_id:gid});toast(tf('ui.review.memory.forgotten','群 {gid} 记忆已清除',{gid:gid}),!0);loadGroupMemory()}catch(e){toast(t('ui.review.memory.forget_failed','清除失败')+': '+e.message)}}
 async function loadUserProfiles(){try{let d=await call('query', {action:'user_profiles'});let profiles=d.profiles||[];let el=document.getElementById('user-profiles-list');if(!profiles.length){el.innerHTML='<span style=color:var(--text-secondary)>'+t('ui.review.profiles.empty','暂无用户数据')+'</span>';return}let lvlMap={admin:t('ui.review.profiles.level_admin','管理员'),trusted:t('ui.review.profiles.level_trusted','信任'),normal:t('ui.review.profiles.level_normal','普通'),none:t('ui.review.profiles.level_none','未授权'),unknown:t('ui.review.profiles.level_unknown','群成员')};let html='<table class=data-table><thead><tr><th>用户</th><th>QQ</th><th>权限</th><th>画像状态</th><th>画像摘要</th></tr></thead><tbody>';profiles.forEach(p=>{let sid=escapeHtml(p.sender_id);let nick=escapeHtml(p.nickname||sid);let lvl=lvlMap[p.permission_level]||p.permission_level;let statusHtml=p.cached?'<span class=tag tag-running>'+tf('ui.review.profiles.cached','已缓存 ({n}s)',{n:p.expires_in_seconds})+'</span>':'<span class=tag tag-offline>'+t('ui.review.profiles.no_cache','暂无画像')+'</span>';let text=p.cached?('<div style=max-width:400px;font-size:11px;white-space:pre-wrap;word-break:break-all>'+escapeHtml(p.profile_text||'')+'</div>'):'<span style=color:var(--text-secondary)>'+t('ui.review.profiles.pending','等待下次回复触发画像采集')+'</span>';html+='<tr><td><strong>'+nick+'</strong></td><td>'+sid+'</td><td>'+lvl+'</td><td>'+statusHtml+'</td><td>'+text+'</td></tr>'});html+='</tbody></table>';el.innerHTML=html}catch(e){document.getElementById('user-profiles-list').innerHTML='<span style=color:var(--danger)>加载失败: '+escapeHtml(e.message)+'</span>'}}
 let _logPollTimer=null,_statusPollTimer=null;
-function startStatusPoll(){if(_statusPollTimer)return;_statusPollTimer=setInterval(function(){loadRuntimeStatus();if(state.running){loadBufferState();loadAttention()}},30000)}/* 30s 兜底轮询：正常刷新走 SSE */
-async function loadRuntimeStatus(){try{let d=await call('query', {action:'dashboard'});let rt=d.runtime||{},lg=d.login||{};state.running=rt.auto_reply_running||!1;state.onebotOk=rt.onebot_connected||!1;state.napcatPid=rt.napcat_pid||null;state.backendRuntime=rt;state.selfId=lg.self_id||'';state.nickname=lg.nickname||'';updateStatusBar();applyBackendUI();let qr=rt.qrcode_url||'';document.getElementById('qr-img').src=qr?(qr+'?_ts='+Date.now()):'';document.getElementById('qr-img').style.display=qr?'':'none';document.getElementById('qr-empty').style.display=qr?'none':'';let traces=d.recent_pipeline_trace_summaries||[];if(traces.length)document.getElementById('traces-list').innerHTML=traces.map(t=>`<div style="padding:4px 0;border-bottom:1px solid var(--border-subtle)">[${escapeHtml(t.result_kind)||'?'}] ${escapeHtml(t.source)} -> ${escapeHtml(t.delivery_mode)}</div>`).join('')}catch(e){console.error('loadRuntimeStatus failed',e)}}
+function startStatusPoll(){if(_statusPollTimer)return;_statusPollTimer=setInterval(function(){if(document.hidden)return;loadRuntimeStatus();if(state.running){loadBufferState();loadAttention()}},5000)}/* SSE 即时刷新，5 秒轮询覆盖扫码连接和重连时的漏推送。 */
+async function loadRuntimeStatus(){try{applyRuntimeStatus(await fetchDashboardSnapshot())}catch(e){console.error('loadRuntimeStatus failed',e)}}
+document.addEventListener('visibilitychange',function(){if(!document.hidden)loadRuntimeStatus()});
+window.addEventListener('focus',function(){loadRuntimeStatus()});
 async function loadBufferState(){try{let d=await call('query', {action:'buffer'});let el=document.getElementById('st-buffer');if(!el)return;if(d.count>0){el.style.display='';document.getElementById('st-buffer-text').textContent=d.pending.map(function(p){return p.session.replace('group:','群').replace('private:','私')+': '+p.messages+'条 '+p.wait_remaining+'s'}).join(' | ')}else{el.style.display='none'}}catch(e){}}
 function stopStatusPoll(){if(_statusPollTimer){clearInterval(_statusPollTimer);_statusPollTimer=null}}
 async function loadLogs(){try{let d=await call('query', {action:'logs', lines:200});let el=document.getElementById('log-content');if(d.lines&&d.lines.length){/* 贴底判断必须在 textContent 重写**之前**读：重写本身会把滚动位置重置到顶部，之后再量就永远是"不在底部"。距底 > 40px 说明用户正在往上读，别把他拽回去。 */let stick=el.scrollHeight-el.scrollTop-el.clientHeight<=40;let txt=d.lines.join('\n');el.textContent=txt;if(stick)el.scrollTop=el.scrollHeight;if(txt.indexOf('账号信息: QQ=')>=0)loadDashboard()}else el.textContent=d.message||t('ui.shared.topbar.no_logs_fallback','暂无日志')}catch(e){document.getElementById('log-content').textContent=t('ui.shared.render.load_failed','加载失败')}}
 function startLogPoll(){if(_logPollTimer)return;loadLogs();_logPollTimer=setInterval(loadLogs,30000)}/* 30s 兜底：日志页正常刷新走 SSE */
 function stopLogPoll(){if(_logPollTimer){clearInterval(_logPollTimer);_logPollTimer=null}}
-/* SSE 事件 → 即时刷新（#2822 通道）；兜底轮询只保留 30s 保证最终一致 */
+/* SSE 事件 → 即时刷新；连接状态另有 5 秒兜底轮询。 */
 UISSE.on('logs',function(){if(currentPage==='logs')loadLogs()});
 UISSE.on('status',function(){loadRuntimeStatus();loadBufferState();loadAttention()});
 UISSE.ensureEs();
@@ -730,7 +763,7 @@ function onGroupPromptEntryClick(gid){document.getElementById('gp-group-select')
 async function doSaveGroupPrompt(){let gid=document.getElementById('gp-group-select').value;if(!gid)return toast(t('ui.groupprompt.select','请先选择群聊'));let text=document.getElementById('gp-text').value;try{await call('config', {action:'group_prompt_save', group_id:gid,text:text});if(text.trim()){_groupPrompts[gid]=text.trim()}else{delete _groupPrompts[gid]}renderGroupPromptList();toast(t('ui.groupprompt.saved','已保存'),!0)}catch(e){toast(t('ui.groupprompt.save_failed','保存失败')+': '+e.message)}}
 async function doDeleteGroupPrompt(){let gid=document.getElementById('gp-group-select').value;if(!gid)return toast(t('ui.groupprompt.select','请先选择群聊'));try{await call('config', {action:'group_prompt_delete', group_id:gid});delete _groupPrompts[gid];document.getElementById('gp-text').value='';renderGroupPromptList();toast(t('ui.groupprompt.deleted','已删除'),!0)}catch(e){toast(t('ui.groupprompt.delete_failed','删除失败')+': '+e.message)}}
 document.getElementById('cfg-group-memory').addEventListener('change',syncGroupMemoryDeps);
-async function bootstrap(){try{let d=await call('query', {action:'dashboard'});applyDashboard(d);await call('config', {action:'save', qq_connection_mode:currentMode()});await loadDashboard();await loadGroupPrompts();startStatusPoll()}catch(e){console.error('bootstrap failed',e);try{await call('config', {action:'init'});await loadDashboard()}catch(e2){console.error('init failed',e2)}}}bootstrap();
+async function bootstrap(){startStatusPoll();try{let d=await fetchDashboardSnapshot();applyDashboard(d);await call('config', {action:'save', qq_connection_mode:currentMode()});await loadDashboard();await loadGroupPrompts()}catch(e){console.error('bootstrap failed',e);try{await call('config', {action:'init'});await loadDashboard()}catch(e2){console.error('init failed',e2)}}}bootstrap();
 </script>
 <script>
 /* ── 主动搭话（管理员私聊）──────────��────────────────────────────────
@@ -740,12 +773,56 @@ async function bootstrap(){try{let d=await call('query', {action:'dashboard'});a
    两处各写一份迟早会不一致。 */
 function initiativeHours(seconds){return Math.round(((Number(seconds)||0)/3600)*2)/2}
 function initiativeSeconds(hours){return Math.round((Number(hours)||0)*3600)}
+var initiativeSlots=[];
+function initiativeTime(minutes){minutes=((minutes%1440)+1440)%1440;return String(Math.floor(minutes/60)).padStart(2,'0')+':'+String(minutes%60).padStart(2,'0')}
+function legacyInitiativeSlots(s){var n=Number(s.proactive_initiative_greeting_hour??9)*60+Number(s.proactive_initiative_greeting_minute??0);return[{id:'legacy',enabled:true,start:initiativeTime(n),end:initiativeTime(n+5),mode:'greeting',sample:'',topic:''}]}
+function updateInitiativeSlot(index,key,value){if(!initiativeSlots[index])return;initiativeSlots[index][key]=value;_initiativeDirty=true}
+function addInitiativeSlot(){
+  if(initiativeSlots.length>=12){toast(t('ui.initiative.slot_limit','最多添加 12 个时间段'));return}
+  var id=(globalThis.crypto&&globalThis.crypto.randomUUID)?globalThis.crypto.randomUUID():'slot-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);
+  initiativeSlots.push({id,enabled:true,start:'09:00',end:'09:30',mode:'greeting',sample:'',topic:''});
+  _initiativeDirty=true;renderInitiativeSlots();
+}
+function removeInitiativeSlot(index){initiativeSlots.splice(index,1);_initiativeDirty=true;renderInitiativeSlots()}
+function validateInitiativeSlots(slots){
+  var time=/^([01]\d|2[0-3]):[0-5]\d$/,ids=new Set();
+  if(!Array.isArray(slots)||slots.length>12)throw new Error(t('ui.initiative.slot_invalid','请检查时间段：起止时间不能相同，模式与内容需有效'));
+  return slots.map(x=>{
+    if(!/^[A-Za-z0-9_-]{1,64}$/.test(x.id)||ids.has(x.id)||!time.test(x.start)||!time.test(x.end)||x.start===x.end||!['greeting','search','video'].includes(x.mode)||typeof x.enabled!=='boolean'||typeof x.sample!=='string'||typeof x.topic!=='string'||x.sample.length>500||x.topic.length>300)throw new Error(t('ui.initiative.slot_invalid','请检查时间段：起止时间不能相同，模式与内容需有效'));
+    ids.add(x.id);return{...x,sample:x.sample.trim(),topic:x.topic.trim()};
+  });
+}
+function renderInitiativeSlots(){
+  var el=document.getElementById('initiative-slots');if(!el)return;
+  var label=(key,fallback)=>escapeHtml(t('ui.initiative.'+key,fallback));
+  el.innerHTML=initiativeSlots.map((s,i)=>{
+    var prefix='cfg-initiative-slot-'+i+'-';
+    return `<div class="initiative-slot" style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:10px">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+        <label class="form-check"><input id="${prefix}enabled" type="checkbox" ${s.enabled?'checked':''} onchange="updateInitiativeSlot(${i},'enabled',this.checked)"> ${label('slot_enabled','启用此段')}</label>
+        <button type="button" class="btn btn-sm btn-ghost" onclick="removeInitiativeSlot(${i})">${label('slot_remove','删除')}</button>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label" for="${prefix}start">${label('slot_start','开始时间')}</label><input id="${prefix}start" class="form-input" type="time" step="60" value="${escapeHtml(s.start)}" oninput="updateInitiativeSlot(${i},'start',this.value)"></div>
+        <div class="form-group"><label class="form-label" for="${prefix}end">${label('slot_end','结束时间（可跨零点）')}</label><input id="${prefix}end" class="form-input" type="time" step="60" value="${escapeHtml(s.end)}" oninput="updateInitiativeSlot(${i},'end',this.value)"></div>
+        <div class="form-group"><label class="form-label" for="${prefix}mode">${label('slot_mode','内容方式')}</label><select id="${prefix}mode" class="form-input" onchange="updateInitiativeSlot(${i},'mode',this.value)">
+          ${['greeting','search','video'].map((m,j)=>`<option value="${m}" ${s.mode===m?'selected':''}>${label('slot_mode_'+m,['参考样例问候','搜索话题','视频平台找话题'][j])}</option>`).join('')}
+        </select></div>
+      </div>
+      <div class="form-group"><label class="form-label" for="${prefix}sample">${label('slot_sample','样例问候（可选，也作为搜索失败时的参考）')}</label><textarea id="${prefix}sample" class="form-input" rows="2" maxlength="500" oninput="updateInitiativeSlot(${i},'sample',this.value)">${escapeHtml(s.sample)}</textarea></div>
+      <div class="form-group"><label class="form-label" for="${prefix}topic">${label('slot_topic','搜索方向 / 视频平台（可选，留空则结合聊天兴趣选题）')}</label><input id="${prefix}topic" class="form-input" maxlength="300" value="${escapeHtml(s.topic)}" oninput="updateInitiativeSlot(${i},'topic',this.value)"></div>
+    </div>`;
+  }).join('')||`<p style="color:var(--text-secondary)">${label('slot_empty','还没有时间段，点击下方添加。')}</p>`;
+}
 function applyInitiativeSettings(s){
   if(_initiativeDirty)return;                       /* 别把正在输入的值冲掉 */
   var g=function(id){return document.getElementById(id)};
   if(!g('cfg-initiative-on'))return;
   s=s||state.settings||{};
   g('cfg-initiative-on').checked=s.proactive_initiative_enabled===true;
+  g('cfg-initiative-greeting-enabled').checked=s.proactive_initiative_greeting_enabled===true;
+  initiativeSlots=Array.isArray(s.proactive_initiative_greeting_slots)?s.proactive_initiative_greeting_slots.map(x=>({...x})):legacyInitiativeSlots(s);
+  renderInitiativeSlots();
   g('cfg-initiative-quiet-start').value=(s.proactive_initiative_quiet_start_hour??23);
   g('cfg-initiative-quiet-end').value=(s.proactive_initiative_quiet_end_hour??8);
   g('cfg-initiative-max-per-day').value=(s.proactive_initiative_max_per_day??2);
@@ -753,7 +830,10 @@ function applyInitiativeSettings(s){
 }
 function _initiativeInt(id,fallback,lo,hi){var v=parseInt((document.getElementById(id)||{}).value,10);if(isNaN(v))v=fallback;return Math.max(lo,Math.min(hi,v))}
 function initiativeSettingsPayload(){
+  var slots=validateInitiativeSlots(initiativeSlots);
   return {
+    proactive_initiative_greeting_enabled:!!document.getElementById('cfg-initiative-greeting-enabled').checked,
+    proactive_initiative_greeting_slots:slots,
     proactive_initiative_enabled:!!document.getElementById('cfg-initiative-on').checked,
     proactive_initiative_quiet_start_hour:_initiativeInt('cfg-initiative-quiet-start',23,0,23),
     proactive_initiative_quiet_end_hour:_initiativeInt('cfg-initiative-quiet-end',8,0,23),
@@ -782,6 +862,18 @@ function renderInitiativeStatus(d){
   parts.push(tf('ui.initiative.sent_today','今天已开口 {n}/{max} 次',{n:d.sent_today||0,max:d.max_per_day||0}));
   if(d.pending&&d.pending.quote)parts.push(tf('ui.initiative.pending','待说的由头：「{q}」',{q:d.pending.quote}));
   if(d.blocked_reason)parts.push(tf('ui.initiative.blocked','现在不会开口：{why}',{why:d.blocked_reason}));
+  if(d.greeting&&d.greeting.enabled){
+    var slots=d.greeting.slots||[];
+    if(!slots.length)parts.push(d.greeting.blocked_reason||t('ui.initiative.slot_empty','还没有时间段，点击下方添加。'));
+    slots.forEach(s=>{
+      var why=s.blocked_reason||t('ui.initiative.greeting_due','等待本轮发送');
+      if(s.planned_at&&s.trigger){
+        var trigger=s.trigger==='online'?t('ui.initiative.trigger_online','段内上线触发'):t('ui.initiative.trigger_random','段内随机触发');
+        why+=' / '+tf('ui.initiative.greeting_plan','{trigger}，计划 {time}',{trigger:trigger,time:new Date(s.planned_at*1000).toLocaleString()});
+      }
+      parts.push(tf('ui.initiative.greeting_status','每日问候 {time}：{why}',{time:s.start+'–'+s.end,why:why}));
+    });
+  }
   el.textContent=parts.join(' · ');
   el.style.color=(d.enabled&&d.has_admin&&d.pending)?'var(--accent)':'var(--text-secondary)';
 }

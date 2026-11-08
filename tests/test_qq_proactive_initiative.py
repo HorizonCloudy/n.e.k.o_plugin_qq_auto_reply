@@ -64,6 +64,7 @@ def _plugin(tmp_path, *, enabled=True, admin=ADMIN, send_result=None, settings=N
         _qq_settings=values,
         _admin_qq=admin,
         _running=running,
+        qq_client=SimpleNamespace(is_connected=lambda: True),
         proactive_message_service=_Proactive(),
         data_path=lambda name: tmp_path / name,
         logger=SimpleNamespace(
@@ -497,6 +498,8 @@ def test_the_grace_window_is_the_documented_length(tmp_path):
         "proactive_initiative_quiet_end_hour",
         "proactive_initiative_max_per_day",
         "proactive_initiative_min_gap_seconds",
+        "proactive_initiative_greeting_enabled",
+        "proactive_initiative_greeting_slots",
     ):
         assert key in settings_schema.SAVEABLE_KEYS, f"{key} 不是可保存键（界面存不下去）"
 
@@ -540,13 +543,54 @@ def test_the_panel_has_the_initiative_card():
         "cfg-initiative-max-per-day",
         "cfg-initiative-min-gap-hours",
         "initiative-status",
+        "cfg-initiative-greeting-enabled",
+        "initiative-slots",
     ):
         assert f'id="{element}"' in text, f"面板缺控件 {element}"
     assert "saveInitiativeSettings()" in text, "卡片上没有保存入口"
 
 
-def test_the_panel_saves_exactly_the_five_keys():
-    """界面提交的键必须就是 schema 里那五个 —— 少一个就是"能改但存不下去"。"""
+def test_initiative_card_is_immediately_before_normal_relay_in_params():
+    from html.parser import HTMLParser
+
+    class CardsParser(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.divs = []
+            self.cards = []
+
+        def handle_starttag(self, tag, attrs):
+            if tag != "div":
+                return
+            attrs = dict(attrs)
+            if "card" in attrs.get("class", "").split():
+                self.cards.append((attrs.get("id"), tuple(self.divs)))
+            self.divs.append(attrs.get("id"))
+
+        def handle_endtag(self, tag):
+            if tag == "div":
+                self.divs.pop()
+
+    text = _page()
+    parser = CardsParser()
+    parser.feed(text)
+    initiative = [i for i, (card, _) in enumerate(parser.cards) if card == "initiative-card"]
+    assert len(initiative) == 1
+    index = initiative[0]
+    _, parents = parser.cards[index]
+    assert parents[-1] == "page-config-params"
+    assert "page-config-accounts" not in parents
+    assert parser.cards[index + 1] == ("normal-relay-card", parents)
+    assert text.count('data-i18n="ui.initiative.title"') == 1
+    for control in (
+        "cfg-initiative-on", "cfg-initiative-quiet-start", "cfg-initiative-quiet-end",
+        "cfg-initiative-max-per-day", "cfg-initiative-min-gap-hours", "initiative-status",
+    ):
+        assert text.count(f'id="{control}"') == 1
+
+
+def test_the_panel_saves_all_initiative_keys():
+    """界面提交的键必须包含原有搭话和定时问候设置 —— 少一个就是"能改但存不下去"。"""
     text = _page()
     assert text.count("...initiativeSettingsPayload()") == 2, "两个保存入口必须共用载荷"
     block = text[text.index("function initiativeSettingsPayload"):]
@@ -557,6 +601,8 @@ def test_the_panel_saves_exactly_the_five_keys():
         "proactive_initiative_quiet_end_hour",
         "proactive_initiative_max_per_day",
         "proactive_initiative_min_gap_seconds",
+        "proactive_initiative_greeting_enabled",
+        "proactive_initiative_greeting_slots",
     ):
         assert key in block, f"保存时没带 {key}"
 
@@ -584,3 +630,216 @@ def test_every_initiative_label_exists_in_both_bundles():
     assert keys == {key for key in en if key.startswith("ui.initiative.")}, "两个语种键集合不一致"
     for required in ("title", "hint", "enabled", "save", "blocked", "pending"):
         assert f"ui.initiative.{required}" in zh, f"缺键 {required}"
+
+
+# ── 每日定时问候：显式开启、共享额度、先落盘再发送 ────────────────
+
+@pytest.fixture
+def greeting_clock(monkeypatch):
+    import time
+    clock = [datetime(2026, 11, 8, 9, 0, 30).timestamp()]
+    monkeypatch.setattr(time, "time", lambda: clock[0])
+    return clock
+
+
+def _greeting_plugin(tmp_path, **kwargs):
+    settings = {"proactive_initiative_greeting_enabled": True,
+                "proactive_initiative_greeting_hour": 9,
+                "proactive_initiative_greeting_minute": 0}
+    settings.update(kwargs.pop("settings", {}))
+    return _plugin(tmp_path, settings=settings, **kwargs)
+
+
+def test_greeting_needs_no_promise_and_survives_restart(tmp_path, greeting_clock):
+    plugin = _greeting_plugin(tmp_path)
+    service = plugin.proactive_initiative_service
+    assert service.pending() is None
+    asyncio.run(service.tick())
+    assert len(plugin.sent) == 1
+    assert plugin.sent[0]["target"] == ADMIN
+    assert "09:00" in plugin.sent[0]["message"]
+    assert "问候" in plugin.sent[0]["message"]
+    assert plugin.sent[0]["verbatim"] is False  # use the character reply pipeline
+    again = QQProactiveInitiativeService(plugin)
+    asyncio.run(again.tick())
+    assert len(plugin.sent) == 1
+    assert again.snapshot()["sent_today"] == 1
+    assert again.snapshot()["greeting"]["last_attempt_day"] == "2026-11-08"
+    # Changing the time or toggling the feature does not cause another greeting today.
+    plugin._qq_settings["proactive_initiative_greeting_minute"] = 1
+    greeting_clock[0] += 60
+    asyncio.run(again.tick())
+    assert len(plugin.sent) == 1
+    greeting_clock[0] = datetime(2026, 11, 9, 9, 1, 30).timestamp()
+    asyncio.run(again.tick())
+    assert len(plugin.sent) == 1  # continuously online: wait for the new day's random target
+    greeting_clock[0] = again.snapshot()["greeting"]["slots"][0]["planned_at"]
+    asyncio.run(again.tick())
+    assert len(plugin.sent) == 2
+
+
+@pytest.mark.parametrize("kwargs, reason", [
+    ({"enabled": False}, "总开关"),
+    ({"running": False}, "值班已停"),
+    ({"admin": ""}, "还没有管理员"),
+    ({"settings": {"proactive_initiative_greeting_enabled": False}}, "未开启"),
+    ({"settings": {"proactive_initiative_quiet_start_hour": 8,
+                   "proactive_initiative_quiet_end_hour": 10}}, "静音"),
+    ({"settings": {"proactive_initiative_max_per_day": 0}}, "已经说够"),
+])
+def test_greeting_respects_switches_admin_and_limits(tmp_path, greeting_clock, kwargs, reason):
+    plugin = _greeting_plugin(tmp_path, **kwargs)
+    assert reason in plugin.proactive_initiative_service.greeting_blocked_reason()
+    asyncio.run(plugin.proactive_initiative_service.tick())
+    assert plugin.sent == []
+
+
+@pytest.mark.parametrize("offset, expected", [(-1, 0), (0, 1), (299, 1), (300, 0), (3600, 0)])
+def test_greeting_window_does_not_backfill(tmp_path, greeting_clock, offset, expected):
+    greeting_clock[0] = datetime(2026, 11, 8, 9).timestamp() + offset
+    plugin = _greeting_plugin(tmp_path)
+    asyncio.run(plugin.proactive_initiative_service.tick())
+    assert len(plugin.sent) == expected
+
+
+def test_greeting_midnight_and_minute(tmp_path, greeting_clock):
+    greeting_clock[0] = datetime(2026, 11, 9, 0, 17, 20).timestamp()
+    plugin = _greeting_plugin(tmp_path, settings={"proactive_initiative_greeting_hour": 0,
+                                               "proactive_initiative_greeting_minute": 17})
+    asyncio.run(plugin.proactive_initiative_service.tick())
+    assert len(plugin.sent) == 1
+    assert plugin.proactive_initiative_service.snapshot()["greeting"]["time"] == "00:17"
+
+
+@pytest.mark.parametrize("blocker", ["budget", "gap", "activity"])
+def test_greeting_shares_budget_gap_and_recent_activity(tmp_path, greeting_clock, blocker):
+    plugin = _greeting_plugin(tmp_path)
+    service = plugin.proactive_initiative_service
+    if blocker == "activity":
+        service._last_admin_activity_at = greeting_clock[0] - 1
+    elif blocker == "gap":
+        service.record_send("deepchat", greeting_clock[0] - 1)
+    else:
+        plugin._qq_settings["proactive_initiative_max_per_day"] = 1
+        service.record_send("initiative", greeting_clock[0] - 20000)
+    asyncio.run(service.tick())
+    assert plugin.sent == []
+
+
+def test_greeting_concurrent_ticks_only_send_once(tmp_path, greeting_clock):
+    plugin = _greeting_plugin(tmp_path)
+    service = plugin.proactive_initiative_service
+
+    async def send(**kwargs):
+        await asyncio.sleep(0)
+        plugin.sent.append(kwargs)
+        return Ok({"status": "sent"})
+
+    plugin.proactive_message_service.send_private_message = send
+
+    async def run():
+        await asyncio.gather(service.tick(), service.tick(), service.tick())
+
+    asyncio.run(run())
+    assert len(plugin.sent) == 1
+    assert service.snapshot()["sent_today"] == 1
+
+
+@pytest.mark.parametrize("error, charged", [("GENERATE_FAILED: empty", 0), ("SEND_FAILED: timeout", 1)])
+def test_greeting_failures_are_not_retried(tmp_path, greeting_clock, error, charged):
+    plugin = _greeting_plugin(tmp_path, send_result=Err(SdkError(error)))
+    asyncio.run(plugin.proactive_initiative_service.tick())
+    again = QQProactiveInitiativeService(plugin)
+    asyncio.run(again.tick())
+    assert len(plugin.sent) == 1
+    assert again.snapshot()["sent_today"] == charged
+
+
+def test_greeting_disk_failure_prevents_send(tmp_path, greeting_clock, monkeypatch):
+    plugin = _greeting_plugin(tmp_path)
+    service = plugin.proactive_initiative_service
+    monkeypatch.setattr(service, "_save", lambda: False)
+    asyncio.run(service.tick())
+    assert plugin.sent == []
+    assert service.snapshot()["sent_today"] == 0
+    assert not service._greeting_attempt_days
+
+
+def test_greeting_does_not_clear_existing_promise(tmp_path, greeting_clock):
+    plugin = _greeting_plugin(tmp_path)
+    service = plugin.proactive_initiative_service
+    _turn(service)
+    service._items[ADMIN]["due_at"] = greeting_clock[0] - 60
+    service._last_admin_activity_at = 0
+    asyncio.run(service.tick())
+    assert len(plugin.sent) == 1
+    assert service.pending() is not None
+    assert service.blocked_reason() == "距上次太近"
+
+
+def test_greeting_settings_reach_dashboard_and_plain_settings(tmp_path):
+    from unittest.mock import AsyncMock
+    from plugin.plugins.qq_auto_reply.dashboard_service import QQDashboardService
+    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
+    from plugin.plugins.qq_auto_reply import settings_schema
+
+    plugin = _plugin(tmp_path)
+    values = {"proactive_initiative_greeting_enabled": True,
+              "proactive_initiative_greeting_hour": 6,
+              "proactive_initiative_greeting_minute": 35,
+              "proactive_initiative_enabled": True}
+    service = QQSettingsService(plugin)
+    captured = {}
+
+    async def save(**kwargs):
+        captured.update(kwargs)
+        service._apply_plain_settings(kwargs)
+        return {"persisted": True}
+
+    plugin.settings_service = SimpleNamespace(save_settings=save)
+    dashboard = QQDashboardService(plugin)
+    dashboard.build_dashboard_state = AsyncMock(return_value={"business_config": {}})
+    result = asyncio.run(dashboard.save_settings(**values))
+    assert isinstance(result, Ok)
+    for key, value in values.items():
+        assert key in settings_schema.SAVEABLE_KEYS
+        assert key in settings_schema.input_schema_properties()
+        assert captured[key] == value
+        assert plugin._qq_settings[key] == value
+    service._apply_plain_settings({"proactive_initiative_greeting_hour": 99,
+                                   "proactive_initiative_greeting_minute": -1})
+    assert plugin._qq_settings["proactive_initiative_greeting_hour"] == 23
+    assert plugin._qq_settings["proactive_initiative_greeting_minute"] == 0
+
+
+def test_greeting_cancelled_delivery_is_not_repeated(tmp_path, greeting_clock):
+    plugin = _greeting_plugin(tmp_path)
+    service = plugin.proactive_initiative_service
+
+    async def send(**kwargs):
+        plugin.sent.append(kwargs)
+        raise asyncio.CancelledError()
+
+    plugin.proactive_message_service.send_private_message = send
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(service.tick())
+    again = QQProactiveInitiativeService(plugin)
+    asyncio.run(again.tick())
+    assert len(plugin.sent) == 1
+    assert again.snapshot()["sent_today"] == 1
+
+
+def test_old_state_without_greeting_data_loads(tmp_path, greeting_clock):
+    (tmp_path / STATE_FILE).write_text(json.dumps({"items": {}}), encoding="utf-8")
+    plugin = _greeting_plugin(tmp_path)
+    asyncio.run(plugin.proactive_initiative_service.tick())
+    assert len(plugin.sent) == 1
+
+
+def test_greeting_uses_maintenance_heartbeat(tmp_path, greeting_clock):
+    plugin = _greeting_plugin(tmp_path)
+    plugin.attention_service = SimpleNamespace(
+        _current_time=lambda: greeting_clock[0], _normalized_groups=lambda: [],
+    )
+    asyncio.run(QQAttentionGateService(plugin).run_maintenance_tick())
+    assert len(plugin.sent) == 1

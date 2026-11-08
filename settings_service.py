@@ -922,6 +922,12 @@ class QQSettingsService:
             return await self._save_settings_locked(**kwargs)
 
     async def _save_settings_locked(self, **kwargs: Any) -> dict[str, Any]:
+        # Validate the full schedule before mutating any setting or connection.
+        if kwargs.get("proactive_initiative_greeting_slots") is not None:
+            from .initiative_schedule import normalize_greeting_slots
+            kwargs["proactive_initiative_greeting_slots"] = normalize_greeting_slots(
+                kwargs["proactive_initiative_greeting_slots"],
+            )
         from .onebot_backend import OneBotBackend, selected_backend
 
         backend = kwargs.get("onebot_backend")
@@ -1394,6 +1400,9 @@ class QQSettingsService:
             raw = kwargs.get(spec.key)
             if raw is None:
                 continue
+            if spec.key == "proactive_initiative_greeting_slots":
+                from .initiative_schedule import normalize_greeting_slots
+                raw = normalize_greeting_slots(raw)
             if spec.kind == "bool":
                 value: Any = bool(raw)
             elif spec.kind == "int":

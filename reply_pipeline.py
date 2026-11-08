@@ -22,6 +22,7 @@ from .pipeline_models import (
     delivered_blocks_text,
 )
 from .reply_buffer_service import QQReplyBufferService
+from .topic_source_service import commit_topic_sources
 
 #: 这一轮"结局是什么、为什么没投递"——`run()` 最后那行 `[Reply] … 结局: …` 从这里取。
 #:
@@ -931,6 +932,7 @@ class QQReplyPipelineRunner:
                 self.plugin.reply_generation_service.append_fallback_ai_row(
                     context, delivered_text,
                 )
+            commit_topic_sources(self.plugin, context, delivered_text)
             # mention 计数绑定实际投递（非 buffer 直投与合成轮都走这里；
             # buffer 路径由 _deliver_after_wait 在真投递后补记）。
             await self.plugin.reply_generation_service.record_scoped_mentions_on_delivery(
