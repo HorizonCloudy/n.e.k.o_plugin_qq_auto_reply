@@ -268,3 +268,100 @@ async def test_global_off_also_blocks_enabled_group_gallery(tmp_path):
     gallery._fetch_bytes = AsyncMock()
     assert await gallery.remember("https://x/cat.png", kind="sticker", group_id="111") is None
     gallery._fetch_bytes.assert_not_awaited()
+
+
+@pytest.mark.parametrize("policy", ["current", "any", "off"])
+@pytest.mark.parametrize("transport", ["segment", "attachment", "both"])
+async def test_disabled_group_rejects_unmarked_images_before_download(tmp_path, policy, transport):
+    gallery, _, _ = gallery_lab(tmp_path)
+    gallery.plugin.group_permission_mgr = GroupPermissionManager([{"group_id": "111"}])
+    gallery.plugin._qq_settings = {"sticker_collect_policy": policy}
+    gallery._fetch_bytes = AsyncMock(return_value=_png())
+    message = {"group_id": "111", "user_id": "u1"}
+    if transport in {"segment", "both"}:
+        message["message"] = [{"type": "image", "data": {"url": "https://x/cat.png"}}]
+    if transport in {"attachment", "both"}:
+        message["attachments"] = [{"type": "image", "url": "https://x/cat.png"}]
+    assert await gallery.remember_message(message) == []
+    gallery._fetch_bytes.assert_not_awaited()
+    assert not gallery.store.index.exists()
+
+
+@pytest.mark.parametrize("entry", ["remember", "remember_bytes"])
+@pytest.mark.parametrize("kind", ["image", "sticker"])
+async def test_disabled_group_blocks_all_incoming_gallery_write_entries(tmp_path, entry, kind):
+    gallery, _, _ = gallery_lab(tmp_path)
+    gallery.plugin.group_permission_mgr = GroupPermissionManager([{"group_id": "111"}])
+    gallery._fetch_bytes = AsyncMock(return_value=_png())
+    value = _png() if entry == "remember_bytes" else "https://x/cat.png"
+    assert await getattr(gallery, entry)(value, kind=kind, group_id="111") is None
+    gallery._fetch_bytes.assert_not_awaited()
+    assert not gallery.store.index.exists()
+
+
+@pytest.mark.parametrize("stage", ["download", "start", "lock"])
+async def test_unmarked_group_image_rechecks_permission_after_await(tmp_path, stage):
+    gallery, _, _ = gallery_lab(tmp_path)
+    manager = GroupPermissionManager([{"group_id": "111", "sticker_collect_enabled": True}])
+    gallery.plugin.group_permission_mgr = manager
+    gallery._fetch_bytes = AsyncMock(return_value=_png())
+    if stage == "download":
+        async def fetch(*args, **kwargs):
+            manager.set_sticker_collection_enabled("111", False)
+            return _png()
+        gallery._fetch_bytes = fetch
+        result = await gallery.remember("https://x/cat.png", group_id="111")
+    elif stage == "start":
+        original_start = gallery.start
+        async def start():
+            await original_start()
+            manager.set_sticker_collection_enabled("111", False)
+        gallery.start = start
+        result = await gallery.remember_bytes(_png(), group_id="111")
+    else:
+        await gallery.start()
+        async with gallery._lock:
+            task = asyncio.create_task(gallery.remember_bytes(_png(), group_id="111"))
+            await asyncio.sleep(0)
+            assert not task.done()
+            manager.set_sticker_collection_enabled("111", False)
+        result = await task
+    assert result is None
+    assert not gallery.store.index.exists()
+
+
+@pytest.mark.parametrize("policy,expected_scope", [("current", "group:111"), ("any", "global")])
+async def test_enabled_group_still_collects_unmarked_images(tmp_path, policy, expected_scope):
+    gallery, _, _ = gallery_lab(tmp_path)
+    gallery.plugin.group_permission_mgr = GroupPermissionManager([
+        {"group_id": "111", "sticker_collect_enabled": True},
+    ])
+    gallery.plugin._qq_settings = {"sticker_collect_policy": policy}
+    gallery._fetch_bytes = AsyncMock(return_value=_png())
+    ids = await gallery.remember_message({
+        "group_id": "111", "user_id": "u1",
+        "message": [{"type": "image", "data": {"url": "https://x/cat.png"}}],
+    })
+    assert len(ids) == 1
+    entry = next(iter(gallery.store.read().values()))
+    assert entry["scope"] == expected_scope
+    assert entry["sendable"] is False
+
+
+async def test_private_images_and_manual_uploads_are_not_blocked_by_group_switch(tmp_path):
+    gallery, _, _ = gallery_lab(tmp_path)
+    gallery.plugin.group_permission_mgr = GroupPermissionManager([{"group_id": "111"}])
+    assert await gallery.remember_bytes(_png(), sender_id="u1")
+    assert await gallery.remember_bytes(_png(), source="upload", kind="sticker", group_id="111")
+    rows = list(gallery.store.read().values())
+    assert {row["scope"] for row in rows} == {"private:u1", "global"}
+
+
+async def test_global_off_blocks_group_image_even_when_group_opted_in(tmp_path):
+    gallery, _, _ = gallery_lab(tmp_path)
+    gallery.plugin.group_permission_mgr = GroupPermissionManager([
+        {"group_id": "111", "sticker_collect_enabled": True},
+    ])
+    gallery.plugin._qq_settings = {"sticker_collect_policy": "off"}
+    assert await gallery.remember_bytes(_png(), group_id="111") is None
+    assert not gallery.store.index.exists()

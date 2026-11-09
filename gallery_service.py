@@ -274,7 +274,8 @@ class QQGalleryService:
         saved: list[str] = []
         group_id = str(message.get("group_id") or "").strip()
         for locator, kind in list(images.items())[:3]:
-            if kind == "sticker" and not group_sticker_collection_allowed(self.plugin, group_id):
+            # Untagged memes arrive as ordinary images and share the same inventory.
+            if not group_sticker_collection_allowed(self.plugin, group_id):
                 continue
             item_id = await self.remember(
                 locator, group_id=group_id, kind=kind, desc=str(descriptions.get(locator) or ""),
@@ -371,7 +372,7 @@ class QQGalleryService:
         ``desc`` 传已有的描述（识图那步刚拿到的），这里不会再多花一次
         VLM 调用。真没有描述也能存，``describe_missing`` 事后补。
         """
-        if source == "incoming" and kind == "sticker" and not group_sticker_collection_allowed(self.plugin, group_id):
+        if source == "incoming" and not group_sticker_collection_allowed(self.plugin, group_id):
             return None
         locator = str(locator or "").strip()
         if not locator:
@@ -411,7 +412,7 @@ class QQGalleryService:
         """已经拿到字节时走这条（UI 上传、本地文件都复用）。"""
         if not data:
             return None
-        if source == "incoming" and kind == "sticker" and not group_sticker_collection_allowed(self.plugin, group_id):
+        if source == "incoming" and not group_sticker_collection_allowed(self.plugin, group_id):
             return None
         await self.start()
         settings = getattr(self.plugin, "_qq_settings", None) or {}
@@ -422,7 +423,7 @@ class QQGalleryService:
                  if source == "incoming" else "global")
         now = time.time()
         async with self._lock:
-            if source == "incoming" and kind == "sticker" and not group_sticker_collection_allowed(self.plugin, group_id):
+            if source == "incoming" and not group_sticker_collection_allowed(self.plugin, group_id):
                 return None
             try:
                 result = self.store.add(data, _ext_from_bytes(data), {
