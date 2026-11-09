@@ -459,7 +459,17 @@ class QQReplyGenerationService:
                 on_tool_round_start=_capture_tool_round_start,
             )
             generation_completed = False
+            def restore_tool_prompt():
+                return None
+
             try:
+                if armed_bridge_tools:
+                    # Tool policy belongs to this turn's system instructions, never
+                    # the human row that is later exported to persistent memory.
+                    restore_tool_prompt = self._apply_turn_memory_context(
+                        user_session, turn_system_prompt + TOOL_TURN_INSTRUCTION,
+                        turn_recalled_text, always_refresh=True,
+                    )
                 turn_timeout = self.plugin._ai_turn_timeout_seconds
                 if armed_recall_tool:
                     # 工具轮的最坏路径是「初始流 + 每次工具迭代各一段流」，
@@ -492,7 +502,6 @@ class QQReplyGenerationService:
                     turn_timeout += BUILTIN_TOOL_BUDGET_SECONDS
                 turn_message = context.prompt_message
                 if armed_bridge_tools:
-                    turn_message += TOOL_TURN_INSTRUCTION
                     self._log_tool_transport_state(user_session, session_key)
                 await asyncio.wait_for(
                     user_session.stream_text(turn_message),
@@ -555,6 +564,7 @@ class QQReplyGenerationService:
                             # 单个卸载失败不能阻止另一槽位复位，也不能连累
                             # 下面的历史清理与成员轮记录。
                             pass
+                restore_tool_prompt()
                 restore_session_prompt()
                 history_now = getattr(user_session, "_conversation_history", []) or []
                 if isinstance(history_now, list):

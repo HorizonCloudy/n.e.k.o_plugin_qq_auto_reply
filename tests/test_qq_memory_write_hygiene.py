@@ -34,6 +34,17 @@ def _texts(messages):
     ]
 
 
+def test_legacy_tool_rules_removed_without_changing_user_words():
+    from plugin.plugins.qq_auto_reply.plugin_tool_turn_guard import TOOL_TURN_INSTRUCTION
+    for separator in ("\n", "\\n"):
+        original = "有视频链接吗" + separator + TOOL_TURN_INSTRUCTION.lstrip("\n")
+        row = _row("human", original)
+        assert _texts(_convert([row])) == ["有视频链接吗"]
+        assert row.content == original
+    ordinary = "你说的本轮已提供可调用工具是什么意思？"
+    assert _texts(_convert([_row("human", ordinary)])) == [ordinary]
+
+
 def test_assistant_row_loses_the_internal_xml_tags():
     out = _convert([_row("ai", "<feeling>playful</feeling><msg><text>怎么啦，宅久？</text></msg>")])
     assert _texts(out) == ["怎么啦，宅久？"], _texts(out)

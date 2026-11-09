@@ -9,6 +9,7 @@ from typing import Any
 from .display_name_service import QQDisplayNameService
 from .dsml_markers import strip_dsml_markers
 from .pipeline_models import is_synthetic_source
+from .plugin_tool_turn_guard import strip_tool_instruction_suffix
 
 _CURRENT_TURN_AI_ROW = object()
 
@@ -367,6 +368,9 @@ class QQSessionMemoryService:
                 # 标记后的内文，记忆里该存同一句话。真人用户的行逐字保留 —— 他可能
                 # 真的在聊 `<msg>` 这种东西。
                 text = _strip_internal_markup(text)
+            else:
+                # Older live sessions may still contain the former appended tool rules.
+                text = strip_tool_instruction_suffix(text)
             if not text:
                 continue
             # 单条过长就截断（见 MEMORY_MESSAGE_MAX_CHARS 的实测）。截断要留痕：

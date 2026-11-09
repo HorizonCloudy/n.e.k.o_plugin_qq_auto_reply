@@ -15,6 +15,7 @@ from .pipeline_models import (
     backlog_sender_label,
 )
 from .reply_protocol import strip_feeling_tags
+from .reply_sentence_split import split_text_blocks
 
 
 class QQReplyDeliveryNode:
@@ -44,6 +45,8 @@ class QQReplyDeliveryNode:
                   if block.record else block for block in plan.blocks]
         if self.plugin._get_reply_mode() == "text":
             blocks = [self._record_as_text(block) if block.record else block for block in blocks]
+        if (getattr(self.plugin, "_qq_settings", {}) or {}).get("force_sentence_split", False):
+            blocks = split_text_blocks(blocks)
         first_text = ""
         # 判据分两条线：承载正文的块（文本/语音/按钮降级/卡片）决定
         # delivered——记忆里存的那一行就是正文；装饰块（poke/表情包）发不

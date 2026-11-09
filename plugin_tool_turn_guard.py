@@ -19,6 +19,15 @@ TOOL_TURN_INSTRUCTION = (
 )
 
 
+def strip_tool_instruction_suffix(text: str) -> str:
+    """Remove only the exact legacy injected suffix, not mentions of its keywords."""
+    for separator in ("\n", "\\n"):
+        suffix = separator + TOOL_TURN_INSTRUCTION.lstrip("\n")
+        if text.endswith(suffix):
+            return text[:-len(suffix)]
+    return text
+
+
 def unexecuted_search_promise(text: str) -> bool:
     plain = re.sub(r"<[^>]+>", "", str(text or ""))
     return bool(re.search(

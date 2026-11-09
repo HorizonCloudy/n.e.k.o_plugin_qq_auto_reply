@@ -614,6 +614,10 @@ MISC = (
     # ── 回复缓冲开关 ──
     # 群聊与私聊**各自独立**开关，默认都开（与历史行为一致）。
     # 关掉的那一类不再排队等待，每条消息各自判定并立即投递。
+    SettingSpec("force_sentence_split", "bool", False, saveable=True,
+                description="save：强制分段；每个完整句子单独发送，不设字数门槛，关闭时由角色自定分段",
+                ui=UIInput("cfg-force-sentence-split", kind="checkbox",
+                           label="ui.napcat.config.force_sentence_split")),
     SettingSpec("group_buffer_enabled", "bool", True, saveable=True,
                 description="save：群聊回复缓冲",
                 ui=UIInput("cfg-buffer-group", kind="checkbox",
