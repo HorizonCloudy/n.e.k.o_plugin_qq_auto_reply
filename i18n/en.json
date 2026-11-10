@@ -1,6 +1,6 @@
 {
   "ui.napcat.config.force_sentence_split": "Force sentence splitting",
-  "ui.napcat.config.force_sentence_split.hint": "Send each complete sentence separately, with no minimum length. When off, keep the character’s own message breaks. Links, code and voice stay intact.",
+  "ui.napcat.config.force_sentence_split.hint": "Split plain text into separate sentences and remove terminal full stops from split messages; keep other punctuation. Quoted replies stay intact. When off, keep the character’s own message breaks. Links, code and voice stay intact.",
   "ui.shared.btn.preview": "Preview",
   "ui.shared.sticker.unified_hint": "Manage collected gallery images and stickers together here. Ordinary chat photos are not automatically offered as sendable stickers.",
   "ui.group.sticker_collect": "Allow automatic sticker collection (off by default)",

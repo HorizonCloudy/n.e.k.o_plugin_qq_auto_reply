@@ -1,6 +1,6 @@
 {
   "ui.napcat.config.force_sentence_split": "强制分段",
-  "ui.napcat.config.force_sentence_split.hint": "开启后，每个完整句子单独发送，不设字数门槛；关闭时由猫娘自定分段。链接、代码和语音不硬拆。",
+  "ui.napcat.config.force_sentence_split.hint": "开启后，普通文本按完整句子分条发送，拆分后的句末句号会去掉，其他标点保留；引用回复不拆分。关闭时由猫娘自定分段。链接、代码和语音不硬拆。",
   "ui.shared.btn.preview": "查看",
   "ui.shared.sticker.unified_hint": "图库收集的图片和表情包在这里统一查看、删除；普通聊天图片不会自动加入可发送表情目录。",
   "ui.group.sticker_collect": "允许自动收集表情包（默认关闭）",

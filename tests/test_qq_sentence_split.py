@@ -29,14 +29,31 @@ def test_protected_content_is_not_cut(protected):
 
 
 def test_metadata_not_duplicated_and_media_unchanged():
-    original = QQMessageBlock(text='甲' * 55 + '。' + '乙' * 55 + '。', at_user='1', reply_to='2', emoji='3')
+    original = QQMessageBlock(text='甲' * 55 + '。' + '乙' * 55 + '。', at_user='1', emoji='3')
     parts = split_text_blocks([original])
     assert [p.at_user for p in parts] == ['1', '']
-    assert [p.reply_to for p in parts] == ['2', '']
+    assert [p.reply_to for p in parts] == ['', '']
     assert [p.emoji for p in parts] == ['', '3']
-    assert original.text == ''.join(p.text for p in parts)
+    assert [p.text for p in parts] == ['甲' * 55, '乙' * 55]
     voice = QQMessageBlock(record=original.text)
     assert split_text_blocks([voice]) == [voice]
+
+
+def test_quoted_reply_is_not_split_or_rewritten():
+    quoted = QQMessageBlock(text='知道啦。等我一下！', reply_to='42', at_user='1', emoji='3')
+    assert split_text_blocks([quoted]) == [quoted]
+
+
+@pytest.mark.parametrize('text,expected', [
+    ('你好。今天开心吗？太好了！', ['你好', '今天开心吗？', '太好了！']),
+    ('Hello. Bye!', ['Hello', 'Bye!']),
+    ('她说：“好。”\n等一下……', ['她说：“好”', '等一下……']),
+    ('开头。https://example.com/a.\n`code.`\n3.14\n等等...',
+     ['开头', 'https://example.com/a.', '`code.`', '3.14', '等等...']),
+    ('只有一句。', ['只有一句。']),
+])
+def test_split_bubbles_remove_only_terminal_full_stops(text, expected):
+    assert [b.text for b in split_text_blocks([QQMessageBlock(text=text)])] == expected
 
 
 @pytest.mark.asyncio
@@ -52,5 +69,5 @@ async def test_delivery_switch_and_partial_failure(monkeypatch, enabled, failed)
     result = await node.deliver(plan)
     assert result.delivered is not failed
     assert node._send_text.await_count == (2 if enabled else 1)
-    assert ''.join(call.args[2] for call in node._send_text.call_args_list) == text
+    assert [call.args[2] for call in node._send_text.call_args_list] == (['你好', '今天开心吗？'] if enabled else [text])
     assert plan.blocks[0].text == text
