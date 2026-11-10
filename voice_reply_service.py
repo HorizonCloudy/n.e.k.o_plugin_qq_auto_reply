@@ -18,15 +18,20 @@ try:
 except (ImportError, ModuleNotFoundError):
     read_legacy_voice_id = None
 
-# The host owns voice selection, credentials, provider routing and synthesis.
-# These are transport bounds, not a second TTS implementation.
+# Voice selection and provider protocols always come from the host. Older
+# packaged hosts lack the HTTP endpoint, so capture their existing workers locally.
 MAX_HOST_AUDIO_BYTES = 16 * 1024 * 1024
 HOST_SPEECH_TIMEOUT_SECONDS = 140.0
+
+
+class _HostSpeechEndpointMissing(RuntimeError):
+    pass
 
 
 class QQVoiceReplyService:
     def __init__(self, plugin: Any):
         self.plugin = plugin
+        self._speech_runtime = None
 
     def get_voice_output_dir(self) -> Path:
         return self.plugin.data_path() / "voice_cache"
@@ -65,7 +70,7 @@ class QQVoiceReplyService:
             return ""
 
     async def synthesize_reply_voice_audio(self, text: str) -> tuple[bytes, str]:
-        """Ask the host to synthesize silently with its current character voice."""
+        """Use the host endpoint, or its existing workers on endpoint absence only."""
         from config import MAIN_SERVER_PORT
 
         text = str(text or "").strip()
@@ -82,7 +87,7 @@ class QQVoiceReplyService:
                     timeout=httpx.Timeout(135.0, connect=5.0), follow_redirects=False,
                 ) as response:
                     if response.status_code in {404, 405}:
-                        raise RuntimeError("本体未提供统一语音接口，请更新并重启本体后重试；插件不再自行合成语音")
+                        raise _HostSpeechEndpointMissing()
                     if response.status_code == 429:
                         raise RuntimeError("本体语音合成忙，请稍后重试")
                     if response.status_code == 504:
@@ -97,11 +102,15 @@ class QQVoiceReplyService:
                         if len(audio) + len(chunk) > MAX_HOST_AUDIO_BYTES:
                             raise RuntimeError("本体返回的语音文件过大")
                         audio.extend(chunk)
+        except _HostSpeechEndpointMissing:
+            audio = await self._synthesize_with_host_workers(text)
         except (TimeoutError, httpx.TimeoutException):
             raise RuntimeError("请求本体语音合成超时") from None
         except httpx.HTTPError:
             raise RuntimeError("无法连接本体语音接口，请确认本体已启动") from None
         # Reject empty/malformed responses before creating a QQ record file.
+        if len(audio) > MAX_HOST_AUDIO_BYTES:
+            raise RuntimeError("本体返回的语音文件过大")
         try:
             with wave.open(io.BytesIO(audio), "rb") as wav:
                 if wav.getnframes() <= 0 or not wav.readframes(1):
@@ -109,6 +118,37 @@ class QQVoiceReplyService:
         except (wave.Error, EOFError, ValueError):
             raise RuntimeError("本体语音接口返回了空音频或无效 WAV") from None
         return bytes(audio), "audio/wav"
+
+    async def _synthesize_with_host_workers(self, text: str) -> bytes:
+        """Compatibility bridge, not an alternate provider or a desktop session."""
+        try:
+            from .voice_synthesis_runtime import PluginSpeechError, PluginSpeechRuntime
+        except ImportError:
+            raise RuntimeError("当前本体缺少可复用的 TTS 组件，无法在插件侧合成语音") from None
+        if self._speech_runtime is None:
+            self._speech_runtime = PluginSpeechRuntime()
+        self.plugin.logger.info("[QQ Voice] 本体无语音 HTTP 接口，复用已安装本体的 TTS 调度合成")
+        try:
+            return await self._speech_runtime.synthesize(text)
+        except PluginSpeechError as exc:
+            code = str(exc)
+            messages = {
+                "busy": "语音合成忙，请稍后重试",
+                "worker_cleanup_pending": "上一条语音仍在清理，请稍后重试",
+                "tts_disabled": "本体配置已禁用 TTS",
+                "completion_unavailable": "当前 TTS 服务不支持独立生成完整语音",
+                "character_unavailable": "无法读取当前角色的音色配置",
+                "timeout": "语音合成超时",
+                "tts_ready_timeout": "语音服务启动超时",
+                "audio_too_large": "语音文件过大",
+                "output_overflow": "语音输出超过缓冲上限",
+                "empty_after_normalization": "没有可朗读的语音文本",
+                "tts_incomplete": "语音服务未返回完整音频",
+                "audio_unavailable": "语音服务未返回音频",
+            }
+            public_code = code if code in messages else "tts_unavailable"
+            self.plugin.logger.warning("[QQ Voice] 本体 TTS 组件合成失败: %s", public_code)
+            raise RuntimeError(messages.get(code, "语音合成失败，请检查本体 TTS 设置及日志")) from None
 
     async def synthesize_reply_voice_file(self, text: str) -> tuple[str, str]:
         """保存本体生成的音频，返回 QQ 发送所需的 ``(file:// URI, MIME)``。"""

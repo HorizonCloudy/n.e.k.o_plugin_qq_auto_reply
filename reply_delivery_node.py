@@ -490,7 +490,9 @@ class QQReplyDeliveryNode:
             return self._confirm_platform_result(message_id)
         return self._confirm_platform_result(
             await client.send_private_message_segments(
-                plan.target_id, [{"type": "image", "data": {"file": sticker_path}}],
+                plan.target_id,
+                # 与群聊一致：没有 sub_type=1 时，NapCat 会按普通图片发送。
+                [{"type": "image", "data": {"file": sticker_path, "sub_type": "1"}}],
                 record_sent=False,
             ),
         )

@@ -33,13 +33,17 @@ class _Client:
         self.needs_attention = needs_attention
         self.group_images: list[tuple[str, str]] = []
         self.private_segments: list[tuple[str, list]] = []
+        self.group_image_kwargs: list[dict] = []
+        self.private_segment_kwargs: list[dict] = []
 
     async def send_group_image(self, group_id, file, **kw):
         self.group_images.append((str(group_id), str(file)))
+        self.group_image_kwargs.append(kw)
         return "mid-group-image"
 
     async def send_private_message_segments(self, user_id, segments, **kw):
         self.private_segments.append((str(user_id), segments))
+        self.private_segment_kwargs.append(kw)
         return "mid-private-segments"
 
 
@@ -73,6 +77,7 @@ def test_group_stickers_still_go_through_send_group_image():
 
     assert delivered is True
     assert client.group_images == [("1048307485", STICKER_PATH)]
+    assert client.group_image_kwargs == [{"sub_type": "1"}]
     assert client.private_segments == []
 
 
@@ -128,17 +133,19 @@ def test_private_sticker_on_the_open_platform_goes_through_the_media_helper(monk
     assert client.private_segments == []
 
 
-def test_private_sticker_on_onebot_uses_an_image_segment():
-    client = _Client(channel="onebot", mode="napcat", needs_attention=True)
+@pytest.mark.parametrize("mode", ["napcat", "napcat_forward", "snowluma"])
+def test_private_sticker_on_onebot_uses_a_sticker_image_segment(mode):
+    client = _Client(channel="onebot", mode=mode, needs_attention=True)
     node = _node(client)
 
     delivered = asyncio.run(node._send_sticker(_sticker_plan(is_group=False), QQMessageBlock(sticker="7")))
 
     assert delivered is True
     assert client.private_segments == [
-        ("820040531", [{"type": "image", "data": {"file": STICKER_PATH}}]),
+        ("820040531", [{"type": "image", "data": {"file": STICKER_PATH, "sub_type": "1"}}]),
     ]
     assert client.group_images == []
+    assert client.private_segment_kwargs == [{"record_sent": False}]
 
 
 def test_a_failed_private_upload_reports_undelivered(monkeypatch):
