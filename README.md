@@ -148,10 +148,10 @@ QQ 集成保留群消息积压记录、摘要/详情查看、标记已审和群�
 
 - 两套程序分别存放在插件持久化数据目录的 `NapCat.Shell/` 和 `SnowLuma/`，各自保留安装路径和窗口设置。切换后端先停止旧连接和插件管理的进程，再手动部署／启动所选后端。
 - NapCat 沿用二维码登录和 `config/onebot11_<QQ号>.json`；SnowLuma 写入 `config/onebot_<QQ号>.json`，通过本机 QQ 登录，页面提供 SnowLuma WebUI 入口并根据实时 OneBot 连接确认在线状态，不展示旧的 NapCat 二维码。
-- SnowLuma 一键部署固定使用官方 **v2.4.0 完整包**（自带 Node），支持 Windows x64、Linux x64／arm64；安装前校验发布包 SHA-256 和大小，修复程序文件时保留配置及运行数据。需预先安装本机 QQ，Linux 还需具备接入 QQ 进程的权限。
+- SnowLuma 一键部署固定使用 **SolarUmbra 分支发布的 v2.4.3 完整包**（自带 Node），支持 Windows x64、Linux x64／arm64；原 SnowLuma 仓库不可访问后，下载源切换为 `xxynet/SolarUmbra`，保留 GitHub 直连与代理加速。安装前校验固定的发布包 SHA-256 和大小，修复程序文件时保留配置及运行数据。需预先安装本机 QQ，Linux 还需具备接入 QQ 进程的权限。已有完整安装不会自动升级，可通过强制部署获取新包。
 - SnowLuma 首次 WebUI 登录凭据可查看其 `logs/neko-launch.log`。配置页的目录、启动选项、登录提示和引导内容会随后端切换。
 
-配置依据：[SnowLuma 配置参考](https://snowluma.github.io/zh/docs/guide/configuration)、[v2.4.0 官方发布](https://github.com/SnowLuma/SnowLuma/releases/tag/v2.4.0)。
+配置依据：[SnowLuma 配置参考](https://snowluma.github.io/zh/docs/guide/configuration)、[SolarUmbra v2.4.3 发布](https://github.com/xxynet/SolarUmbra/releases/tag/v2.4.3)。
 
 ### SnowLuma 手动连接注意（以下根路径行为曾在 v1.14.20 真机验证）
 

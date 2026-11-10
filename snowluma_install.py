@@ -16,11 +16,14 @@ import httpx
 
 from .napcat_install import safe_member_path, sha256_of
 
-VERSION = "v2.4.0"
+# SolarUmbra publishes compatible SnowLuma packages after the original repo
+# became unavailable. Keep release metadata pinned for both direct and proxy URLs.
+RELEASE_REPOSITORY = "xxynet/SolarUmbra"
+VERSION = "v2.4.3"
 ASSETS = {
-    "win-x64": ("zip", 43339979, "93096cb6d4cf576999094e9f7d1c9fb08e22f6b41c879182f015e639dc437613"),
-    "linux-x64": ("tar.gz", 52916249, "1f936d488445e4803d4316c7704924854d7722805969af63975bb37b67222926"),
-    "linux-arm64": ("tar.gz", 52526068, "75311338de0d6588295ae71d4a242584294a0b5b349b35af2145eddaad6b10b8"),
+    "win-x64": ("zip", 43363404, "a1c72eeb104edabf15c4e753029ede35b12ca16911f9913d9029f7e1649a6b07"),
+    "linux-x64": ("tar.gz", 52931213, "e97c67cc5bbf8a291e54aa02efd8642e9e257c8682a8c5976f86dedaeae24923"),
+    "linux-arm64": ("tar.gz", 52547731, "4b94070116381940f989ae32188ea5fc46e32e438c5cc629951d9562d07d84e7"),
 }
 MANIFEST = ".neko-snowluma-files.json"
 PRESERVED = {"config", "logs", "data", "cache"}
@@ -44,7 +47,7 @@ async def download(directory: Path, progress, report) -> Path:
     target = directory / name
     if target.is_file() and target.stat().st_size == size and await asyncio.to_thread(sha256_of, target) == digest:
         return target
-    url = f"https://github.com/SnowLuma/SnowLuma/releases/download/{VERSION}/{name}"
+    url = f"https://github.com/{RELEASE_REPOSITORY}/releases/download/{VERSION}/{name}"
     # A slow but live GitHub stream must not block the mirror for four minutes.
     # Separate partial files let both sources run; only a verified winner is used.
     parts = [target.with_name(name + f".{source}.part") for source in ("official", "mirror")]
@@ -55,7 +58,7 @@ async def download(directory: Path, progress, report) -> Path:
         if index:
             await asyncio.sleep(MIRROR_DELAY)
         label = "GitHub 直连" if not prefix else "镜像加速"
-        report(f"开始{label}下载，采用最先通过官方 SHA-256 校验的安装包")
+        report(f"开始{label}下载（{RELEASE_REPOSITORY}），采用最先通过固定 SHA-256 校验的安装包")
         part = parts[index]
         try:
             async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
@@ -67,7 +70,7 @@ async def download(directory: Path, progress, report) -> Path:
                         async for chunk in response.aiter_bytes(65536):
                             done += len(chunk)
                             if done > size:
-                                raise RuntimeError("安装包大小超出官方记录")
+                                raise RuntimeError("安装包大小超出固定发布记录")
                             output.write(chunk)
                             hasher.update(chunk)
                             if done > high_water:
@@ -89,7 +92,7 @@ async def download(directory: Path, progress, report) -> Path:
                 if result is not None:
                     part, label = result
                     part.replace(target)
-                    report(f"{label}下载完成，官方 SHA-256 校验通过")
+                    report(f"{label}下载完成，固定 SHA-256 校验通过")
                     return target
     except TimeoutError:
         report("下载超时，请检查网络后重试")
