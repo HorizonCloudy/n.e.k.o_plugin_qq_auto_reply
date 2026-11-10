@@ -350,6 +350,9 @@ CATCHUP = (
 
 #: 其余全部键。``saveable`` 决定是否进白名单/参数页；``handler`` 决定是否走通用路径。
 MISC = (
+    SettingSpec("reply_behavior_preset", "str", "balanced", saveable=True,
+                enum=("fast", "balanced", "quiet", "custom"),
+                description="save：回复风格预设；custom 保留独立参数"),
     # ── 连接 ──
     SettingSpec("onebot_backend", "str", "napcat", saveable=True,
                 enum=("napcat", "snowluma"), description="save：OneBot 部署后端"),

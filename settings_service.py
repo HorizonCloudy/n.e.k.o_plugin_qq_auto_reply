@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from copy import deepcopy
 from typing import Any
 
-from . import settings_schema
+from . import reply_presets, settings_schema
 from .group_permission import GroupPermissionManager
 from .permission import PermissionManager
 
@@ -919,7 +919,29 @@ class QQSettingsService:
         the winner replaces the dict, and the consent rollback cannot
         reason about a `before` value another request already changed."""
         async with self._consent_transaction_lock:
-            return await self._save_settings_locked(**kwargs)
+            kwargs = reply_presets.expand_save(kwargs)
+            # A failed preset save must not leave its runtime knobs half-applied.
+            keys = (*reply_presets.MANAGED_KEYS, reply_presets.PRESET_KEY)
+            before = {key: deepcopy(self.plugin._qq_settings[key])
+                      for key in keys if key in self.plugin._qq_settings}
+
+            def restore():
+                for key in keys:
+                    if key in before:
+                        self.plugin._qq_settings[key] = before[key]
+                    else:
+                        self.plugin._qq_settings.pop(key, None)
+
+            self._settings_write_completed = False
+            try:
+                result = await self._save_settings_locked(**kwargs)
+            except BaseException:
+                if not self._settings_write_completed:
+                    restore()
+                raise
+            if result.get("persisted") is False:
+                restore()
+            return result
 
     async def _save_settings_locked(self, **kwargs: Any) -> dict[str, Any]:
         # Validate the full schedule before mutating any setting or connection.
@@ -1330,6 +1352,10 @@ class QQSettingsService:
         # 带 handler 的键走各自的具名块（联动/抛错/延迟发布），这里跳过；两边钳制
         # 参数逐条一致，所以对既有键是幂等的。
         self._apply_plain_settings(kwargs)
+        if any(kwargs.get(key) is not None for key in reply_presets.MANAGED_KEYS):
+            self.plugin._qq_settings[reply_presets.PRESET_KEY] = (
+                reply_presets.effective_preset(self.plugin._qq_settings)
+            )
         # 落盘成功之前，opt-in 对处理链不可见（上面已把它们扣下）。
         success = await self._persist_with_consent_rollback(
             deferred_opt_ins=deferred_opt_ins,
@@ -1352,6 +1378,8 @@ class QQSettingsService:
                 )
             ),
         )
+        # Post-write cleanup failures must not undo values already durable on disk.
+        self._settings_write_completed = success
         if success and participant_settle_needed:
             # Do not race a failed-write rollback against this task: rollback
             # removes the marker/cutoff, while a failed settlement needs both

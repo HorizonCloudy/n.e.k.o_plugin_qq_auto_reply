@@ -5,7 +5,7 @@ from typing import Any, Optional
 
 from plugin.sdk.plugin import Err, Ok, SdkError
 
-from . import settings_schema
+from . import reply_presets, settings_schema
 from .group_permission import DEFAULT_GROUP_LEVEL
 
 
@@ -49,6 +49,7 @@ class QQDashboardService:
                 "ignored": len([item for item in runtime.get("recent_pipeline_traces", []) if item.get("summary", {}).get("result_kind") == "ignored"]),
                 "manual_reply": len([item for item in runtime.get("recent_pipeline_traces", []) if item.get("summary", {}).get("delivery_mode") == "manual_reply"]),
             },
+            "reply_presets": reply_presets.ui_metadata(),
             "settings": {
                 # 配置键由 settings_schema 生成（按 kind 选 cast、缺值退回默认）。
                 # 过去这里逐键手写 ~55 行，漏一个键的表现是：设置存得下，但界面
@@ -59,6 +60,7 @@ class QQDashboardService:
                     if spec.saveable
                 },
                 # 派生值 / 只读值：不是配置键，或需要归一，因此覆盖在上面。
+                "reply_behavior_preset": reply_presets.effective_preset(settings),
                 "reply_mode": self.plugin.config_store.normalize_reply_mode(settings.get("reply_mode")),
                 "backlog_labels": list(settings.get("backlog_labels") or []),
                 "normal_relay_probability": float(self.plugin._normal_relay_probability),
@@ -250,10 +252,12 @@ class QQDashboardService:
         attention_feedback_silent_penalty: Optional[float] = None,
         attention_feedback_warm_bonus: Optional[float] = None,
         attention_feedback_warm_count: Optional[int] = None,
+        reply_behavior_preset: Optional[str] = None,
         locale: Optional[str] = None,
     ):
         try:
             result = await self.plugin.settings_service.save_settings(
+                reply_behavior_preset=reply_behavior_preset,
                 onebot_url=onebot_url,
                 token=token,
                 napcat_directory=napcat_directory,

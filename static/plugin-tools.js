@@ -19,12 +19,12 @@
   const MARKUP = `
     <div class="card" id="cc-card" oninput="ccEdit()">
       <div class="card-title">私有插件上下文：主人绑定</div>
-      <p class="form-hint">功能开关统一使用下方插件授权。加入“仅管理员”（或“所有人”）后，已适配的只读背景能力自动参与绑定主人的 QQ 私聊；撤销授权后停止读取。这里仅绑定身份，不再逐项开启来源。</p>
+      <p class="form-hint">功能开关统一使用「插件」页的插件授权。加入“仅管理员”（或“所有人”）后，已适配的只读背景能力自动参与绑定主人的 QQ 私聊；撤销授权后停止读取。这里仅绑定身份，不再逐项开启来源。</p>
       <div class="form-group"><label>主人 QQ 号</label><input class="form-input" id="cc-owner_id" maxlength="128" placeholder="必须已设为管理员"></div>
       <div class="form-group"><label>机器人 QQ 号</label><input class="form-input" id="cc-bot_id" maxlength="128" placeholder="必须与当前登录账号一致"></div>
       <div class="form-group"><label>角色名（精确匹配）</label><input class="form-input" id="cc-character" maxlength="128"></div>
       <p class="form-hint">自动背景只用于 OneBot 绑定主人的管理员私聊，仍需 DeepChat 总开关和片段开关。不会自动启动插件、开启来源自身关闭的能力，也不回写情绪或叠加好感度。清空全部绑定后保存可解绑。</p>
-      <p class="form-hint">普通工具仍按下方档位向相应用户开放，可能包含写操作；主人绑定只保护自动背景。自动背景需有已适配的只读接口，缺少接口或没有有效状态时跳过。</p>
+      <p class="form-hint">普通工具仍按「插件」页的授权档位向相应用户开放，可能包含写操作；主人绑定只保护自动背景。自动背景需有已适配的只读接口，缺少接口或没有有效状态时跳过。</p>
       <button class="btn btn-primary" id="cc-save" onclick="ccSave()">保存绑定并使用插件授权</button>
       <span class="form-hint" id="cc-status">尚未加载</span>
     </div>
@@ -81,6 +81,10 @@
     const host = document.getElementById('page-plugintools');
     if (!host || document.getElementById('pt-zone-available')) return;
     host.innerHTML = MARKUP;
+    // OneBot 将身份绑定放到参数页；没有该容器的开放平台仍保留在插件页。
+    const bindingHost = document.getElementById('config-companion-context');
+    const bindingCard = document.getElementById('cc-card');
+    if (bindingHost && bindingCard) bindingHost.appendChild(bindingCard);
     // 注入的节点要自己再翻一次：i18n.js 初始化时扫的是**当时**的 DOM。
     if (window.I18n && typeof window.I18n.scanDOM === 'function') window.I18n.scanDOM(host);
     ['pt-zone-available', 'pt-zone-all', 'pt-zone-admin'].forEach(id => {
@@ -267,7 +271,7 @@
       const binding = data.settings.companion_context || {};
       ccStatus(binding.source_mode === 'plugin_tools'
         ? '已使用插件授权；自动背景仅在绑定匹配、来源有有效数据时加入'
-        : '尚未迁移到统一授权：保存绑定后，来源将跟随下方插件分级');
+        : '尚未迁移到统一授权：保存绑定后，来源将跟随「插件」页的授权分级');
     } catch (e) {ccStatus('配置加载失败，请重新进入此页重试');}
   }
   async function ccSave() {
@@ -290,7 +294,7 @@
       if (revision === ccRevision) {
         ccApply((result.settings || {}).companion_context || config);
         ccDirty = false;
-        ccStatus(config.enabled ? '绑定已保存；背景来源跟随下方插件授权，缺少有效数据时跳过' : '已保存解绑；不再读取自动背景');
+        ccStatus(config.enabled ? '绑定已保存；背景来源跟随「插件」页的插件授权，缺少有效数据时跳过' : '已保存解绑；不再读取自动背景');
       } else ccStatus('本次提交已保存；还有新的未保存修改');
     } catch (e) {ccStatus('保存失败：' + e.message);}
     finally {ccSaving = false; document.getElementById('cc-save').disabled = false;}
