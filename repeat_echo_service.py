@@ -48,13 +48,16 @@ _NORMALIZE_DROP_RE = re.compile(r"[^0-9a-z\u4e00-\u9fff\u3040-\u30ff]+")
 #:
 #: * `[Image …]`：图片消息经 VLM 描述后写进正文的标记（`enrichment._inject_image_descriptions`）
 #: * `戳一戳`：戳一戳通知被渲染成的文本
+#: * `[语音]`：语音消息的标记（`enrichment._fetch_record_content`）。转写没出字时
+#:   正文**就只剩这四个字**，复读判定若不挡它，六个群友轮流发语音时她会把
+#:   `[语音]` 当成"大家在同一句话"跟着发出去 —— 内部标记漏给群，而且它根本不是人话。
 #: * 其余 CQ 段（file/record/forward/video/json/xml/face…）在正文里的残留
 #:
 #: 为什么必须挡：群里六个人连发**同一张图**是很常见的复读，而图片消息的正文是
 #: `[Image 这是mc风格的精致Q版…]`。不挡的话她会把这段内部标记（连同别人的图描述）
 #: 当成"复读原文"发进群里 —— 既是垃圾话，也把内部标记漏给了群。
 _NON_TEXT_MARKERS = (
-    "[image ", "[image]", "[图片", "戳一戳",
+    "[image ", "[image]", "[图片", "[语音", "戳一戳",
     "[cq:file", "[cq:record", "[cq:forward", "[cq:video", "[cq:json", "[cq:xml",
     "[cq:face", "[cq:mface", "[cq:music", "[cq:contact", "[cq:rps", "[cq:dice",
 )

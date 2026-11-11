@@ -78,6 +78,45 @@ def looks_like_image_bytes(payload: bytes) -> bool:
     return len(head) >= 12 and head[4:8] == b"ftyp"
 
 
+def emit_voice_log(emit_log: Any, logger: Any, level: str, message: str) -> None:
+    """语音链路的判定性日志**双写**：UI 环形缓冲 + 文件日志。
+
+    由来（2026-11-11 真机，使用者「stt 好像没有正常起效」）：
+
+    ``_emit_log`` 只把一行塞进内存 ring 并推 SSE（见 ``__init__._emit`` 的说明），
+    **不进文件日志**，而 ring 在插件重载时就清空了。整个 ``[Voice]`` 通道 ——
+    检测语音段、取音频、三个 STT 后端各自的成败、最终转写结果 —— 全走
+    ``_emit_log``，于是「STT 到底转没转出字」在日志文件里**一条都没有**：
+    事后只能靠 backlog 里残留的 ``[CQ:record,…]`` 反推"没转出来"，再用配置去猜
+    是哪一层咽掉的。
+
+    同一个教训此前已经踩过两次：``reply_buffer_service._log``（缓冲区静默丢弃
+    已生成的回复）与 ``plugin_tool_service.emit_bridge_log``（工具桥到底挂没挂）。
+    写法保持一致：两路都写，**任何一路失败都不影响另一路**。
+
+    只给 INFO / WARNING / ERROR 用。DEBUG 照旧留在 ``_emit_log`` 上：文件日志的
+    级别是 INFO，写过去也看不见，白白多一次调用。
+    """
+    try:
+        if callable(emit_log):
+            emit_log(level, message)
+    except Exception:      # noqa: BLE001 —— 面板那路失败不该影响文件那路
+        pass
+    if logger is None:
+        return
+    try:
+        writer = {
+            "INFO": getattr(logger, "info", None),
+            "WARN": getattr(logger, "warning", None),
+            "WARNING": getattr(logger, "warning", None),
+            "ERROR": getattr(logger, "error", None),
+        }.get(str(level or "").upper())
+        if callable(writer):
+            writer(message)
+    except Exception:      # noqa: BLE001
+        pass
+
+
 class QQMessageEnricher:
     """Enhance a normalized QQ message for LLM consumption.
 
@@ -110,6 +149,28 @@ class QQMessageEnricher:
         语音/文件，异常还被本模块的 ``except Exception`` 吞成一行日志。
         """
         self._client = client
+
+    # ── 语音留痕 ────────────────────────────────────────────────────────
+
+    def _voice_log(self, level: str, message: str) -> None:
+        """``[Voice]`` 的判定性日志双写（ring + 文件）；见 ``emit_voice_log``。"""
+        emit_voice_log(self._emit_log, self.logger, level, message)
+
+    @staticmethod
+    def _drop_record_cq(text: str) -> str:
+        """剥掉正文里的 ``[CQ:record,…]`` 段，只留人话。
+
+        record 段的载荷是 NapCat 给的**本机临时路径**（``D:\\qq\\temp\\Tencent
+        Files\\…\\Ori\\xxx.amr``）加一条**带 rkey 的 CDN 直链**。对模型它没有任何
+        意义：既不是发言人写的内容，也解释不了"这是句什么话"。留着它一条语音
+        消息的正文就能涨到 600+ 字符（真机 ``发送消息到 AI … length: 604``），
+        还会把本机路径和签名链带进 prompt 与会话历史。
+
+        信息由 ``[语音]`` 标记（没转写时）或 ``[语音] <转写正文>``（转写成功时）
+        承担，record 段本身可以整段丢掉。文件段（``[CQ:file,…]``）早就在
+        ``_fetch_file_content`` 里这么处理了，语音这一路一直漏着。
+        """
+        return " ".join(re.sub(r"\[CQ:record,[^\]]*\]", " ", str(text or "")).split())
 
     # ── segment extraction (what the pipeline should enrich) ────────────
 
@@ -659,6 +720,7 @@ class QQMessageEnricher:
                 data = await self._client.get_record(file_id)
                 url = str((data.get("data") or {}).get("url") or data.get("url") or "").strip()
                 file_path = str((data.get("data") or {}).get("file") or data.get("file") or "").strip()
+                self._emit_log("DEBUG", f"[Voice] get_record返回: url={'有' if url else '无'} file_path={'有' if file_path else '无'} keys={list(data.keys()) if isinstance(data, dict) else type(data).__name__}")
                 record_bytes = b""
                 if url:
                     try:
@@ -666,34 +728,60 @@ class QQMessageEnricher:
                             resp = await cl.get(url)
                             if resp.status_code == 200:
                                 record_bytes = resp.content
-                    except Exception:
-                        pass
+                            else:
+                                self._voice_log("WARNING", f"[Voice] 语音URL下载失败: status={resp.status_code} url={url[:80]}")
+                    except Exception as _dl_exc:
+                        self._voice_log("WARNING", f"[Voice] 语音URL下载异常: {type(_dl_exc).__name__}: {_dl_exc}")
                 if not record_bytes and file_path:
                     _fp = _Path(file_path)
                     if _fp.is_file():
                         record_bytes = await asyncio.to_thread(_fp.read_bytes)
+                    else:
+                        self._voice_log("WARNING", f"[Voice] 语音本地文件不存在: {file_path}")
+                if not record_bytes:
+                    self._voice_log("WARNING", f"[Voice] 无法获取语音数据: file={file_id} url={'有' if url else '无'} path={'有' if file_path else '无'}")
                 record_b64 = base64.b64encode(record_bytes).decode() if record_bytes else ""
-                self._emit_log("DEBUG", f"[Voice] get_record完成: b64_len={len(record_b64)} url_len={len(url)}")
+                self._emit_log("DEBUG", f"[Voice] get_record完成: bytes={len(record_bytes)} b64_len={len(record_b64)} url_len={len(url)}")
                 transcript = ""
                 if self._voice_transcriber:
                     try:
-                        if url:
-                            transcript = await self._voice_transcriber(audio_url=url)
+                        # 只把**真 http(s) URL** 交给转录器。真机（2026-11-11 10:21）
+                        # NapCat 在 `url` 字段里给的是本机路径，传下去只换来
+                        # `UnsupportedProtocol: Request URL is missing an 'http://'
+                        # or 'https://' protocol` —— 白跑一次、还多两条吓人的 WARNING，
+                        # 而同一份音频其实已经由下面的 `file` 路径读进内存了。
+                        http_url = url if url.lower().startswith(("http://", "https://")) else ""
+                        if http_url:
+                            transcript = await self._voice_transcriber(audio_url=http_url)
                         if not transcript and record_b64:
                             transcript = await self._voice_transcriber(record_b64)
                     except Exception:
                         if self.logger:
                             self.logger.exception("语音转文字失败")
-                if transcript:
-                    raw = str(message.get("raw_message") or "").strip()
-                    message["raw_message"] = f"[语音] {transcript} {raw}".strip()
-                    message["content"] = message["raw_message"]
-                    self._emit_log("INFO", f"[Voice] 语音转文字完成: {transcript[:40]}")
-                    continue
-                existing = str(message.get("content") or message.get("raw_message") or "").strip()
+                # 正文只留 `[语音]` 标记 + 原消息的文字；record 段一律剥掉（见
+                # ``_drop_record_cq``）。转写成功时把正文插在标记后面。
+                body = self._drop_record_cq(
+                    str(message.get("content") or message.get("raw_message") or "")
+                )
                 marker = "[语音]"
-                if marker not in existing:
-                    message["content"] = f"{marker} {existing}".strip() if existing else marker
+                if transcript:
+                    message["raw_message"] = f"{marker} {transcript} {body}".strip()
+                    message["content"] = message["raw_message"]
+                    self._voice_log("INFO", f"[Voice] 语音转文字完成: {transcript[:40]}")
+                else:
+                    # 转写没出字：这是**功能失败**，不是"没什么可说的"。文件日志里
+                    # 必须留一行判定，说明这条语音只留下了 `[语音]` 标记 ——
+                    # 否则只能靠 prompt 突然变短去猜。
+                    if marker not in body:
+                        body = f"{marker} {body}".strip() if body else marker
+                    message["raw_message"] = body
+                    message["content"] = body
+                    self._voice_log(
+                        "WARNING",
+                        f"[Voice] 语音未转写，只留 {marker} 标记: file={file_id} "
+                        f"bytes={len(record_bytes)} "
+                        f"transcriber={'已绑定' if self._voice_transcriber else '未绑定'}",
+                    )
             except Exception:
                 if self.logger:
                     self.logger.exception(f"Failed to fetch record {file_id}")
@@ -859,7 +947,13 @@ class QQMessageEnricher:
             try:
                 await asyncio.wait_for(self._fetch_record_content(message, record_files), timeout=60.0)
             except (asyncio.TimeoutError, Exception) as e:
-                self._emit_log("DEBUG", f"[Voice] 语音转录超时或失败: {type(e).__name__}")
+                # 60s 外层超时会**取消**里面那个协程（CancelledError 不是 Exception，
+                # 内层的 per-file ``except`` 接不住），正文因此一个字都没写 ——
+                # 这是"语音没转出来"最安静的一种死法，必须留 WARNING。
+                self._voice_log(
+                    "WARNING",
+                    f"[Voice] 语音转录超时或失败（正文未落 [语音] 标记）: {type(e).__name__}",
+                )
             message.pop("_pending_record_files", None)
 
         file_ids = message.get("_pending_file_ids")

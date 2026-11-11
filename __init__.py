@@ -40,7 +40,7 @@ from .deepchat import TUNING_KEYS as DEEPCHAT_TUNING_KEYS
 from .deepchat import DeepChatService
 from .deploy_service import QQDeployService
 from .display_name_service import QQDisplayNameService
-from .enrichment import QQMessageEnricher
+from .enrichment import QQMessageEnricher, emit_voice_log
 from .feedback_classifier import QQFeedbackClassifier as QQFeedbackClassifier
 from .gallery_service import QQGalleryService
 from .group_permission import DEFAULT_GROUP_LEVEL, GroupPermissionManager
@@ -368,6 +368,15 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         except Exception:
             pass
 
+    def _voice_log(self, level: str, message: str) -> None:
+        """``[Voice]`` 的判定性日志双写（ring + 文件）；见 ``enrichment.emit_voice_log``。
+
+        ``_transcribe_voice`` 的每个出口都必须留一行 INFO/WARNING/ERROR ——
+        「这条语音为什么没变成文字」要在文件日志里直接读出答案，而不是靠
+        ring（重启即失）或 prompt 长度反推。
+        """
+        emit_voice_log(self._emit_log, self.logger, level, message)
+
     async def _transcribe_voice(self, audio_base64: str = "", *, audio_url: str = "") -> str:
         """语音转文字：优先本地 STT，其次云端 OpenAI/Qwen。audio_url 用于 Qwen。"""
         try:
@@ -375,6 +384,15 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
 
             import httpx
             from utils.config_manager import get_config_manager
+
+            #: 云端 STT 的超时：**连接**单独收紧到 6 秒。
+            #:
+            #: 由来（2026-11-11 端到端实测）：`ASSIST_API_KEY_OPENAI` 是个占位串
+            #: （`sk-new`），而 api.openai.com 在这台机器上根本连不通 —— httpx 会挨个
+            #: 地址握手重试，一次 `ConnectError` 烧掉 **21.9 秒**。可 Qwen 那条本来
+            #: 早就成功了：一条语音白等 22 秒，整条回复管线跟着堵。连接建不起来就是
+            #: 建不起来，6 秒足够（正常链路是亚秒级）；读超时仍留 30 秒给真正的推理。
+            cloud_timeout = httpx.Timeout(30.0, connect=6.0)
 
             core_config = get_config_manager().get_core_config() or {}
             audio_bytes = b64.b64decode(audio_base64) if audio_base64 else b""
@@ -385,126 +403,160 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                         dl = await cl.get(audio_url)
                         if dl.status_code == 200:
                             audio_bytes = dl.content
-                except Exception:
-                    pass
+                        else:
+                            self._voice_log("WARNING", f"[Voice] 音频URL下载失败: status={dl.status_code} url={audio_url[:80]}")
+                except Exception as _dl_exc:
+                    self._voice_log("WARNING", f"[Voice] 音频URL下载异常: {type(_dl_exc).__name__}: {_dl_exc}")
+
+            if not audio_bytes:
+                self._voice_log("WARNING", f"[Voice] 无音频数据: b64_len={len(audio_base64)} url={'有' if audio_url else '无'}")
+                return ""
+
+            self._emit_log("DEBUG", f"[Voice] 音频就绪: {len(audio_bytes)} bytes, magic={audio_bytes[:9]!r}")
 
             stt_filename = "voice.mp3"
             stt_mime = "audio/mp3"
 
             # ── 本地 STT（优先独立配置 local_stt_url，其次 tts_custom base_url 推导）──
-            if audio_bytes:
-                try:
-                    amr_detected = audio_bytes and (audio_bytes[:6] == b"#!AMR\n" or audio_bytes[:9].startswith(b"#!AMR-W"))
-                    stt_filename = "voice.amr" if amr_detected else "voice.mp3"
-                    stt_mime = "audio/amr" if amr_detected else "audio/mp3"
-                    # 优先使用 qq_settings 中的 local_stt_url
-                    local_stt_url = str((self._qq_settings or {}).get("local_stt_url", "") or "").strip()
-                    if not local_stt_url:
-                        # 回退：tts_custom base_url 推导
-                        tts_config = get_config_manager().get_model_api_config("tts_custom")
-                        local_base = str(tts_config.get("base_url") or "").strip()
-                        _is_ws = local_base.startswith("ws://") or local_base.startswith("wss://")
-                        _is_http = local_base.startswith("http://") or local_base.startswith("https://")
-                        if local_base and (_is_ws or _is_http):
-                            http_base = local_base.replace("ws://", "http://").replace("wss://", "https://")
-                            local_stt_url = http_base.rstrip("/") + "/v1/audio/transcriptions"
-                    if local_stt_url:
-                        async with httpx.AsyncClient(timeout=30.0, proxy=None, trust_env=False) as client:
-                            resp = await client.post(
-                                local_stt_url,
-                                files={"file": (stt_filename, audio_bytes, stt_mime)},
-                                data={"model": "whisper-1", "language": "zh"},
+            local_stt_url = ""
+            try:
+                amr_detected = audio_bytes and (audio_bytes[:6] == b"#!AMR\n" or audio_bytes[:9].startswith(b"#!AMR-W"))
+                stt_filename = "voice.amr" if amr_detected else "voice.mp3"
+                stt_mime = "audio/amr" if amr_detected else "audio/mp3"
+                # 优先使用 qq_settings 中的 local_stt_url
+                local_stt_url = str((self._qq_settings or {}).get("local_stt_url", "") or "").strip()
+                #: 这个地址是**用户显式配的**，还是从 tts_custom 猜的 —— 决定失败时该不该报警。
+                local_stt_configured = bool(local_stt_url)
+                if not local_stt_url:
+                    # 回退：tts_custom base_url 推导。
+                    #
+                    # 2026-11-11 真机：这台机器上 `tts_custom` 推导出来的是
+                    # `http://127.0.0.1:48921/v1/audio/transcriptions`，而 48921 是
+                    # 「千问 Token Plan 网关」（给对话模型用的代理）—— 它没有 ASR 路由，
+                    # 于是每条语音都先吃一个 `404: Not Found`。推导能成立的前提是
+                    # "TTS 服务器同时也提供 Whisper 转写"，这是个**猜测**；猜错时要
+                    # 说得清楚（下面按 INFO 记，不冒充真故障）。
+                    tts_config = get_config_manager().get_model_api_config("tts_custom")
+                    local_base = str(tts_config.get("base_url") or "").strip()
+                    _is_ws = local_base.startswith("ws://") or local_base.startswith("wss://")
+                    _is_http = local_base.startswith("http://") or local_base.startswith("https://")
+                    if local_base and (_is_ws or _is_http):
+                        http_base = local_base.replace("ws://", "http://").replace("wss://", "https://")
+                        local_stt_url = http_base.rstrip("/") + "/v1/audio/transcriptions"
+                if local_stt_url:
+                    self._emit_log("DEBUG", f"[Voice] 尝试本地STT: {local_stt_url}")
+                    async with httpx.AsyncClient(timeout=30.0, proxy=None, trust_env=False) as client:
+                        resp = await client.post(
+                            local_stt_url,
+                            files={"file": (stt_filename, audio_bytes, stt_mime)},
+                            data={"model": "whisper-1", "language": "zh"},
+                        )
+                        if resp.status_code == 200:
+                            text = str(resp.json().get("text", "") or "").strip()
+                            if text:
+                                self._voice_log("INFO", f"[Voice] 本地STT完成: {text[:40]}")
+                                return text
+                        if local_stt_configured:
+                            self._voice_log("WARNING", f"[Voice] 本地STT返回: status={resp.status_code} body={resp.text[:200]}")
+                        else:
+                            # 猜的地址 404 是预期内的，不该占着 WARNING 把真故障淹掉。
+                            self._voice_log(
+                                "INFO",
+                                f"[Voice] 本地STT返回: status={resp.status_code} "
+                                f"url={local_stt_url}（该地址由 tts_custom 推导，多半不是 STT 服务；"
+                                f"要本地转写请显式填 local_stt_url）",
                             )
-                            if resp.status_code == 200:
-                                text = str(resp.json().get("text", "") or "").strip()
-                                if text:
-                                    self._emit_log("INFO", f"[Voice] 本地STT完成: {text[:40]}")
-                                    return text
-                            self._emit_log("DEBUG", f"[Voice] 本地STT: {resp.status_code}")
-                except Exception:
-                    pass
+                else:
+                    self._emit_log("DEBUG", "[Voice] 本地STT未配置 (local_stt_url 为空, tts_custom base_url 不可用)")
+            except Exception as _local_exc:
+                self._voice_log("WARNING", f"[Voice] 本地STT异常: {type(_local_exc).__name__}: {_local_exc}")
 
             # ── OpenAI Whisper ──
             openai_key = str(core_config.get("ASSIST_API_KEY_OPENAI") or "").strip()
-            if openai_key and audio_bytes:
-                async with httpx.AsyncClient(timeout=30.0, proxy=None, trust_env=False) as client:
-                    resp = await client.post(
-                        "https://api.openai.com/v1/audio/transcriptions",
-                        headers={"Authorization": f"Bearer {openai_key}"},
-                        files={"file": (stt_filename, audio_bytes, stt_mime)},
-                        data={"model": "whisper-1", "language": "zh"},
-                    )
-                    if resp.status_code == 200:
-                        return str(resp.json().get("text", "") or "").strip()
-                    self._emit_log("DEBUG", f"[Voice] OpenAI转录: {resp.status_code}")
+            if openai_key:
+                self._emit_log("DEBUG", "[Voice] 尝试OpenAI Whisper转录")
+                try:
+                    async with httpx.AsyncClient(timeout=cloud_timeout, proxy=None, trust_env=False) as client:
+                        resp = await client.post(
+                            "https://api.openai.com/v1/audio/transcriptions",
+                            headers={"Authorization": f"Bearer {openai_key}"},
+                            files={"file": (stt_filename, audio_bytes, stt_mime)},
+                            data={"model": "whisper-1", "language": "zh"},
+                        )
+                        if resp.status_code == 200:
+                            text = str(resp.json().get("text", "") or "").strip()
+                            if text:
+                                self._voice_log("INFO", f"[Voice] OpenAI转录完成: {text[:40]}")
+                                return text
+                        self._voice_log("WARNING", f"[Voice] OpenAI转录返回: status={resp.status_code}")
+                except Exception as _oai_exc:
+                    self._voice_log("WARNING", f"[Voice] OpenAI转录异常: {type(_oai_exc).__name__}: {_oai_exc}")
+            else:
+                self._emit_log("DEBUG", "[Voice] OpenAI key 未配置 (ASSIST_API_KEY_OPENAI)")
 
-            # ── Qwen DashScope (SenseVoice) 同步模式 ──
+            # ── Qwen（qwen3-asr-flash，OpenAI 兼容端点）──
+            #
+            # 2026-11-11 真机：「语音没转出来」的最后一个后端也在这条路上翻车。
+            # 原来打的是 `/api/v1/services/audio/asr/transcription` + `sensevoice-v1`，
+            # 两个毛病一起犯：
+            #   * `sensevoice-v1` 在这个账号上直接回 `404 InvalidParameter: Model not exist.`；
+            #   * 就算模型对，那套「录音文件识别」要的是**公网可访问**的 `file_urls`
+            #     （`paraformer-v2` 甚至 403 `does not support synchronous calls`），
+            #     而我们手里只有内存里的字节，塞 `data:` URI 进去本来就不成立。
+            # 换成 `compatible-mode/v1/chat/completions` 上的 `qwen3-asr-flash`：它**吃
+            # base64 data URI**、同步返回正文，同一把 key 实测就能转（真机
+            # `7862ebb…amr` → "嗯。"，`be1b338…amr` → "Shit."）。
             import json as _json
             qwen_key = str(core_config.get("ASSIST_API_KEY_QWEN") or "").strip()
-            if qwen_key and audio_bytes:
+            if qwen_key:
                 amr_detected = audio_bytes and (audio_bytes[:6] == b"#!AMR\n" or audio_bytes[:9].startswith(b"#!AMR-W"))
-                if amr_detected:
-                    self._emit_log("DEBUG", f"[Voice] 检测到AMR: magic={audio_bytes[:9]!r}")
-                self._emit_log("DEBUG", f"[Voice] Qwen同步转录: {len(audio_bytes)} bytes")
+                audio_format = "amr" if amr_detected else "mp3"
+                self._emit_log("DEBUG", f"[Voice] 尝试Qwen转录: {len(audio_bytes)} bytes format={audio_format}")
                 mime = "audio/amr-wb" if (amr_detected and audio_bytes[:9].startswith(b"#!AMR-W")) else ("audio/amr" if amr_detected else "audio/mpeg")
                 data_uri = f"data:{mime};base64,{b64.b64encode(audio_bytes).decode()}"
-                async with httpx.AsyncClient(timeout=30.0, proxy=None, trust_env=False) as client:
-                    submit_resp = await client.post(
-                        "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription",
-                        headers={"Authorization": f"Bearer {qwen_key}"},
-                        json={
-                            "model": "sensevoice-v1",
-                            "input": {"file_urls": [data_uri]},
-                        },
-                    )
-                    if submit_resp.status_code != 200:
-                        try:
-                            err = submit_resp.json()
-                            self._emit_log("DEBUG", f"[Voice] Qwen同步转录失败: {submit_resp.status_code} code={err.get('code','?')} msg={err.get('message','?')}")
-                        except Exception:
-                            self._emit_log("DEBUG", f"[Voice] Qwen同步转录失败: {submit_resp.status_code} {submit_resp.text[:200]}")
-                    else:
-                        result = submit_resp.json()
-                        output = result.get("output") or {}
-                        results = output.get("results") or []
-                        text = ""
-                        for r in results:
-                            transcripts = r.get("transcripts") or []
-                            trans_url = r.get("transcription_url") or ""
-                            if not transcripts and trans_url:
-                                try:
-                                    async with httpx.AsyncClient(timeout=15.0, proxy=None, trust_env=False) as dl:
-                                        dl_resp = await dl.get(trans_url)
-                                    if dl_resp.status_code == 200:
-                                        trans_data = dl_resp.json()
-                                        transcripts = trans_data.get("transcripts") or []
-                                        props = trans_data.get("properties") or {}
-                                        if props:
-                                            dur = props.get("original_duration_in_milliseconds", 0)
-                                            fmt = props.get("audio_format", "?")
-                                            sr = props.get("original_sampling_rate", 0)
-                                            self._emit_log("DEBUG", f"[Voice] Qwen音频属性: {fmt} {sr}Hz {dur}ms")
-                                    else:
-                                        self._emit_log("DEBUG", f"[Voice] Qwen下载转录失败: status={dl_resp.status_code}")
-                                except Exception as e:
-                                    self._emit_log("DEBUG", f"[Voice] Qwen下载转录异常: {type(e).__name__}: {e}")
-                            if transcripts:
-                                import re as _re
-                                for t in transcripts:
-                                    raw_text = str(t.get("text", "") or "").strip()
-                                    if raw_text:
-                                        cleaned = _re.sub(r'<\|/?\w+\|>', '', raw_text).strip()
-                                        text += cleaned
+                try:
+                    async with httpx.AsyncClient(timeout=cloud_timeout, proxy=None, trust_env=False) as client:
+                        resp = await client.post(
+                            "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+                            headers={"Authorization": f"Bearer {qwen_key}"},
+                            json={
+                                "model": "qwen3-asr-flash",
+                                "messages": [{
+                                    "role": "user",
+                                    "content": [{
+                                        "type": "input_audio",
+                                        "input_audio": {"data": data_uri, "format": audio_format},
+                                    }],
+                                }],
+                            },
+                        )
+                        if resp.status_code != 200:
+                            try:
+                                err = resp.json()
+                                err_body = err.get("error") if isinstance(err.get("error"), dict) else err
+                                code = err_body.get("code") or "?"
+                                detail = err_body.get("message") or "?"
+                                self._voice_log("WARNING", f"[Voice] Qwen转录失败: {resp.status_code} code={code} msg={str(detail)[:200]}")
+                            except Exception:
+                                self._voice_log("WARNING", f"[Voice] Qwen转录失败: {resp.status_code} {resp.text[:200]}")
+                        else:
+                            body = resp.json()
+                            choices = body.get("choices") or []
+                            content = str(((choices[0] if choices else {}).get("message") or {}).get("content") or "").strip()
+                            if content:
+                                self._voice_log("INFO", f"[Voice] Qwen转录完成: {content[:80]}")
                             else:
-                                text += str(r.get("transcript", "") or r.get("text", "") or "").strip()
-                            result_text = text.strip()
-                            if result_text:
-                                self._emit_log("INFO", f"[Voice] Qwen转录完成: {result_text[:80]}")
-                            else:
-                                self._emit_log("DEBUG", f"[Voice] Qwen转录成功但无文字, full_output={_json.dumps(output, ensure_ascii=False)[:2000]}")
-                            return result_text
+                                self._voice_log("WARNING", f"[Voice] Qwen转录成功但无文字, full_response={_json.dumps(body, ensure_ascii=False)[:1000]}")
+                            return content
+                except Exception as _qw_exc:
+                    self._voice_log("WARNING", f"[Voice] Qwen转录异常: {type(_qw_exc).__name__}: {_qw_exc}")
+            else:
+                self._emit_log("DEBUG", "[Voice] Qwen key 未配置 (ASSIST_API_KEY_QWEN)")
+
+            self._voice_log("WARNING", f"[Voice] 所有STT后端均未产出结果: local={'已尝试' if local_stt_url else '未配置'} openai={'有key' if openai_key else '无key'} qwen={'有key' if qwen_key else '无key'}")
             return ""
-        except Exception:
+        except Exception as _top_exc:
+            self._voice_log("ERROR", f"[Voice] _transcribe_voice顶层异常: {type(_top_exc).__name__}: {_top_exc}")
             return ""
 
     def _free_route_system_prompt(self, model_config: dict[str, Any]) -> str:
