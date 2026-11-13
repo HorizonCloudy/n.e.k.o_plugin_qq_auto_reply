@@ -1,0 +1,95 @@
+Licensing notes for this fork / 本 fork 的许可说明
+================================================
+
+本仓库是 `zhaijiunknow/n.e.k.o_plugin_qq_auto_reply` 的 fork（账号 `HorizonCloudy`）。
+This repository is a fork of `zhaijiunknow/n.e.k.o_plugin_qq_auto_reply`
+(maintained under the GitHub account `HorizonCloudy`).
+
+1. `LICENSE` 里的 GPLv3 覆盖什么 / What the GPLv3 grant covers
+-------------------------------------------------------------
+覆盖**本 fork 自己新增和改动的部分**，即分支 `feat/qq-open-platform-api-v2` 起的提交
+（对照基线：上游 `1b75286`，即 v0.15.6 发布提交）。按文件列：
+
+- 新增：`qq_open_platform_v2.py`、`qq_open_platform_service.py`、
+  `tests/test_qq_open_platform_v2.py`、`tests/test_qq_open_platform_events.py`、
+  `tests/test_qq_open_platform_service.py`、`tests/test_qq_open_platform_prompt_scope.py`、
+  `tests/e2e_open_platform_stub.py`
+- 改动：`__init__.py`、`account_identity.py`、`dashboard_service.py`、`enrichment.py`、
+  `media_seam.py`、`message_dispatcher.py`、`plugin.toml`、`prompt_fragment_templates.py`、
+  `reply_context_node.py`、`reply_delivery_node.py`、`reply_model_node.py`、
+  `reply_pipeline.py`、`runtime_ops_service.py`、`session_instruction_service.py`、
+  `settings_schema.py`、`static/open_platform.html`、`i18n/zh-CN.json`、`i18n/en.json`、
+  `README.md`、`tests/test_qq_config_save_keys.py`、`tests/test_qq_entry_dispatch.py`、
+  `tests/test_qq_open_platform_media.py`、`tests/test_qq_outbound_guard.py`、
+  `_vendor/connection_onebot/qq_open_platform_media.py`（该文件本来就是插件自撰，
+  上游没有对应模块，见 `_vendor/connection_onebot/PROVENANCE.md`）
+
+Covers the fork's own additions and modifications listed above, i.e. everything
+committed from branch `feat/qq-open-platform-api-v2` onwards (baseline: upstream
+commit `1b75286`, the v0.15.6 release).
+
+2. GPLv3 **不覆盖**什么 / What the GPLv3 grant does NOT cover
+-------------------------------------------------------------
+- **上游既有代码**。`zhaijiunknow/n.e.k.o_plugin_qq_auto_reply` 仓库里**没有 LICENSE 文件**，
+  所以在作者另行授权之前，那部分仍是"保留所有权利"。本 fork 的 GPLv3 只是
+  fork 作者对自己那份贡献的授权，**既不声称、也不能替上游作者处置他们的权利**。
+  合回上游需要先由上游作者定一份许可（GPLv3 与 Apache-2.0 都与本仓库里那份
+  来自宿主的连接器代码相容）。
+  The pre-existing upstream code carries no license file; absent a grant from its
+  author those parts remain all-rights-reserved. The GPLv3 offered here is a grant
+  for the fork's own contributions only.
+- `_vendor/connection_onebot/` 中除 `qq_open_platform_media.py` 以外的文件：那是
+  `Project-N-E-K-O/N.E.K.O` 的 `utils/connection/onebot` 的**副本**，基线 commit
+  `4e83ac50e89dc9f4a6ea78af8bcde3a6280671d2`，适用 **Apache License 2.0**
+  （全文见 `LICENSES/Apache-2.0.txt`，原文 NOTICE 见下面第 4 节）。按 Apache-2.0 §4
+  的要求，本再分发保留该许可文本与该 NOTICE；每一处本地改动都在文件头留
+  `# LOCAL-PATCH` 标记并在 `_vendor/connection_onebot/PROVENANCE.md` 里逐条列出
+  （含"是否真机生效"）。Apache-2.0 材料并入 GPLv3 作品是被允许的
+  （Apache-2.0 对 GPLv3 单向相容），Apache-2.0 那部分的署名要求继续有效。
+- **用户数据与运行时产物**：表情包图片、`business_config.json`、日志、记忆存档等
+  不属于本许可对象；其中可能含第三方内容，使用者自行负责其来源与授权。
+
+3. 想在这里继续开发 / If you build on this fork
+----------------------------------------------
+- 用 fork 自己的贡献部分：按 GPLv3 即可。
+- 用到 `_vendor/connection_onebot/` 那份连接器：同时遵守 Apache-2.0（保留许可文本、
+  NOTICE，并说明你做的修改）。
+- 用到上游既有部分：请先向上游作者取得授权。
+
+4. 来自宿主项目的 NOTICE（原文照录，适用于第 2 节那份副本）
+-----------------------------------------------------------
+Project N.E.K.O.
+Copyright 2025-2026 Project N.E.K.O. Team
+Copyright (c) 2025 Hongzhi Wen
+
+This product is developed and maintained by the Project N.E.K.O. Team.
+
+Licensed under the Apache License, Version 2.0.
+See the LICENSE file for the full license text.
+
+Third-party components retain their respective copyrights and licenses.
+For the bundled three-mmd components and their embedded babylon-mmd portions,
+see static/libs/THIRD_PARTY_NOTICES.md and static/libs/licenses/.
+
+nekoclaw/runtime/loop/ is ported from the tau_agent package of huggingface/tau
+(https://github.com/huggingface/tau, commit 0d256d5), Copyright (c) 2026
+Alejandro AO, MIT License; see nekoclaw/runtime/loop/LICENSE.
+
+config/prompts/prompts_nekoclaw.py and config/prompts/prompts_nekoclaw_tools.py
+contain model-facing text taken from DeepSeek Harness
+(https://github.com/deepseek-ai/deepseek-harness, commit fcc0ad46), Copyright
+(c) 2026 DeepSeek, MIT License; the license text is reproduced in both files.
+
+nekoclaw/runtime/tools/seek.py reimplements the matching algorithm of
+codex-rs/apply-patch/src/seek_sequence.rs from OpenAI Codex
+(https://github.com/openai/codex, commit 87b7bdb), Copyright 2025 OpenAI,
+Apache License 2.0.
+
+------------------------------------------------------------
+
+我们种下了人与猫娘幸福共生的种子，我们的征途是星辰大海。
+
+We have planted the seed of a happy symbiosis between humans and nekos;
+our journey is to the sea of stars.
+
+        —— Project N.E.K.O. Team
