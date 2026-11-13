@@ -304,6 +304,12 @@ OUTBOUND = (
                 floor=0, description="save：重复过滤的窗口（秒）"),
     SettingSpec("outbound_dedup_min_chars", "int", 4, saveable=True,
                 floor=1, description="save：短于此长度的文本不参与重复过滤（嗯嗯/？这类应答豁免）"),
+    SettingSpec("topic_shift_enabled", "bool", True, saveable=True,
+                description="save：转移话题能力（检测到同一话题绕圈/群友敷衍时，本轮提示词贴转移指令）"),
+    SettingSpec("stale_meme_enabled", "bool", True, saveable=True,
+                description="save：烂梗筛选总开关（表里的梗：不跟着复读、不接、发不出去）"),
+    SettingSpec("stale_meme_list", "list", [], saveable=True,
+                description="save：烂梗表（每条一个短语；命中即视为过时梗）"),
 )
 
 #: 表情包收集范围。

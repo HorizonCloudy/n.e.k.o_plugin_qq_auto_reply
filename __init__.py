@@ -94,6 +94,7 @@ from .sticker_store import StickerStore
 from .targets import QQAutoReplyTargetsMixin
 from .targets import QQAutoReplyValidationError as QQAutoReplyValidationError
 from .time_context import build_time_context
+from .topic_shift_service import QQTopicShiftService
 from .voice_reply_service import QQVoiceReplyService
 
 # 本地依赖（vendored lib/）由 _lib_bootstrap 在模块加载时放入 sys.path；此处记录目录，
@@ -919,6 +920,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         # 出站守门人：内容安全（复用关键词黑名单）+ 重复过滤。三条"把别人原文发出去"
         # 的路（跟着复读 / 合并转发 / 别的插件原文直发）都从它过一道。
         self.outbound_guard_service = QQOutboundGuardService(self)
+        # 转移话题与烂梗筛选：替她数"这个话题绕了几遍"，判定烂梗（见 topic_shift_service）。
+        self.topic_shift_service = QQTopicShiftService(self)
         # 接续摘要：会话被回收（空闲 5 分钟 / 换人格 / 重启）时留一句"刚才聊到哪儿"，
         # 新会话开口就接得上（见 session_handoff_service 的模块 docstring）。
         self.session_handoff_service = QQSessionHandoffService(self)

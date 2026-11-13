@@ -1045,6 +1045,10 @@ class QQMessageDispatcher:
         # 引用上下文：仅注入 LLM prompt，不混入 message_text 以防污染会话历史
         reply_context = str(message.get("_reply_context", "") or "").strip()
         if message_type == "private":
+            # 私聊也记干涸信号（键 private:{user_id}，见 topic_shift_service）。
+            topic_shift = getattr(self.plugin, "topic_shift_service", None)
+            if topic_shift is not None and sender_id:
+                topic_shift.observe(key=f"private:{sender_id}", text=message_text)
             session_key = self.plugin._build_session_key(sender_id=sender_id, is_group=False)
             if session_key in self.plugin._user_sessions:
                 self.plugin._user_sessions[session_key]["last_activity_at"] = __import__("time").time()
@@ -1336,6 +1340,11 @@ class QQMessageDispatcher:
                 segments=segments,
                 group_id=group_id,
             )
+            # 转移话题/烂梗判定的观察点（见 topic_shift_service）。刻意放在门控**之前**：
+            # 被闸掉的敷衍短回复恰恰是"话题干涸"的信号，观察只收放行的就永远看不见它。
+            topic_shift = getattr(self.plugin, "topic_shift_service", None)
+            if topic_shift is not None:
+                topic_shift.observe(key=group_id, text=message_text)
             # 群友复读 → 跟着复读一次（>5 个不同的人 + 这个群是焦点才触发，
             # 见 repeat_echo_service）。刻意放在门控**之后**（那条 evaluate
             # 刚把这条消息计进注意力，焦点判定才反映"现在"）、ignore 判断

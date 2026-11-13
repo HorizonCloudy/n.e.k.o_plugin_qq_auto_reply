@@ -59,7 +59,7 @@ class QQOutboundGuardService:
         #: group_id → [(指纹, 发送时刻)]
         self._recent: dict[str, list[tuple[str, float]]] = {}
         #: 累计拦截计数（给日志/排查用，不做行为开关）。
-        self.blocked_count = {"blacklist": 0, "duplicate": 0}
+        self.blocked_count = {"blacklist": 0, "duplicate": 0, "stale_meme": 0}
         #: 「词表是空的」只提醒一次。
         #: 真机验收发现：闸在位、词表空 → 它永远拦不住任何东西，而使用者会以为
         #: 安全网开着（线上就是这种状态：`backlog_labels` 里一条 priority<0 都没有）。
@@ -121,6 +121,19 @@ class QQOutboundGuardService:
             if hit:
                 self.blocked_count["blacklist"] += 1
                 return OutboundVerdict(False, "blacklist", detail=self._matched_word(content, labels))
+
+        # 3) 烂梗表（`stale_meme_list`）。所有 kind 都查：跟着复读/合并转发/原文
+        #    直发是把**别人的**烂梗再喊一遍，reply 是她自己生成的 —— 提示词已经
+        #    教过别用，出站再兜一道（词表由用户维护，和黑名单同一个口径）。
+        topic_shift = getattr(self.plugin, "topic_shift_service", None)
+        if topic_shift is not None:
+            try:
+                meme_hit = topic_shift.meme_hit(content)
+            except Exception:  # noqa: BLE001 —— 表坏了不能把发送卡死
+                meme_hit = ""
+            if meme_hit:
+                self.blocked_count["stale_meme"] += 1
+                return OutboundVerdict(False, "stale_meme", detail=meme_hit)
 
         if self._dedup_enabled() and kind not in ("echo", "forward"):
             verdict = self._check_duplicate(str(group_id or ""), content, now=now)

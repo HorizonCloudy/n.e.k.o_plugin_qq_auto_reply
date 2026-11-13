@@ -99,7 +99,13 @@ class QQPromptBuilder:
         if is_group and not group_facing:
             safety = getattr(self.plugin, "_group_send_safety", None)
             style_hint = safety.style_hint(group_id) if safety is not None else ""
-            return style_hint + self.plugin._build_group_turn_message(
+            # 转移话题/烂梗的本轮指令（无事发生返回空串，见 topic_shift_service）。
+            topic_shift = getattr(self.plugin, "topic_shift_service", None)
+            flow_hint = (
+                topic_shift.turn_directives(key=str(group_id or ""), message=message)
+                if topic_shift is not None else ""
+            )
+            return style_hint + flow_hint + self.plugin._build_group_turn_message(
                 group_scene_mode=group_scene_mode,
                 user_title=user_title,
                 sender_id=sender_id,
@@ -114,6 +120,13 @@ class QQPromptBuilder:
                 addressee=addressee,
                 member_labels=dict(member_labels or {}),
             )
+        topic_shift = getattr(self.plugin, "topic_shift_service", None)
+        if topic_shift is not None and sender_id:
+            flow_hint = topic_shift.turn_directives(
+                key=f"private:{sender_id}", message=message,
+            )
+            if flow_hint:
+                return flow_hint + message
         return message
 
     def _is_first_reply_after_her_own_speech(self, group_id: str | None) -> bool:
