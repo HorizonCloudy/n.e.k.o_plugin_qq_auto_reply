@@ -810,5 +810,8 @@
   "ui.openplat.config.attention_hint": "只有列在「信任群」名单里的群才参与注意力竞争。官方机器人这边群 id 是十六进制的 group_openid（不是 QQ 群号），所以以前按群号加的名单在这条通道上匹配不上——那个群会被当成普通群，只按概率转达，看起来就是「不回」。用下面「我看过的群」拿到真实 id 再加。",
   "ui.openplat.config.dormancy_hint": "休眠后只答点名（@ 她 / 引用她 / 关键词）。群里看着没人回她，多半就是这个；把「重新聊热线」压低或关掉本开关即可。",
   "ui.openplat.seen.none": "还没见过任何群（她在群里收到一条消息后这里才会有内容）",
-  "ui.openplat.seen.failed": "读取失败: "
+  "ui.openplat.seen.failed": "读取失败: ",
+  "ui.openplat.config.groups_hint": "只有列在这里的群才参与注意力竞争与缓冲；不在名单里的群按「普通群」处理，只按概率转达，多数消息不会回。官方机器人的群号是十六进制的 group_openid（不是 QQ 群号）—— 用下面「我看过的群」直接加，别手抄。",
+  "ui.openplat.seen.add": "加为信任群",
+  "ui.openplat.seen.trusted": "已在名单里"
 }

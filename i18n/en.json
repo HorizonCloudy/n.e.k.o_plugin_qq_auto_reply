@@ -810,5 +810,8 @@
   "ui.openplat.config.attention_hint": "Only groups listed as trusted take part in attention competition. On the official bot the group id is a hex group_openid, not a QQ group number, so roster entries written as numbers never match here: such a group is treated as normal and only relayed by probability, which looks like she never replies. Use Groups I have seen below to get the real id.",
   "ui.openplat.config.dormancy_hint": "A sleeping group answers only direct mentions (@ her, quoting her, keywords). If she seems mute in a live group, this is usually why: lower the wake score or turn this switch off.",
   "ui.openplat.seen.none": "No groups yet (they appear after she receives one message in a group)",
-  "ui.openplat.seen.failed": "Load failed: "
+  "ui.openplat.seen.failed": "Load failed: ",
+  "ui.openplat.config.groups_hint": "Only groups listed here take part in attention competition and buffering. Groups not listed are treated as normal: replies are relayed by probability, so most messages get no answer. Group ids on the official bot are hex group_openid values, not QQ group numbers - use Groups I have seen below instead of typing them by hand.",
+  "ui.openplat.seen.add": "Add as trusted",
+  "ui.openplat.seen.trusted": "already listed"
 }

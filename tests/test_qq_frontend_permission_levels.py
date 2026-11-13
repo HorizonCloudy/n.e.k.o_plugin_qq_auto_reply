@@ -109,12 +109,18 @@ def test_modals_feed_the_current_level_into_the_dropdown():
 
 
 def test_group_modal_defaults_to_trusted_in_open_platform_panel():
+    """开放平台的群弹窗默认档必须是 trusted。
+
+    2026-11-13 起 open_platform 面板的群弹窗改用与 napcat 同一份 `levelOptionsHtml`
+    生成器（手写 selected 是上一条测试明文禁止的：同一 select 里多个 selected 时
+    最后一个胜出，未知档位还会 0 个 selected 让浏览器回退到第一项）。
+    所以这里钉的是**默认参数与选项顺序**，不再钉字面 option。
+    """
     op = (PLUGIN_DIR / "static/open_platform.html").read_text(encoding="utf-8")
-    snippet = _select_snippet(op, "mg-level")
-    trusted_at = snippet.index('value="trusted"')
-    normal_at = snippet.index('value="normal"')
-    assert "selected" in snippet[trusted_at:normal_at], "开放平台的群弹窗默认还是普通群"
-    assert "selected" not in snippet[normal_at:], "普通群又被写成默认档"
+    body = op.split("function showGroupModal", 1)[1].split("\nfunction ", 1)[0]
+    assert "],level,'trusted')" in body, "群弹窗没把默认档交给生成器 —— 编辑时必然显示错档"
+    assert body.index("[\'trusted\'") < body.index("[\'normal\'"), "选项顺序变了，第一项不再是信任群"
+    assert "selected" not in body, "生成器之外不许再手写 selected"
 
 
 def test_other_group_entry_points_keep_trusted_first():
