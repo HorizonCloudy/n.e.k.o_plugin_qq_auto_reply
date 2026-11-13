@@ -280,10 +280,36 @@
 
 ## 许可（License）
 
-- 本仓库是 `zhaijiunknow/n.e.k.o_plugin_qq_auto_reply` 的 fork；`LICENSE` 里的 **GPLv3 只覆盖本 fork 自己新增和改动的部分**（清单见 `NOTICE` 第 1 节）。
-- 上游仓库**没有 LICENSE 文件**，所以在作者另行授权前，那部分仍是保留所有权利 —— 本 fork 不声称能替上游作者处置。要合回上游，先请上游定一份许可。
-- `_vendor/connection_onebot/` 里除 `qq_open_platform_media.py` 之外都是宿主 `Project-N-E-K-O/N.E.K.O/N.E.K.O`（Apache-2.0）那份连接器的副本，许可文本在 `LICENSES/Apache-2.0.txt`，本地改动逐条标 `# LOCAL-PATCH` 并记在 `_vendor/connection_onebot/PROVENANCE.md`。
-- 表情包图片、`business_config.json`、日志与记忆存档等用户数据不在许可范围内。
+- 许可证：**GPL-3.0-only**（根目录 `LICENSE`，FSF 原文未改动；`pyproject.toml` 的 `license` 字段同步）。
+- 但这份授权**只覆盖本 fork 新增和改动的部分**，逐文件列在 `NOTICE` 第 1 节。
+- 上游 `zhaijiunknow/n.e.k.o_plugin_qq_auto_reply` **没有 LICENSE 文件**，默认保留所有权利；
+  要把 GPLv3 挂到上游、或把整份项目对外按 GPLv3 授权，**需要先取得宅久（及其他历史贡献者）的同意**
+  （已在 issue #11 提出）。在那之前，别把本分支的 `LICENSE` 当成上游项目的许可引用。
+- 用户数据不在许可范围内：表情包图片、`business_config.json`、日志、记忆存档，
+  以及 `emoji.json`（QQ 系统表情 id 与中文名对照，213 条）——见 `NOTICE` 第 6 节。
+
+## 来源与改动（Provenance）
+
+三方来源，各按各的条款保留署名；细目在 `NOTICE`。
+
+| 来源 | 许可 | 用了什么 | 放在哪 |
+|---|---|---|---|
+| 上游插件仓库 `zhaijiunknow/n.e.k.o_plugin_qq_auto_reply`（基线 `1b75286` = v0.15.6） | **无 LICENSE** → 保留所有权利 | 插件既有全部代码 | 各既有文件 |
+| 宿主 `Project-N-E-K-O/N.E.K.O`（`utils/connection/onebot`，副本基线 commit `4e83ac50`） | **Apache-2.0** | 连接器副本（宿主没带这份包时的回退）；另有两个测试文件沿用宿主署名头 | `_vendor/connection_onebot/`、`tests/test_qq_open_platform_actor_identity.py`、`tests/test_qq_open_platform_identity_scope.py` |
+| 宿主 `Project-N-E-K-O/N.E.K.O` 的 `QQOpenPlatformMediaMixin` 语义 | Apache-2.0 | 只参考其行为，未并入代码 | `media_seam.py`、`_vendor/connection_onebot/qq_open_platform_media.py`（该文件本身是插件自撰） |
+| **MaiBot** `Mai-with-u/MaiBot` | **GPL-3.0-or-later** | **没有复制代码或文件**；只读了它的提示词组织方式（`planner_reply_capabilities` / `reply_attachments` / `.meta.toml`），并受其两句英文提示文案影响写了对应中文表述 | `prompt_fragment_templates.CAPABILITY_SCOPE_SECTION_OPEN_PLATFORM` |
+
+兼容性核对结论：
+
+- Apache-2.0 → GPLv3 **单向相容**：那份连接器副本可以并入 GPLv3 作品，条件是保留许可文本
+  （`LICENSES/Apache-2.0.txt`）、保留宿主 NOTICE（`NOTICE` 第 4 节原文照录），并说明改动之处
+  （每处本地改动都带 `# LOCAL-PATCH` 标记，明细在 `_vendor/connection_onebot/PROVENANCE.md`）。
+- GPL-3.0-or-later → GPL-3.0-only：可以按"仅第 3 版"使用其材料；且我们**未并入** MaiBot 代码，
+  只保留出处说明。
+- 反过来不成立：不要把这份 fork 的代码原样搬进 Apache-2.0 的项目里。
+
+本 fork 的改动范围（不做逐条罗列，看 git 历史与 `CHANGELOG` 段）：官方机器人按
+API v2 补齐能力面、主动回复修复、面板补齐注意力与信任群设置、能力面提示词层。
 
 ## 插件信息
 

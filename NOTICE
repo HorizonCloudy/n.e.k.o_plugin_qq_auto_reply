@@ -5,7 +5,7 @@ Licensing notes for this fork / 本 fork 的许可说明
 This repository is a fork of `zhaijiunknow/n.e.k.o_plugin_qq_auto_reply`
 (maintained under the GitHub account `HorizonCloudy`).
 
-1. `LICENSE` 里的 GPLv3 覆盖什么 / What the GPLv3 grant covers
+1. `LICENSE` 里的 GPLv3（SPDX：`GPL-3.0-only`）覆盖什么 / What the GPLv3 grant covers
 -------------------------------------------------------------
 覆盖**本 fork 自己新增和改动的部分**，即分支 `feat/qq-open-platform-api-v2` 起的提交
 （对照基线：上游 `1b75286`，即 v0.15.6 发布提交）。按文件列：
@@ -93,3 +93,38 @@ We have planted the seed of a happy symbiosis between humans and nekos;
 our journey is to the sea of stars.
 
         —— Project N.E.K.O. Team
+
+5. 参考但未使用其代码的项目 / Referenced, not vendored
+-------------------------------------------------------
+- **MaiBot**（`https://github.com/Mai-with-u/MaiBot`，**GPL-3.0-or-later**）：只读了它的
+  提示词组织方式（`prompts/en-US/planner_reply_capabilities.prompt`、`reply_attachments.prompt`
+  与 `.meta.toml`），**没有复制任何代码或文件**。受它影响写下的两处表达：
+  `prompt_fragment_templates.CAPABILITY_SCOPE_SECTION_OPEN_PLATFORM` 里的
+  "能用不等于一定发得出去：以实际结果为准"（译写自
+  "Availability does not guarantee successful execution; use the actual result"）
+  与"这一轮真的在范围内的清单"（对应 "enabled and in scope for this chat"）。
+  这两句是提示文案而非代码，保留 MaiBot 的出处说明于此。许可方向上无冲突：
+  GPL-3.0-or-later 的材料可以按"仅第 3 版"使用，且我们并未并入其代码。
+  MaiBot is referenced for prompt *structure* only; no code or file from it is included.
+  Two sentences of its English prompt prose were translated into our own wording, and the
+  source is recorded here.
+
+6. 不属于许可对象的数据 / Data files
+-----------------------------------
+`emoji.json`（QQ 系统表情 id 与中文名的对照表，213 条）随上游代码一并保留，
+其内容来自 QQ 客户端表情名称；本节不声称以任何许可授权该数据本身。
+
+7. 待上游作者确认 / Pending the upstream author's decision（关键前提）
+---------------------------------------------------------------------
+上游 `zhaijiunknow/n.e.k.o_plugin_qq_auto_reply` 没有 LICENSE 文件；`1b75286` 及更早的提交
+里含 **宅久（zhaijiunknow）**与其他作者的贡献，默认保留所有权利。因此：
+
+- 本 fork 现在挂着 `LICENSE`，**其效力仅及于第 1 节列出的 fork 贡献**；
+  这不是、也不能代替上游作者对他们那份代码的授权。
+- 要把 GPLv3 挂到**上游仓库**、或把整份项目按 GPLv3 对外授权，
+  **必须先取得宅久（及其他历史贡献者）的书面同意**（issue #11 已提出请求）。
+- 在那之前：不要把本分支的 LICENSE 当成上游项目的许可引用；合并回上游时按上游最终
+  选定的许可处理。
+
+Adding the file here is not a relicensing of upstream's contributions; explicit consent
+from the upstream author(s) is required before GPLv3 is adopted project-wide.

@@ -1,4 +1,7 @@
 [project]
 name = "qq_auto_reply"
 version = "0.1.0"
+# 与根目录 LICENSE 一致（FSF 原文未改动，GitHub 对该文本识别为 GPL-3.0-only）。
+# 覆盖范围与"待上游作者确认"的状态写在 NOTICE / README「许可（License）」里。
+license = "GPL-3.0-only"
 dependencies = []
