@@ -390,6 +390,11 @@ MISC = (
     SettingSpec("qq_open_identity_probe_enabled", "bool", False, saveable=True,
                 description="save：身份作用域取证（往持久日志写标识符）",
                 handler="consent_opt_in"),
+    # 官方平台的被动回复只有 5 分钟（群）/ 60 分钟（私聊）。超时之后还想说话，
+    # 平台给的另一条路是「互动召回消息」（is_wakeup=true，私聊 30 天内按周期各 1 条）。
+    # 它占的是另一份额度，且不是每个机器人都开了这个权限，所以默认关。
+    SettingSpec("qq_open_proactive_wakeup", "bool", False, saveable=True,
+                description="save：开放平台无被动锚点的私聊发送按互动召回消息发（is_wakeup）"),
     # 插件工具桥：``{plugin_id: "all"|"admin"}``。**只有开放平台会用它**（见
     # `plugin_tool_service` 的模块说明）。键 = 允许被猫娘调用的插件，值 = 谁可以用。
     # 只认"已经启动"的插件：没启动的那些挂不上工具，也不会出现在提示词里。

@@ -10,6 +10,7 @@ from .pipeline_models import (
     KIND_GROUP_JOIN_NOTICE,
     QQReplyRequest,
 )
+from .qq_open_platform_v2 import is_official_bot
 
 #: 开放平台通道的观测值。真相在 ``QQOpenPlatformConnection.CHANNEL``，这里抄一
 #: 份而不是 import，是为了不把 websockets / httpx 拖进本模块的导入链；两者相
@@ -84,7 +85,7 @@ class QQMessageDispatcher:
         sender_id = str(message.get("user_id") or "").strip()
         if (
             qq_client is None
-            or qq_client.needs_attention
+            or not is_official_bot(qq_client)
             or permission_mgr is None
             or not sender_id
         ):
@@ -1174,7 +1175,7 @@ class QQMessageDispatcher:
                 # startup persistence remains best-effort, matching the
                 # pre-existing fallback path below.
                 pass
-        elif self.plugin.qq_client and not self.plugin.qq_client.needs_attention:
+        elif self.plugin.qq_client and is_official_bot(self.plugin.qq_client):
             if self.plugin.permission_mgr and not self.plugin.permission_mgr.list_users():
                 self.plugin.permission_mgr.add_user(sender_id, "admin", user_nickname or "管理员")
                 self.plugin._refresh_admin_qq()

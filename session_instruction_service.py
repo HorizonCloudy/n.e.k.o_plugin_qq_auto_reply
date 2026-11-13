@@ -16,6 +16,7 @@ from .pipeline_models import QQInstructionBundle
 from .prompt_fragment_templates import (
     ACCOUNTS_PROMPT_SECTION,
     ATTENTION_PROMPT_SECTION,
+    CAPABILITY_SCOPE_SECTION_OPEN_PLATFORM,
     CHARACTER_PROMPT_SECTION,
     CHAT_ENV_PROMPT_SECTION,
     CORE_MEMORY_SECTION,
@@ -31,6 +32,7 @@ from .prompt_fragment_templates import (
     USER_PROFILE_PROMPT_SECTION,
     pick_locale,
 )
+from .qq_open_platform_v2 import is_official_bot
 from .scene_prompt_templates import (
     SCENE_KIRA_UNIFIED_GROUP,
     SCENE_PRIVATE_CHAT,
@@ -102,6 +104,8 @@ class QQSessionInstructionService:
         {"id": "group_attention",       "i18n_key": "group_attention_prompt_section", "required_placeholders": [],                        "format_after": False},
         {"id": "format_neko_dynamic",   "i18n_key": "format_prompt_section_neko_dynamic", "required_placeholders": ["{emoji_catalog}", "{sticker_catalog}"],  "format_after": True},
         {"id": "format_open_platform",  "i18n_key": "format_prompt_section_open_platform", "required_placeholders": ["{sticker_catalog}"], "format_after": True},
+        # 能力面清单：只有官方机器人通道注入（OneBot 那侧的能力不一样，写进来就是假话）。
+        {"id": "capabilities_open_platform", "i18n_key": "capability_scope_section_open_platform", "required_placeholders": ["{capabilities}"], "format_after": True},
         {"id": "persona_wrapper",       "i18n_key": "character_prompt_section", "required_placeholders": ["{character_prompt}"],       "format_after": True},
         {"id": "detail",                "i18n_key": "detail_constraints_section", "required_placeholders": [],                          "format_after": False},
         {"id": "output",                "i18n_key": "output_prompt_section", "required_placeholders": [],                               "format_after": False},
@@ -223,6 +227,91 @@ class QQSessionInstructionService:
         if format_kwargs:
             return base_text.format(**format_kwargs)
         return base_text
+
+    def _build_open_platform_capability_lines(self) -> str:
+        """官方机器人通道的能力面清单（现场生成，不写死）。
+
+        判据只有一个：**这一轮真的能用的才写**。来源是当前连接对象的能力旗标、
+        当前配置，和已授权的外部插件；写进来的是假话，她会照着向用户承诺
+        （本仓库为 `<file>`/`<music>` 这类标签踩过一次：静态清单一漂移就变成
+        "她答应做不到的事"）。
+
+        长度是成本（输出格式段实测是全篇最大的一段），所以每行只留判据，
+        不复述已经在别处说过的规则。
+        """
+        conn = getattr(self.plugin, "qq_client", None)
+        # getattr 而不是直取：这条路径的调用方里存在只挂了部分属性的 plugin 桩
+        # （tests/test_qq_sticker_context.py 那种），而能力清单坏了不该让整轮提示词崩掉。
+        settings = getattr(self.plugin, "_qq_settings", None) or {}
+        flag = lambda name, default=False: bool(getattr(conn, name, default))  # noqa: E731
+
+        rich: list[str] = []
+        if flag("supports_voice"):
+            rich.append("语音 `<record>`（silk/mp3/wav；要本体 TTS 可用，合成失败自动改发文字）")
+        if flag("supports_files"):
+            rich.append("文件（本地路径或 http(s) 地址都行，用户要文档/资料时可以真发）")
+        if flag("supports_video"):
+            rich.append("视频")
+        if flag("supports_cards"):
+            rich.append("图文卡片 `<ark>`（要 https 链接与配图）")
+        if flag("supports_keyboard"):
+            rich.append("按钮 `<keyboard>`（点击后把内容填进对方输入框）")
+        if flag("supports_reference"):
+            rich.append("引用回复 `<reply>`（对方能看到引用了哪一条）")
+        if flag("supports_recall"):
+            rich.append("撤回自己发过的消息（2 分钟内）")
+        lines = ["- 能发：" + ("、".join(rich) if rich else "只有文字"),
+                 "- 平台做不到，被问到就照实说做不到：**戳一戳**、"
+                 "**给群或单聊消息贴表情**、**翻历史消息**（平台不推给她就不知道，"
+                 "只能用插件自己留的积压）。别把这些当成下次能补的事。"]
+
+        limits = ["- 被动回复窗口：群 5 分钟、私聊 60 分钟；同一条消息最多回复 5 条"
+                  "（私聊 4 条）。**所以别把一次回复拆得太碎**",
+                  "- 用户可以在 QQ 客户端关掉「接受主动消息」；关掉之后她不回，不是故障"]
+        if getattr(conn, "bot_member_role", "") in ("admin", "owner"):
+            limits.append("- 她在这个群是管理员：可以 @全体成员（每群每自然日 1 次）")
+        if settings.get("force_sentence_split"):
+            limits.append("- 强制分段已开：普通正文会按句子拆成多条发出（引用、语音、卡片不拆）")
+        if settings.get("proactive_initiative_enabled"):
+            what = "按「互动召回消息」发（平台按周期给额度）" if settings.get(
+                "qq_open_proactive_wakeup") else "按主动消息发（可能被对方的开关挡掉）"
+            limits.append(
+                "- 她可以主动找管理员私聊：由头是她自己说过要交代的事；每天次数与间隔受配置限制，"
+                f"没有可回复的消息时{what}"
+            )
+        lines.extend(limits)
+
+        external = self._build_external_capability_lines(settings)
+        if external:
+            lines.append(external)
+        return "\n".join(lines)
+
+    def _build_external_capability_lines(self, settings: dict) -> str:
+        """已授权的外部插件能力（数据库、图像记忆库这类）。
+
+        只从配置里读分档，不去查宿主注册表：这个函数在提示词构造路径上，必须同步、
+        无网络。**没授权就不写** —— 写一个调得到的工具名，她会去调，然后失败。
+        """
+        try:
+            bridge = getattr(self.plugin, "plugin_tool_service", None)
+            tiers = dict(bridge.tiers()) if bridge is not None else {}
+        except Exception:
+            self.plugin.logger.warning("外部能力清单生成失败（提示词按无外部能力继续）", exc_info=True)
+            return ""
+        if not tiers:
+            return ""
+        notes = {
+            # 图像记忆库的 img_send 只把图推进本体聊天，发不进 QQ（真机核对过）。
+            "neko_image_embed": "（注意：它的 img_send 只发到本体聊天，发不进 QQ；"
+                                "要往 QQ 发图用表情包库。收录 QQ 收到的图用 img_ingest，"
+                                "source=url 直接给消息里的图片地址）",
+        }
+        rows = ["- 已授权的外部插件能力（按分档授权，没列在这里的调不到）："]
+        for plugin_id, tier in sorted(tiers.items()):
+            who = "所有人都可以让她用" if tier == "all" else "只有管理员可以让她用"
+            extra = notes.get(plugin_id, "")
+            rows.append(f"  · `{plugin_id}` —— {who}{extra}")
+        return "\n".join(rows)
 
     @classmethod
     def _required_placeholders_by_key(cls) -> dict[str, tuple[str, ...]]:
@@ -417,12 +506,17 @@ class QQSessionInstructionService:
         def t(key, default):
             return self.plugin.i18n.t(key, default=default)
 
-        is_open_plat = self.plugin.qq_client and not self.plugin.qq_client.needs_attention if self.plugin.qq_client else False
+        is_open_plat = bool(self.plugin.qq_client) and is_official_bot(self.plugin.qq_client)
         # 只剩两条路：开放平台段与动态策略段 —— 两者都教标签，所以下面统一套占位符。
         if is_open_plat:
             format_section = self._resolve_static_layer("format_prompt_section_open_platform", FORMAT_PROMPT_SECTION_OPEN_PLATFORM, user_language)
+            capability_section = self._resolve_static_layer(
+                "capability_scope_section_open_platform", CAPABILITY_SCOPE_SECTION_OPEN_PLATFORM,
+                user_language, capabilities=self._build_open_platform_capability_lines(),
+            )
         else:
             format_section = self._resolve_static_layer("format_prompt_section_neko_dynamic", FORMAT_PROMPT_SECTION_NEKO_DYNAMIC, user_language)
+            capability_section = ""
         format_section = format_section.format(
             emoji_catalog=self._load_emoji_catalog(),
             sticker_catalog=self._load_sticker_catalog(
@@ -455,6 +549,8 @@ class QQSessionInstructionService:
                 user_language,
             ),
             format_section,
+            # 能力面清单紧跟在输出格式后面：她刚读完"怎么发"，接着读"这一轮真能发什么"。
+            capability_section,
             self._build_accounts_section(
                 her_name=her_name,
                 login_status=login_status,
@@ -1218,7 +1314,7 @@ class QQSessionInstructionService:
         sender_id: str,
         user_title: str,
     ) -> str:
-        is_open_plat = self.plugin.qq_client and not getattr(self.plugin.qq_client, 'needs_attention', True) if self.plugin.qq_client else False
+        is_open_plat = bool(self.plugin.qq_client) and is_official_bot(self.plugin.qq_client)
         if is_open_plat:
             # 开放平台私聊：隐藏原始 ID，管理员=主人本人
             if permission_level == "admin":

@@ -792,5 +792,15 @@
   "ui.layout.maintenance": "排查与维护",
   "ui.layout.setup_hint": "接入 → 部署 → 登录确认",
   "ui.layout.legacy": "使用旧版控制中心 ↗",
-  "ui.index.status.desc2": "按后端引导完成登录与连接"
+  "ui.index.status.desc2": "按后端引导完成登录与连接",
+  "ui.openplat.config.pace_title": "主动回复与分段",
+  "ui.openplat.config.pace_hint": "由头 = 她自己在私聊里说过要交代的事。只对管理员私聊生效，群聊不走这条路；下面三项是刹车。",
+  "ui.openplat.config.max_per_day": "每日上限",
+  "ui.openplat.config.min_gap": "最小间隔（小时）",
+  "ui.openplat.config.quiet_hours": "静音时段（小时，相同=不静音）",
+  "ui.openplat.config.wakeup": "没有可回复的消息时，按「互动召回消息」发（is_wakeup）",
+  "ui.openplat.config.wakeup_hint": "官方平台的被动回复窗口是群 5 分钟 / 私聊 60 分钟，过了就发不出去。开了这条，无锚点的私聊发送改走平台的召回额度（私聊 30 天内按周期各 1 条）。这份额度另算且要平台开权限，默认关。",
+  "ui.openplat.config.memory_ext_title": "记忆的外部支撑",
+  "ui.openplat.config.memory_ext_hint": "长期记忆存在本体里。要数据库和图像记忆库，去「插件」页把这两个插件加进来并分档，她就能自己调用：plugin_database（db_execute / db_fetch_all，结构化数据与统计）、neko_image_embed（img_ingest 收录、img_search 检索；QQ 的图片直接给 source=url 就行）。注意 neko_image_embed 的 img_send 只把图推进本体聊天，发不进 QQ；要往 QQ 发图用表情包库。",
+  "ui.napcat.prompts.layer.capabilities_open_platform.name": "能力面（官方机器人）"
 }

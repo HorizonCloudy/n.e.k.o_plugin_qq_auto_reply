@@ -143,3 +143,36 @@ def test_settings_form_is_not_backfilled_while_dirty():
     assert html.count("if(_settingsDirty)") >= 1, "脏标记没有被任何地方读取"
     assert "_settingsDirty=!0" in html, "没有任何地方置脏标记，守卫形同虚设"
     assert "_settingsDirty=!1" in html, "没有任何地方清脏标记，守卫会永久生效"
+
+def test_open_platform_save_form_sends_only_allowed_keys():
+    """开放平台面板提交的键也必须在白名单内。
+
+    以前这条只盯 napcat.html。开放平台面板补上分段/主动搭话开关后，
+    它的 args 同样可能落在三层透传之外 —— 落在外面不报错，只是**静默丢弃**，
+    现象就是"勾了没生效"。
+    """
+    outside = sorted(_ui_save_keys("open_platform.html") - _allowlist())
+    assert not outside, f"这些键会被静默丢弃：{outside}"
+
+
+def test_open_platform_panel_wires_its_own_switches_end_to_end():
+    """面板上每个开关都要"有控件 + 回填 + 提交"三处齐全。
+
+    少一处就是看得见的假开关：回填缺失 → 每次刷新都显示关；
+    提交缺失 → 勾了保存后回到原样。这条把三类一起钉。
+    """
+    html = (BASE / "static" / "open_platform.html").read_text(encoding="utf-8")
+    expect = {
+        "cfg-force-sentence-split": "force_sentence_split",
+        "cfg-initiative-on": "proactive_initiative_enabled",
+        "cfg-initiative-max-per-day": "proactive_initiative_max_per_day",
+        "cfg-initiative-min-gap-hours": "proactive_initiative_min_gap_seconds",
+        "cfg-initiative-quiet-start": "proactive_initiative_quiet_start_hour",
+        "cfg-initiative-quiet-end": "proactive_initiative_quiet_end_hour",
+        "cfg-initiative-greeting-enabled": "proactive_initiative_greeting_enabled",
+        "cfg-initiative-wakeup": "qq_open_proactive_wakeup",
+    }
+    for element_id, key in expect.items():
+        assert f'id="{element_id}"' in html, f"{key} 的控件不见了：{element_id}"
+        assert f"getElementById('{element_id}')" in html, f"{key} 没有回填或没有提交：{element_id}"
+        assert key in html, f"{key} 没出现在读写里"

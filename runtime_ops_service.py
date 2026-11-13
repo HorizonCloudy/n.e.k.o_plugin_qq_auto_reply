@@ -349,7 +349,32 @@ class QQProactiveMessageService:
             prompt_message = self.plugin._validate_outbound_message(message)
             if verbatim:
                 # 原文直发：不经过 reply_pipeline 的 LLM 生成，直接把内容发出去。
-                mid = await self.plugin.qq_client.send_private_message(resolved_qq, prompt_message)
+                #
+                # 这里原来是 ``qq_client.send_private_message(...)`` —— 两边连接器
+                # （OneBotClient / QQOpenPlatformConnection）都**没有**这个方法，
+                # 只有 ``send_message`` / ``send_private_message_segments``。所以每一次
+                # 原文直发都撞 AttributeError，被下面那条 catch-all 变成
+                # ``SEND_FAILED``：主动回复在两个通道上都从来没真的发出去过。
+                guard = getattr(self.plugin, "outbound_guard_service", None)
+                if guard is not None:
+                    # 群聊那条直发早就过出站守门了，私聊这条不能反而更松：
+                    # 别的插件可以把任意文本塞进来，包括从群里抄来的原话。
+                    # 分桶键与投递链路一致（那里私聊也是裸 user id），
+                    # 加前缀会把同一句话拆成两个桶，去重就形同虚设。
+                    verdict = guard.check(
+                        group_id=resolved_qq, text=prompt_message, kind="bridge",
+                    )
+                    if verdict.blocked:
+                        self.plugin.logger.warning(
+                            f"[Outbound] 私聊直发被拦截（{verdict.reason}: {verdict.detail}）: "
+                            f"{prompt_message[:40]!r}"
+                        )
+                        self.plugin._emit_log(
+                            "WARN",
+                            f"[Proactive·原文] 私聊出站拦截（{verdict.reason}: {verdict.detail}）",
+                        )
+                        return Err(SdkError(f"OUTBOUND_BLOCKED: {verdict.reason}"))
+                mid = await self.plugin.qq_client.send_message(resolved_qq, prompt_message)
                 self.plugin._emit_log("INFO", f"[Proactive·原文] 私聊已直发 target={resolved_qq} mid={mid}")
                 return Ok({
                     "status": "sent",

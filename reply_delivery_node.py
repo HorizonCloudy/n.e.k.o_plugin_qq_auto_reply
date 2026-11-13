@@ -598,7 +598,9 @@ class QQReplyDeliveryNode:
         NapCat/OneBot has no such field — its send_group_message_segments
         accepts the kwarg for interface parity but never reads it."""
         client = self.plugin.qq_client
-        return bool(client and not client.needs_attention)
+        from .qq_open_platform_v2 import is_official_bot
+
+        return bool(client and is_official_bot(client))
 
     async def send_emoji_reaction(self, message_id: str, emoji_id: str) -> bool:
         """给某条消息**贴表情**（反应），不是把表情当消息发出去。
@@ -607,9 +609,10 @@ class QQReplyDeliveryNode:
         （贴表情到对方消息上）」。以前这个字段解析出来却**没有任何消费方**，模型照提示词
         做也零效果。
 
-        仅 NapCat 支持：开放平台客户端里 `set_msg_emoji_like` 是返回 `{}` 的空桩，
-        `{}` 是假值，所以这里天然会被判成未确认 —— 不需要额外分支，但也不能因为
-        它而让整轮回复失败（反应是装饰，失败只降级成日志）。
+        开放平台**不能**在群/单聊贴表情：v2 的表情表态只有频道消息接口。以前这条落到
+        连接层的空桩上（返回 `{}`，被判成未确认：不报错，但也永远没动静）；现在连接层
+        直接说明原因，这里按能力旗标先跳过，不留每轮一条的无用日志。
+        反应是装饰，不支持只降级成日志，不影响整轮回复。
         """
         message_id = str(message_id or "").strip()
         emoji_id = str(emoji_id or "").strip()
@@ -620,6 +623,9 @@ class QQReplyDeliveryNode:
         client = self.plugin.qq_client
         if not client or not hasattr(client, "set_msg_emoji_like"):
             self.plugin.logger.info("当前连接不支持表情反应，跳过")
+            return False
+        if not getattr(client, "supports_reactions", True):
+            self.plugin.logger.info("官方机器人的表情表态只有频道消息有，跳过")
             return False
         try:
             result = await client.set_msg_emoji_like(message_id, emoji_id)

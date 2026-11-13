@@ -35,6 +35,12 @@ BLACKLIST_LABELS = [
 
 
 class _FakeQQClient:
+    """刻意**只**实现连接器真有的那几个方法。
+
+    私聊原文直发原来调的是 ``send_private_message`` —— 两边连接器都没有这个方法，
+    所以那条路每次都撞 AttributeError。桩不给它，回归就藏不住。
+    """
+
     needs_attention = True
 
     def __init__(self) -> None:
@@ -46,6 +52,10 @@ class _FakeQQClient:
     async def send_group_message(self, group_id: str, message: str):
         self.sent.append((group_id, message))
         return "mid-1"
+
+    async def send_message(self, user_id: str, message: str):
+        self.sent.append((f"u:{user_id}", message))
+        return "mid-2"
 
 
 def _guard(**settings) -> QQOutboundGuardService:
@@ -320,6 +330,7 @@ def _bridge_service(guard):
         _ensure_qq_client_connected=lambda: None,
         _validate_group_id=lambda gid: str(gid),
         _validate_outbound_message=lambda text: str(text).strip(),
+        _resolve_private_message_target=lambda t: (str(t), ""),
     )
     return QQProactiveMessageService(plugin), client
 
@@ -393,3 +404,36 @@ def test_echo_passes_when_content_is_clean():
 
     assert asyncio.run(service._send(group_id=GROUP, text="一江大气喵")) is True
     assert client.sent == [(GROUP, "一江大气喵")]
+
+
+def test_bridge_private_verbatim_sends():
+    """私聊原文直发要真的发出去（用的是 ``send_message``）。"""
+    guard = _guard()
+    service, client = _bridge_service(guard)
+    result = asyncio.run(service.send_private_message(target="820040531", message="正常一句话", verbatim=True))
+    assert result.is_ok(), result.error
+    assert client.sent == [("u:820040531", "正常一句话")]
+
+
+def test_bridge_private_verbatim_is_guarded_like_the_group_path():
+    """黑名单词不许从私聊这条缝里漏出去：群那条早就过了守门。"""
+    guard = _guard()
+    service, client = _bridge_service(guard)
+    result = asyncio.run(service.send_private_message(target="820040531", message="滚", verbatim=True))
+    assert result.is_err()
+    assert client.sent == []
+
+
+def test_proactive_senders_only_use_methods_the_connectors_have():
+    """主动发送用到的连接器方法必须在两边连接器上真的存在。
+
+    这类错只有在真发消息时才暴露：单测把整条服务都 mock 掉了，于是
+    "主动回复发不出去"能一路活到线上。
+    """
+    from plugin.plugins.qq_auto_reply.connector_seam import OneBotClient, QQOpenPlatformConnection
+
+    used = ("send_message", "send_group_message", "send_private_message_segments",
+            "send_group_message_segments")
+    for cls in (OneBotClient, QQOpenPlatformConnection):
+        for name in used:
+            assert hasattr(cls, name), f"{cls.__name__} 没有 {name}"

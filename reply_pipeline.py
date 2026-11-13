@@ -339,7 +339,13 @@ class QQReplyPipelineRunner:
         if url:
             ark_obj["ark"]["kv"].append({"key": "#URL#", "value": url})
 
-        if not getattr(self.plugin.qq_client, "supports_ark_cards", False):
+        # ark 和"能发卡"是两件事：v2 发送侧没有 ark，但有图文卡片（msg_type=8）。
+        # 只认 supports_ark_cards 的话，官方机器人会被降级成一行纯文本，链接和配图全丢。
+        client = self.plugin.qq_client
+        can_card = bool(client) and (
+            getattr(client, "supports_cards", False) or getattr(client, "supports_ark_cards", False)
+        )
+        if not can_card:
             # OneBot 后端不支持 Ark 卡片，降级为文本发送
             fallback = body_text or title or desc or ""
             if fallback:

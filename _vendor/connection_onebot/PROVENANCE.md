@@ -61,6 +61,22 @@ qq_open_platform_media.py                                                       
 ⚠️ **行数相同不代表内容相同**：副本与上游的 `qq_open_plat.py` 恰好都是 1126 行（功能性改动
 加的行与减的行正好抵消），逐字核对必须用 `git diff --no-index`，看行数会得出错误结论。
 
+## 2026-11-12：富媒体上传扩成按 `file_type` 通用（语音 / 视频 / 文件）
+
+`qq_open_platform_media.py`（**插件自撰**，不涉及上游同步）原来只有 `upload_image`，
+也就是只认 `file_type=1`。官方机器人的连接层因此一直被报成 `supports_voice=False`，
+插件攒好的 TTS 语音在官方通道上整条丢掉。
+
+| 改动 | 原来 | 现在 | 真机是否生效 |
+|---|---|---|---|
+| `upload_media(scope, owner_id, source, file_type)` | 不存在 | 图片/视频/语音/文件共用一条上传流程（URL 直传 → 分片 → 旧式直传） | ❌ 未真机验证（本机无开放平台凭据） |
+| `upload_image(...)` | 自己实现一遍 | 薄转发到 `upload_media(file_type=1)` | 行为、限制、日志文案与原来一致 |
+| `FILE_TYPE_SOFT_LIMITS` / `_soft_limit_bytes()` | 只有 `MAX_IMAGE_BYTES` | 视频 30MB / 语音 20MB / 文件 200MB；**图片仍读 `MAX_IMAGE_BYTES`** | 现有两处对 `MAX_IMAGE_BYTES` 打桩的守卫因此继续成立 |
+| `media_seam.upload_media(conn, ...)` | 不存在 | 富媒体第二道口子；宿主哪天自带 `upload_media` 就自动改走宿主 | ❌ 同上 |
+
+配套的调用方在插件自己那侧：`qq_open_platform_v2.py`（官方机器人 API v2 能力层）。
+它**不**自己实现上传，只调 `media_seam`，所以上传协议的知识仍然只有一份。
+
 ## 标记约定：`LOCAL-PATCH`
 
 副本里任何**非 lint** 的差异，都必须在文件头留一行 `# LOCAL-PATCH: <commit> <摘要>`：

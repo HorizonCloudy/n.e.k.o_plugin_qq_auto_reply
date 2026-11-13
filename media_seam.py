@@ -89,6 +89,23 @@ async def upload_image(conn: Any, *, scope: str, owner_id: str, source: str) -> 
     return await _vendored().upload_image(conn, scope=scope, owner_id=owner_id, source=source)
 
 
+async def upload_media(
+    conn: Any, *, scope: str, owner_id: str, source: str, file_type: int,
+) -> str:
+    """按 ``file_type`` 上传视频/语音/文件，返回 ``file_info``（失败返回空串）。
+
+    ``upload_image`` 只有图片那一档；官方机器人的语音（``file_type=3``）、视频（2）、
+    文件（4）用的是同一个上传接口，所以这里必须开第二个口子。宿主暂时没带
+    ``upload_media``，走内置副本；哪天宿主带上了，本函数自动改走宿主。
+    """
+    host_method = getattr(conn, "upload_media", None)
+    if callable(host_method):
+        return await host_method(scope=scope, owner_id=owner_id, source=source, file_type=file_type)
+    return await _vendored().upload_media(
+        conn, scope=scope, owner_id=owner_id, source=source, file_type=file_type,
+    )
+
+
 async def send_group_image(
     conn: Any, group_id: str, source: str, *,
     content: str = "", reply_message_id: str = "", at_user_id: str = "",

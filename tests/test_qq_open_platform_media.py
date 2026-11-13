@@ -552,8 +552,11 @@ def test_the_mixin_overrides_the_transports_own_group_image():
     assert _Mixed.send_group_image is MEDIA.QQOpenPlatformMediaMixin.send_group_image
 
 
-def test_the_mixin_adds_exactly_three_public_members():
-    """混进宿主类时只多这三个公开方法 —— 别的都走 ``_media_`` 私有前缀。
+def test_the_mixin_adds_exactly_four_public_members():
+    """混进宿主类时只多这四个公开方法 —— 别的都走 ``_media_`` 私有前缀。
+
+    ``upload_media`` 是第四个：语音/视频/文件和图片是同一个上传接口，只差
+    ``file_type``，所以它必须是公开入口，而不是藏在图片方法里的一个分支。
 
     宿主侧有兼容面契约测试（``tests/unit/test_connection_compat_surface.py``）钉着连接类的
     成员集合，这里是插件这一侧的镜像：新加公开成员必须是**有意**的。
@@ -562,7 +565,9 @@ def test_the_mixin_adds_exactly_three_public_members():
         name for name in vars(MEDIA.QQOpenPlatformMediaMixin)
         if not name.startswith("_")
     }
-    assert public == {"upload_image", "send_private_image", "send_group_image"}, public
+    assert public == {
+        "upload_image", "upload_media", "send_private_image", "send_group_image",
+    }, public
 
 
 def test_the_media_override_accepts_the_transport_signature():
@@ -579,12 +584,12 @@ def test_the_media_override_accepts_the_transport_signature():
 
 
 def test_the_wrappers_are_thin_forwards_over_the_mixin():
-    """三个包装函数体内只准有"绑上适配器 + 调 mixin 那一个方法"。"""
+    """包装函数体内只准有"绑上适配器 + 调 mixin 那一个方法"。"""
     import ast
     import inspect
     import textwrap
 
-    for name in ("upload_image", "send_private_image", "send_group_image"):
+    for name in ("upload_image", "upload_media", "send_private_image", "send_group_image"):
         wrapper = getattr(MEDIA, name)
         tree = ast.parse(textwrap.dedent(inspect.getsource(wrapper)))
         calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
@@ -639,3 +644,86 @@ def _run(coro):
     import asyncio
 
     return asyncio.run(coro)
+
+# ── 按 file_type 通用上传（v0.15.7：语音 / 视频 / 文件）──────────────────
+#
+# 官方机器人一直被连接层报成"不支持语音"，而 v2 的 files 接口本来就收
+# file_type=1/2/3/4 四档。这几条钉的是：档位真的传到接口里、软限制按档位分别生效、
+# 并且**图片那条限制仍然只认 MAX_IMAGE_BYTES**（两处既有守卫靠对它打桩成立，
+# 一旦改成"从表里取"就会悄悄失去守卫）。
+
+def test_upload_media_passes_the_requested_file_type_through(tmp_path):
+    """本地视频按 file_type=2 走完整上传流程（和图片同一条路，只差档位）。"""
+    calls = []
+
+    def responder(method, url, body):
+        calls.append(body)
+        return _legacy_ok()
+
+    conn = _Conn(responder)
+    clip = tmp_path / "a.mp4"
+    clip.write_bytes(b"v" * 8)
+
+    assert _run(MEDIA.upload_media(
+        conn, scope="groups", owner_id="G1", source=str(clip), file_type=2,
+    )) == "FI-legacy"
+    assert {c["file_type"] for c in calls if isinstance(c, dict) and "file_type" in c} == {2}
+    assert any(url.endswith("/v2/groups/G1/files") for _m, url, _b in conn._http.calls)
+
+
+def test_voice_url_upload_uses_file_type_three():
+    seen = {}
+
+    def responder(method, url, body):
+        if isinstance(body, dict):
+            seen.update(body)
+        return {"file_info": "FI-voice"}
+
+    conn = _Conn(responder)
+    assert _run(MEDIA.upload_media(
+        conn, scope="users", owner_id="U1", source="https://cdn.example/a.wav", file_type=3,
+    )) == "FI-voice"
+    assert seen["file_type"] == 3 and seen["url"] == "https://cdn.example/a.wav"
+    assert conn._http.calls[-1][1].endswith("/v2/users/U1/files")
+
+
+def test_upload_image_is_still_the_image_path(tmp_path):
+    """`upload_image` 的行为不能因为这次泛化而变：档位还是 1。"""
+    seen = {}
+    conn = _Conn(lambda method, url, body: seen.update(body or {}) or {"file_info": "FI"})
+    assert _run(MEDIA.upload_image(
+        conn, scope="groups", owner_id="G1", source="https://cdn.example/a.png",
+    )) == "FI"
+    assert seen["file_type"] == MEDIA.FILE_TYPE_IMAGE == 1
+
+
+def test_video_is_refused_by_its_own_soft_limit_without_reading(tmp_path, monkeypatch):
+    clip = tmp_path / "big.mp4"
+    clip.write_bytes(b"v" * 4096)
+    monkeypatch.setitem(MEDIA.FILE_TYPE_SOFT_LIMITS, 2, 64)
+    read: list[str] = []
+    _spy_on_read(monkeypatch, read)
+    conn = _Conn(lambda method, url, body: {"file_info": "FI"})
+
+    assert _run(MEDIA.upload_media(
+        conn, scope="groups", owner_id="G1", source=str(clip), file_type=2,
+    )) == ""
+    assert read == [], "超过本档软限制的文件根本不该被读进来"
+    assert conn._http.calls == []
+
+
+def test_image_limit_still_comes_from_MAX_IMAGE_BYTES(tmp_path, monkeypatch):
+    """图片档位刻意不放进 FILE_TYPE_SOFT_LIMITS 表。
+
+    表里的值在 import 时就定死了，而宿主那份和上面两条守卫都是靠**运行时**改
+    ``MAX_IMAGE_BYTES`` 生效的；写进表就等于把那道守卫悄悄换成一条死数字。
+    """
+    png = tmp_path / "big.png"
+    png.write_bytes(b"b" * 4096)
+    monkeypatch.setattr(MEDIA, "MAX_IMAGE_BYTES", 64)
+    conn = _Conn(lambda method, url, body: {"file_info": "FI"})
+
+    assert _run(MEDIA.upload_media(
+        conn, scope="groups", owner_id="G1", source=str(png), file_type=1,
+    )) == ""
+    assert conn._http.calls == []

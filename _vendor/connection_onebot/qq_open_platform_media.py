@@ -2,6 +2,9 @@
 # 它必须跟着 _vendor/connection_onebot/ 一起留下来：副本里的 qq_open_plat.py 用
 # `from . import qq_open_platform_media` 引它，删了会让整个副本包 import 失败。
 # 明细与同步顺序见同目录 PROVENANCE.md。
+# LOCAL-PATCH: 2026-11-12 上传从"只有图片一档"扩成按 file_type 通用
+# （1 图 / 2 视频 / 3 语音 / 4 文件）：官方机器人一直被连接层报成"不支持语音"，
+# 而 v2 的 files 接口本来就收这三档。upload_image 的行为与限制一字未动。
 #
 # 标记写在 docstring **之前**：`tests/test_qq_connector_seam.py` 的守卫只认文件头 40 行，
 # 而这段 docstring 有 45 行 —— 标记跟在后面就等于没标。
@@ -64,8 +67,35 @@ import mimetypes
 import os
 from typing import Any
 
-#: Platform media type for an image.
+#: Platform media types (``file_type`` of the upload interfaces).
 FILE_TYPE_IMAGE = 1
+FILE_TYPE_VIDEO = 2
+FILE_TYPE_VOICE = 3
+FILE_TYPE_FILE = 4
+
+#: 日志/降级文案用的中文名，和 ``file_type`` 一一对应。
+FILE_TYPE_LABELS = {
+    FILE_TYPE_IMAGE: "图片",
+    FILE_TYPE_VIDEO: "视频",
+    FILE_TYPE_VOICE: "语音",
+    FILE_TYPE_FILE: "文件",
+}
+
+#: 非图片档位的平台软限制：超过就按"文件"存，发出去的东西会变味，所以这里直接拒。
+#: 图片**不进这张表** —— 它认模块级 ``MAX_IMAGE_BYTES``（见 :func:`_soft_limit_bytes`），
+#: 宿主那份和现有测试都对那条常量打桩，换成表就等于把那道守卫悄悄换掉。
+FILE_TYPE_SOFT_LIMITS = {
+    FILE_TYPE_VIDEO: 30 * 1024 * 1024,
+    FILE_TYPE_VOICE: 20 * 1024 * 1024,
+    FILE_TYPE_FILE: 200 * 1024 * 1024,
+}
+
+
+def _soft_limit_bytes(file_type: int) -> int:
+    """这一档媒体允许的最大字节数（在调用时取，不在 import 时定格）。"""
+    if int(file_type) == FILE_TYPE_IMAGE:
+        return MAX_IMAGE_BYTES
+    return FILE_TYPE_SOFT_LIMITS.get(int(file_type), MAX_IMAGE_BYTES)
 
 #: Soft image limit. Past this the platform stores the upload as a "file" instead of
 #: an image; this module refuses rather than silently changing what it sends.
@@ -310,30 +340,39 @@ class QQOpenPlatformMediaMixin:
 
     # ── public operations ──────────────────────────────────────────────
 
-    async def upload_image(self, *, scope: str, owner_id: str, source: str) -> str:
-        """Upload one image into ``scope`` (``"groups"`` / ``"users"``), return ``file_info``.
+    async def upload_media(
+        self, *, scope: str, owner_id: str, source: str, file_type: int = FILE_TYPE_IMAGE,
+    ) -> str:
+        """Upload one media file into ``scope`` (``"groups"`` / ``"users"``), return ``file_info``.
 
         ``scope`` is the platform's own isolation: an upload made through the private
         interface can only be sent privately, and the other way round, so callers must
-        pass the one matching where the image goes. Failure returns ``""`` and leaves
+        pass the one matching where the media goes. Failure returns ``""`` and leaves
         the degradation choice to the caller.
+
+        ``file_type`` follows the platform's numbering (1 image / 2 video / 3 voice /
+        4 file). Voice is why this exists: the Open Platform **does** carry voice
+        (``silk``/``mp3``/``wav``), while the connector used to answer ``supports_voice
+        = False`` and the plugin therefore threw its whole TTS output away.
         """
         url = str(source or "").strip()
         if not url:
             return ""
+        label = FILE_TYPE_LABELS.get(int(file_type), "媒体")
+        limit = _soft_limit_bytes(file_type)
         if url.startswith(("http://", "https://")):
             try:
                 await self._ensure_token()
                 file_info = await self._media_upload_by_url(
-                    scope=scope, owner_id=owner_id, url=url, file_type=FILE_TYPE_IMAGE,
+                    scope=scope, owner_id=owner_id, url=url, file_type=file_type,
                 )
             except Exception as exc:
-                self._media_log("warning", f"图片 URL 上传异常: {exc}")
+                self._media_log("warning", f"{label} URL 上传异常: {exc}")
                 return ""
             if file_info:
-                self._media_log("info", f"图片上传成功(url): {file_info[:24]}")
+                self._media_log("info", f"{label}上传成功(url): {file_info[:24]}")
             else:
-                self._media_log("warning", "图片 URL 上传失败")
+                self._media_log("warning", f"{label} URL 上传失败")
             return file_info
 
         # Size first, bytes later: the soft limit has to be able to reject a file
@@ -345,57 +384,61 @@ class QQOpenPlatformMediaMixin:
         except OSError:
             size = 0
         if size <= 0:
-            self._media_log("warning", f"图片文件不存在或为空: {path}")
+            self._media_log("warning", f"{label}文件不存在或为空: {path}")
             return ""
-        if size > MAX_IMAGE_BYTES:
+        if size > limit:
             self._media_log(
                 "warning",
-                f"图片超过 {MAX_IMAGE_BYTES // (1024 * 1024)}MB 软限制，放弃上传: {size} 字节",
+                f"{label}超过 {limit // (1024 * 1024)}MB 软限制，放弃上传: {size} 字节",
             )
             return ""
 
         try:
             payload, file_name = await asyncio.to_thread(_read_source, url)
         except Exception as exc:
-            self._media_log("warning", f"图片读取失败: {exc}")
+            self._media_log("warning", f"{label}读取失败: {exc}")
             return ""
         if not payload:
-            self._media_log("warning", f"图片文件不存在或为空: {path}")
+            self._media_log("warning", f"{label}文件不存在或为空: {path}")
             return ""
-        if len(payload) > MAX_IMAGE_BYTES:
+        if len(payload) > limit:
             # Second line of defence: the file can grow (or be swapped) between the stat
             # above and the read.
             self._media_log(
                 "warning",
-                f"图片超过 {MAX_IMAGE_BYTES // (1024 * 1024)}MB 软限制，放弃上传: {len(payload)} 字节",
+                f"{label}超过 {limit // (1024 * 1024)}MB 软限制，放弃上传: {len(payload)} 字节",
             )
             return ""
 
         try:
             await self._ensure_token()
         except Exception as exc:
-            self._media_log("warning", f"取 token 失败，无法上传图片: {exc}")
+            self._media_log("warning", f"取 token 失败，无法上传{label}: {exc}")
             return ""
 
         # Both protocols, legacy first: never worse than the behaviour that shipped,
         # and the log says which one worked.
-        for label, attempt in (
+        for kind, attempt in (
             ("直传", self._media_upload_legacy),
             ("分片", self._media_upload_chunked),
         ):
             try:
                 file_info = await attempt(
                     scope=scope, owner_id=owner_id,
-                    payload=payload, file_name=file_name, file_type=FILE_TYPE_IMAGE,
+                    payload=payload, file_name=file_name, file_type=file_type,
                 )
             except Exception as exc:
-                self._media_log("warning", f"图片{label}上传异常: {exc}")
+                self._media_log("warning", f"{label}{kind}上传异常: {exc}")
                 continue
             if file_info:
-                self._media_log("info", f"图片上传成功({label}): {file_info[:24]}")
+                self._media_log("info", f"{label}上传成功({kind}): {file_info[:24]}")
                 return file_info
-            self._media_log("warning", f"图片{label}上传未拿到 file_info")
+            self._media_log("warning", f"{label}{kind}上传未拿到 file_info")
         return ""
+
+    async def upload_image(self, *, scope: str, owner_id: str, source: str) -> str:
+        """图片上传的旧名字，行为一字未动（真机验证过的就是这条）。"""
+        return await self.upload_media(scope=scope, owner_id=owner_id, source=source)
 
     async def send_private_image(
         self, user_id: str, source: str, *,
@@ -513,6 +556,19 @@ def _adapter(conn: Any) -> Any:
 async def upload_image(conn: Any, *, scope: str, owner_id: str, source: str) -> str:
     return await QQOpenPlatformMediaMixin.upload_image(
         _adapter(conn), scope=scope, owner_id=owner_id, source=source,
+    )
+
+
+async def upload_media(
+    conn: Any, *, scope: str, owner_id: str, source: str, file_type: int = FILE_TYPE_IMAGE,
+) -> str:
+    """按 ``file_type`` 上传一份富媒体（视频/语音/文件走这里，图片仍走 ``upload_image``）。
+
+    模块级包装的存在理由和 ``upload_image`` 一样：宿主那份连接对象没有这个新方法，
+    插件不能给宿主的类加基类，所以入口必须是"对任何连接对象都能跑"的形状。
+    """
+    return await QQOpenPlatformMediaMixin.upload_media(
+        _adapter(conn), scope=scope, owner_id=owner_id, source=source, file_type=file_type,
     )
 
 

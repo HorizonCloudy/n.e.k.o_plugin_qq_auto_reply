@@ -123,7 +123,8 @@ FORMAT_PROMPT_SECTION_OPEN_PLATFORM = """\
   * `<at>QQ号</at>` → @群里的某个人
   * `<reply>消息ID</reply>` → 引用回复某条消息
   * `<sticker>表情包ID</sticker>` → 发送自定义表情包，可和文字组合（先发文字，表情包自动跟发）。适合配图时偶尔使用。可用ID和描述：
-  * `<ark title="标题" desc="描述" btn="按钮" url="链接">正文</ark>` → 富卡片（仅群聊）。适合状态面板、图文摘要。
+  * `<ark title="标题" desc="描述" btn="按钮" url="链接">正文</ark>` → 图文卡片（仅群聊）。适合状态面板、图文摘要。官方平台按图文卡片发，卡片要能给一个 https 链接和一个配图地址。
+  * `<record>要说的话</record>` → 语音。官方平台支持（silk/mp3/wav），**单独一条**，别和文字挤在一起。需要本体 TTS 可用；合成失败会自动改发这段文字。
   可用表情包ID和描述：
 {sticker_catalog}
 
@@ -140,6 +141,19 @@ FORMAT_PROMPT_SECTION_OPEN_PLATFORM = """\
   - `要看看哪个？<keyboard>查看状态 | 查看配置 | 查看日志</keyboard>`
   - `<reply>114514</reply> **收到~** *马上处理*`
   - `<ark title="运行状态" desc="已在线 3 小时">当前一切正常</ark>`
+"""
+
+#: 官方机器人通道的**能力面清单**。清单正文由 `_build_open_platform_capability_lines()`
+#: 按当前连接与配置现场生成（写法取自 MaiBot 的 `planner_reply_capabilities`：
+#: 只声明"这一轮真的在范围内"的东西，并明说能用不等于一定发得出去）。
+#: 为什么不留一份静态清单：静态清单必然与平台/权限漂移，而漂移的方向是
+#: "她向用户承诺自己做不到的事"（本仓库已经为 `<file>`/`<music>` 这类标签踩过一次，
+#: 见下面那条 ⚠️ 注释）。
+CAPABILITY_SCOPE_SECTION_OPEN_PLATFORM = """\
+## 本通道的能力面（QQ 官方机器人，按当前连接与配置生成）
+下面这份是**这一轮真的在范围内**的清单，不是通用说明书。
+能用不等于一定发得出去：以实际结果为准，没发成功就照实说，别改成"下次给你"。
+{capabilities}
 """
 
 # ⚠️ 待后端支持后再开放的标签（rps / dice / contact / music / mface / file）**不要**写回
@@ -288,6 +302,7 @@ def layer_default_templates() -> dict[str, str]:
         "output_prompt_section": OUTPUT_PROMPT_SECTION,
         "format_prompt_section_neko_dynamic": FORMAT_PROMPT_SECTION_NEKO_DYNAMIC,
         "format_prompt_section_open_platform": FORMAT_PROMPT_SECTION_OPEN_PLATFORM,
+        "capability_scope_section_open_platform": CAPABILITY_SCOPE_SECTION_OPEN_PLATFORM,
         "core_memory_section": CORE_MEMORY_SECTION,
         "prompts.group.kira_unified": SCENE_KIRA_UNIFIED_GROUP,
         "prompts.private.body": SCENE_PRIVATE_CHAT,

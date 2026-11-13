@@ -117,7 +117,9 @@ class QQReplyModelNode:
 
     def _should_generate(self, context: QQReplyContext) -> bool:
         # 开放平台：全部生成（不限制权限）
-        if self.plugin.qq_client and not self.plugin.qq_client.needs_attention:
+        from .qq_open_platform_v2 import is_official_bot
+
+        if self.plugin.qq_client and is_official_bot(self.plugin.qq_client):
             return True
         return context.is_group or context.permission_level in ["admin", "trusted"]
 

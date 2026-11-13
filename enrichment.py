@@ -344,8 +344,13 @@ class QQMessageEnricher:
         OneBot 的 ``file`` 段，也没有 ``file_id`` / ``busid`` —— URL 是现成的，所以渲染
         那条链路拿到就能直接下载，不用再走"先换 URL"那一步。
 
-        只取 ``type == "file"``：图片归多模态附件那条路（``prompting``），两边各管一段，
-        免得同一张图既进 prompt 文本又被塞进图片队列。
+        取 ``file`` 与 ``video``：图片归多模态附件那条路（``prompting``），两边各管一段，
+        免得同一张图既进 prompt 文本又被塞进图片队列。视频必须留在这条路上 —— 能力层
+        以前把它笼统算成 ``file``，现在它有了自己的档位；渲染器若还只认 ``file``，
+        "对方发了个视频"就重新变成看到空气（而且不报错）。
+
+        ``voice`` **不进这条路**：平台已经给了 ASR 文本，能力层把它写进正文了；再挂一个
+        ``[文件 a.silk]`` 只会污染提示词。
 
         名字优先用平台给的，没有就从 URL 尾部取；名字只影响提示词里那行标签，
         取不到也不该让整条附件消失。
@@ -354,7 +359,8 @@ class QQMessageEnricher:
         for attachment in message.get("attachments") or []:
             if not isinstance(attachment, dict):
                 continue
-            if str(attachment.get("type") or "").strip() != "file":
+            kind = str(attachment.get("type") or "").strip()
+            if kind not in ("file", "video"):
                 continue
             url = str(attachment.get("url") or "").strip()
             if not url:
@@ -365,7 +371,12 @@ class QQMessageEnricher:
             if not name:
                 tail = url.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
                 name = unquote(tail)
-            files.append({"file_id": "", "name": name or "文件", "url": url, "busid": 0})
+            files.append({
+                "file_id": "",
+                "name": name or ("视频" if kind == "video" else "文件"),
+                "url": url,
+                "busid": 0,
+            })
         return files
 
     def _expand_forward_segments(self, message: Dict[str, Any]) -> list[str]:

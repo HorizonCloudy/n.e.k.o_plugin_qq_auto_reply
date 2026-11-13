@@ -294,7 +294,9 @@ class QQReplyContextNode:
 
         custom_nickname = self.plugin.permission_mgr.get_nickname(sender_id) if self.plugin.permission_mgr else None
         # 开放平台：username 为空时，管理员用主人名，普通用户用友好称呼
-        if self.plugin.qq_client and not getattr(self.plugin.qq_client, 'needs_attention', True):
+        from .qq_open_platform_v2 import is_official_bot
+
+        if self.plugin.qq_client and is_official_bot(self.plugin.qq_client):
             if permission_level == "admin":
                 user_nickname = master_name  # 管理员就是主人本人
             elif not user_nickname and not custom_nickname:

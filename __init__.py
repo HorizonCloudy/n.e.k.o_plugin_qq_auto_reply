@@ -61,6 +61,9 @@ from .plugin_tool_service import (
 from .proactive_initiative_service import QQProactiveInitiativeService
 from .prompt_builder import QQPromptBuilder
 from .prompting import QQAutoReplyPromptingMixin
+from .qq_open_platform_service import ACTIONS as OPEN_PLATFORM_ACTIONS
+from .qq_open_platform_service import PARAM_KEYS as OPEN_PLATFORM_PARAM_KEYS
+from .qq_open_platform_service import QQOpenPlatformService
 from .relay_service import QQRelayService
 from .repeat_echo_service import QQRepeatEchoService
 from .reply_buffer_service import QQReplyBufferService
@@ -213,6 +216,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         # `proactive_message_service`，本服务只负责"什么时候开口"与"由头从哪来"。
         self.proactive_initiative_service = QQProactiveInitiativeService(self)
         self.handler_runtime_service = QQHandlerRuntimeService(self)
+        self.open_platform_service = QQOpenPlatformService(self)
         self.message_dispatcher = QQMessageDispatcher(self)
         self.session_bootstrap_service = QQSessionBootstrapService(self)
         self.session_instruction_service = QQSessionInstructionService(self)
@@ -291,11 +295,39 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         source_msg = f"[QQ] 连接器来源: {CONNECTOR_SOURCE} ({CONNECTOR_MODULE})"
         self._emit_log("INFO", source_msg)
         self.logger.info(source_msg)
-        connection = create_onebot_connection(
-            self._qq_settings,
-            logger=self.logger,
-            emit_log=self._emit_log,
-        )
+        from .qq_open_platform_v2 import create_open_platform_connection, is_official_bot
+
+        if str((self._qq_settings or {}).get("qq_connection_mode") or "").strip() == "open_platform":
+            # 官方机器人走插件自己的 v2 能力层：宿主那份连接器的能力声明与事件面都写窄了
+            # （详见 qq_open_platform_v2 模块文档）。构造失败时它自己退回连接器原实现，
+            # 不会把启动卡住。
+            connection = create_open_platform_connection(
+                self._qq_settings, logger=self.logger, emit_log=self._emit_log,
+            )
+        else:
+            connection = create_onebot_connection(
+                self._qq_settings,
+                logger=self.logger,
+                emit_log=self._emit_log,
+            )
+        snapshot = getattr(connection, "capability_snapshot", None)
+        if is_official_bot(connection) and callable(snapshot):
+            listener = getattr(connection, "add_event_listener", None)
+            if callable(listener):
+                listener(self._on_qq_open_platform_event)
+            snap = snapshot()
+            cap_msg = (
+                "[QQ] 官方机器人能力层: 语音=%s 文件=%s 撤回=%s 引用=%s 卡片=%s 键盘=%s "
+                "收信范围=%s 全量=%s 群角色=%s"
+                % (
+                    snap["voice"], snap["file"], snap["recall"], snap["reference"],
+                    snap["rich_card"], snap["keyboard"],
+                    snap["recv_msg_setting"] or "未知", snap["receives_all_messages"],
+                    snap["bot_member_role"] or "未知",
+                )
+            )
+            self._emit_log("INFO", cap_msg)
+            self.logger.info(cap_msg)
         # 富媒体走谁：宿主适配器（连接对象自带 upload_image）还是内置副本。
         # 与上面那行一样两路都发 —— 排查"装上去到底跑哪份"时看的是日志文件那份。
         from . import media_seam
@@ -304,6 +336,30 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self._emit_log("INFO", media_msg)
         self.logger.info(media_msg)
         return connection
+
+    async def _on_qq_open_platform_event(self, event_type: str, payload: dict) -> bool:
+        """官方平台的非消息事件入口。
+
+        现在只处理一件会改变管线行为的事：全量群消息刚刚生效时把注意力衰减循环起来
+        （``runtime_ops_service`` 只在 connect 时按 ``needs_attention`` 起过一次，那时
+        多半还是 @ 模式）。其余事件如实进运行日志与 UI 事件流，不擅自改行为 ——
+        入群审批、按钮回调各自的产品动作由入口/工具决定，不在这里猜。
+        """
+        if event_type == "OPEN_PLATFORM_FULL_MESSAGES_ON":
+            self._emit_log("INFO", "官方机器人已收到全量群消息，开启接话判定")
+            try:
+                if self._running and self.attention_service:
+                    await self.attention_service.start_decay_loop()
+            except Exception:
+                self.logger.warning("[QQ] 全量模式开启注意力衰减失败", exc_info=True)
+            self._spawn_push_ui_event("qq_open_platform_full_messages", "官方机器人收到全量群消息")
+            return True
+        if event_type in ("GROUP_ADD_ROBOT", "GROUP_DEL_ROBOT", "GROUP_JOIN_REQUEST",
+                          "INTERACTION_CREATE", "GROUP_MEMBER_ADD", "GROUP_MEMBER_REMOVE"):
+            brief = {k: v for k, v in payload.items() if k in ("group_id", "user_id", "username", "join_request_id", "button_data")}
+            self._emit_log("INFO", f"[QQ] 官方事件 {event_type}: {brief}")
+            self._spawn_push_ui_event(f"qq_event_{event_type}", event_type, data=payload)
+        return False
 
     # ── UI SSE 事件推送（#2822 通道）──────────────────────────
 
@@ -3092,6 +3148,50 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     # ── runtime：启停与连接方式 ─────────────────────────────────
     #
     # 三个动作合成一个入口，靠 `action` 分流。入口只做归一化，真实逻辑在 _runtime_* 里。
+
+    @plugin_entry(
+        id="open_platform",
+        name=tr("entries.open_platform.name", default="官方机器人：接口能力"),
+        description=(
+            "调用 QQ 官方机器人（开放平台 API v2）的能力。只在连接方式为「官方机器人」时可用，"
+            "OneBot/NapCat 通道会直接报错，不会假装成功。\n"
+            "action 取值：capabilities（看当前连接到底支持什么，先用这个）/ "
+            "bot_state（机器人在本群的角色、收信范围 all|only_mention|mention_and_context、"
+            "是否允许主动推送）/ group_info（群名与人数）/ group_members、group_member"
+            "（成员名册，按名字找人要用它）/ recall（撤回，发出去 2 分钟内有效）/ "
+            "mute、unmute（禁言，需机器人群管理员）/ kick、blacklist（移出与黑名单）/ "
+            "join_requests、approve_join（入群申请与审批）/ typing（单聊「正在输入」提示）/ "
+            "send_voice、send_video、send_file、send_card（富媒体；语音支持 mp3/wav/silk）/ "
+            "menu_get、menu_set（全局自定义菜单）/ panels、panel_create（指令面板）/ "
+            "url_link（加好友分享链接）/ respond_interaction（回调按钮应答，3 秒内）/ "
+            "api（表内任意接口的直通调用，endpoint_id 取自 capabilities）。\n"
+            "官方机器人确实做不到、但经常被误问的三件事：戳一戳；给群聊或单聊消息贴表情表态"
+            "（表情表态只有频道消息有）；读取历史消息（平台不推就不知道，只能用本插件的 backlog）。\n"
+            "按钮与菜单项都用指令型（点击后填进输入框），不需要回调权限；回调事件要平台另外开 "
+            "INTERACTION 订阅位，默认没订，所以入群申请走主动拉取而不是等事件。"
+        ),
+        input_schema={"type": "object", "properties": {
+            "action": {"type": "string", "enum": OPEN_PLATFORM_ACTIONS,
+                       "description": "要做的动作；不确定就先 capabilities"},
+            "params": {"type": "object", "description": "该动作的参数，见 action 说明",
+                       "additionalProperties": True},
+        }, "required": ["action"], "additionalProperties": False},
+    )
+    async def open_platform(self, action: str = "", params: dict | None = None, **kw):
+        call_params = dict(params or {})
+        # 参数也允许平铺在入口顶层：对模型少一层嵌套，出错率明显低。
+        for key in OPEN_PLATFORM_PARAM_KEYS:
+            if key in kw and key not in call_params:
+                call_params[key] = kw[key]
+        try:
+            return Ok(await self.open_platform_service.call(str(action or "").strip(), call_params))
+        except ValueError as exc:
+            return Err(SdkError(f"BAD_INPUT: {exc}"))
+        except RuntimeError as exc:
+            return Err(SdkError(f"NOT_AVAILABLE: {exc}"))
+        except Exception as exc:
+            # 官方接口的错误带 err_code 与 trace_id，原样给出：这两个值是找平台排查的凭据。
+            return Err(SdkError(f"OPEN_PLATFORM_API: {exc}"))
 
     @plugin_entry(
         id="runtime",

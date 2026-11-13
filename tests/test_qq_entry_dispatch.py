@@ -114,7 +114,14 @@ DEEPCHAT_ENTRIES = {
     "dc_forget_user",
 }
 INTER_PLUGIN_ENTRIES = {"account_identity"}
-EXPECTED_ENTRIES = LEGACY_ENTRIES | DEEPCHAT_ENTRIES | INTER_PLUGIN_ENTRIES
+#: 官方机器人（开放平台 API v2）的能力入口。加进这里等于声明它要守入口契约。
+#: 有意**不**藏进 AGENT_HIDDEN：她要能自己查"这个连接到底支持什么"、
+#: 并按动作调用撤回 / 群成员 / 禁言 / 入群审批这些平台能力；
+#: 权限由开放平台按机器人身份判定（不是管理员就返回 11282/40062003），不在这里另设一套。
+QQ_OPEN_PLATFORM_ENTRIES = {"open_platform"}
+EXPECTED_ENTRIES = (
+    LEGACY_ENTRIES | DEEPCHAT_ENTRIES | INTER_PLUGIN_ENTRIES | QQ_OPEN_PLATFORM_ENTRIES
+)
 
 #: 对 agent 隐藏的入口（braid/task_executor.py 的 _is_plugin_entry_agent_hidden 读这个标记）
 AGENT_HIDDEN = {"asset", "deploy", "account_identity"}
@@ -143,7 +150,8 @@ def _plugin_entry_ids() -> set[str]:
 def test_entry_surface_matches_explicit_contract():
     """**收束成果的看门狗。**
 
-    48 → 7 是一次大重构换来的；后续加了 6 个 DeepChat 直参工具和只读身份接口。
+    48 → 7 是一次大重构换来的；后续加了 6 个 DeepChat 直参工具、只读身份接口，
+    以及官方机器人的能力入口 open_platform（v0.15.7）。
     没有这条，后续提交会一点点把入口长回去 —— 而涨回去的入口会重新进入 agent 的
     候选面、重新出现在宿主面板上。确实要加新入口就改这个集合，改的时候你会看到这条提示。
     """

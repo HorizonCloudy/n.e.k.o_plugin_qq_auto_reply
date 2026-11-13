@@ -792,5 +792,15 @@
   "ui.layout.maintenance": "Diagnostics",
   "ui.layout.setup_hint": "Connect → Deploy → Confirm login",
   "ui.layout.legacy": "Open legacy console ↗",
-  "ui.index.status.desc2": "Backend-specific login and connection guidance"
+  "ui.index.status.desc2": "Backend-specific login and connection guidance",
+  "ui.openplat.config.pace_title": "Proactive replies & sentence splitting",
+  "ui.openplat.config.pace_hint": "The trigger is something she promised to follow up on in private chat. Admin private chat only; groups never use this path. The fields below are the brakes.",
+  "ui.openplat.config.max_per_day": "Per-day cap",
+  "ui.openplat.config.min_gap": "Minimum gap (hours)",
+  "ui.openplat.config.quiet_hours": "Quiet hours (same value = never quiet)",
+  "ui.openplat.config.wakeup": "Send as a re-engagement message (is_wakeup) when there is nothing to reply to",
+  "ui.openplat.config.wakeup_hint": "The official platform allows a passive reply within 5 minutes (group) / 60 minutes (private). With this on, an unanchored private send uses the platform re-engagement quota instead (one per period, up to 4 periods in 30 days). That quota is separate and needs platform permission; off by default.",
+  "ui.openplat.config.memory_ext_title": "External memory backends",
+  "ui.openplat.config.memory_ext_hint": "Long-term memory lives in the host. For a database or the image memory library, add these two plugins on the Plugins page and set their tiers so she can call them: plugin_database (db_execute / db_fetch_all, structured data and stats) and neko_image_embed (img_ingest to store, img_search to retrieve; QQ images can be passed straight as source=url). Note img_send of neko_image_embed only pushes into the desktop chat, never into QQ; to send an image into QQ use the sticker library.",
+  "ui.napcat.prompts.layer.capabilities_open_platform.name": "Capabilities (official bot)"
 }
