@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 from plugin.plugins.qq_auto_reply.qq_open_platform_service import ACTIONS, QQOpenPlatformService
@@ -76,6 +77,12 @@ class FakeConn:
     async def list_group_member_blacklist(self, group_id, cursor=""):
         self._rec("blacklist_list", group_id, cursor)
         return {"list": []}
+
+    async def get_group_list(self):
+        return [
+            {"group_id": "C26BCC94", "group_name": "", "messages_seen": 7, "last_seen_at": 1.0},
+            {"group_id": "AAAA1111", "group_name": "", "messages_seen": 2, "last_seen_at": 1.0},
+        ]
 
     async def set_typing(self, user_id, *, seconds=3):
         self._rec("typing", user_id, seconds)
@@ -321,3 +328,24 @@ def test_panel_target_action_passes_openid_lists_through():
     name, args, _kwargs = plugin.qq_client.calls[-1]
     assert name == "panel_target"
     assert args == ("p1", "del", ["U1"], [])
+
+
+def test_groups_seen_lists_groups_that_are_not_in_the_trusted_roster():
+    """"不回"最常见的原因就是名单 id 对不上；入口必须直接把这个事实摊开。"""
+    from plugin.plugins.qq_auto_reply.qq_open_platform_service import QQOpenPlatformService
+
+    conn = FakeConn()
+    plugin = FakePlugin(conn)
+    plugin.group_permission_mgr = SimpleNamespace(
+        list_groups=lambda: [{"group_id": "C26BCC94", "level": "trusted"}]
+    )
+    out = run(QQOpenPlatformService(plugin).call("groups_seen", {}))
+    assert out["count"] == 2
+    assert out["unclaimed"] == ["AAAA1111"]
+
+
+def test_groups_seen_without_a_group_manager_is_not_an_error():
+    from plugin.plugins.qq_auto_reply.qq_open_platform_service import QQOpenPlatformService
+
+    out = run(QQOpenPlatformService(FakePlugin(FakeConn())).call("groups_seen", {}))
+    assert out["unclaimed"] == [] and out["count"] == 2

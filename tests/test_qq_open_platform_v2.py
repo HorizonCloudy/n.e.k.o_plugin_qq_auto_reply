@@ -559,3 +559,37 @@ def test_wakeup_is_off_unless_the_setting_says_otherwise():
     conn = Bot()
     asyncio.run(conn._v2_send("users", "U1", content="普通主动"))
     assert "is_wakeup" not in _sent_body(conn)
+
+
+def test_bot_member_openid_is_learned_from_a_single_mention_at_event():
+    """bot_state 是白名单能力；学不到自己的 member_openid 就会把"@ 她"判成没 @ 她。"""
+    conn = Bot()
+    at = conn._v2_normalize_message("GROUP_AT_MESSAGE_CREATE", _group_event_payload(
+        content="<@BOTMEMBER> 在吗", mentions=[{"member_openid": "BOTMEMBER"}]), "e")
+    assert at["is_at_bot"] is True
+    assert conn._v2_bot_member_openid == "BOTMEMBER"
+
+    # 之后同一条群消息从**全量**事件推来，也能认出是在 @ 她
+    full = conn._v2_normalize_message("GROUP_MESSAGE_CREATE", _group_event_payload(
+        content="<@BOTMEMBER> 还在吗", mentions=[{"member_openid": "BOTMEMBER"}]), "e2")
+    assert full["is_at_bot"] is True
+    assert full["mentions_other_user"] is False
+
+
+def _group_event_payload(**over):
+    data = {
+        "id": "m-9", "content": "hi",
+        "author": {"member_openid": "MEMBER_A", "username": "小明"},
+        "group_openid": "G1", "message_type": 0,
+        "message_scene": {"source": "default", "ext": ["msg_idx=REFIDX_M9"]},
+    }
+    data.update(over)
+    return data
+
+
+def test_groups_seen_reports_counts_and_untrusted_groups():
+    conn = Bot()
+    conn._v2_seen_group("G1")
+    conn._v2_seen_group("G1")
+    groups = asyncio.run(conn.get_group_list())
+    assert groups[0]["group_id"] == "G1" and groups[0]["messages_seen"] == 2

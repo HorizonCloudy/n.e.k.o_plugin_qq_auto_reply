@@ -383,3 +383,28 @@ def test_attention_disabled_blanks_plain_messages():
 
     assert decision.action == "ignore"
     assert decision.reason == "attention_disabled"
+
+
+def test_untrusted_group_on_the_official_channel_is_explained_once():
+    """官方机器人上"不回"的头号原因是名单 id 命名空间不同；必须说清并给出修法。"""
+    from plugin.plugins.qq_auto_reply.attention_gate_service import QQAttentionGateService
+
+    logged: list[str] = []
+    conn = SimpleNamespace(CHANNEL="open", mode="open_platform")
+    gate = QQAttentionGateService(SimpleNamespace(
+        qq_client=conn, logger=None,
+        _emit_log=lambda level, msg: logged.append(msg),
+    ))
+    gate._note_untrusted_group_once("C26BCC94C516E6E6DDC3399D75FC8676")
+    gate._note_untrusted_group_once("C26BCC94C516E6E6DDC3399D75FC8676")
+    assert len(logged) == 1, "同一群提醒了两次"
+    assert "group_openid" in logged[0] and "信任群" in logged[0]
+
+    # OneBot 通道不该被这条官方通道专属的提示刷屏
+    logged.clear()
+    gate2 = QQAttentionGateService(SimpleNamespace(
+        qq_client=SimpleNamespace(CHANNEL="onebot", mode="napcat"), logger=None,
+        _emit_log=lambda level, msg: logged.append(msg),
+    ))
+    gate2._note_untrusted_group_once("1048307485")
+    assert logged == []

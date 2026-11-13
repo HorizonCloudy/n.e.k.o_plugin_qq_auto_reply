@@ -1118,14 +1118,20 @@ class QQOpenPlatformV2Mixin:
         return out
 
     async def get_group_list(self) -> list[dict[str, Any]]:
-        """官方平台**没有**"我所在的群列表"接口；返回连接期间实际见过的群。
+        """返回连接期间实际收到过消息的群（官方平台没有"我所在的群列表"接口）。
 
-        这是有意的降级：插件的群相关页面拿这个列表做兜底，空列表比编一个假群好。
+        空列表比编一个假群好；`group_name` 要靠 `GET /v2/groups/{openid}/info`，
+        那个接口是白名单能力（11253），所以不在这儿顺手调，留给按群的动作。
         """
-        return [
-            {"group_id": gid, "group_name": ""}
-            for gid in sorted(getattr(self, "_v2_seen_groups", {}) or {})
-        ]
+        seen = getattr(self, "_v2_seen_groups", {}) or {}
+        out = []
+        for gid in sorted(seen):
+            stamp, count = seen[gid] if isinstance(seen[gid], tuple) else (seen[gid], 0)
+            out.append({
+                "group_id": gid, "group_name": "",
+                "messages_seen": int(count), "last_seen_at": float(stamp),
+            })
+        return out
 
     async def get_login_info(self) -> dict[str, Any]:
         """机器人身份。``GET /users/@me`` 能给正式名称，握手里的 READY 只给 app 级 id。"""
@@ -1729,10 +1735,17 @@ class QQOpenPlatformV2Mixin:
         return out
 
     def _v2_seen_group(self, group_id: str) -> None:
+        """记下"这个群我们真的收到过消息"，并计数。
+
+        这是官方机器人上唯一可靠的群名单来源：平台不给"我所在的群列表"接口，
+        而信任群名单里的 QQ 群号在这条通道上永远匹配不上（id 命名空间不同）。
+        """
         seen = getattr(self, "_v2_seen_groups", None)
         if seen is None:
             seen = self._v2_seen_groups = {}
-        seen[str(group_id)] = time.time()
+        gid = str(group_id)
+        stamp, count = seen.get(gid) or (0.0, 0)
+        seen[gid] = (time.time(), count + 1)
 
     def _v2_remember_group(self, msg: dict[str, Any]) -> None:
         gid = str(msg.get("group_id") or "")
@@ -1801,6 +1814,12 @@ class QQOpenPlatformV2Mixin:
                 msg["is_at_bot"] = bool(self_ids & set(mentioned)) or any(
                     f"<@{sid}>" in content_raw for sid in self_ids if sid
                 )
+            elif len(mentioned) == 1 and event_type == "GROUP_AT_MESSAGE_CREATE":
+                # 机器人自己的**群内** member_openid 只有两个来源：白名单接口
+                # `bot_state`（很多机器人没这权限），或者从"只 @ 了一个人"的 @ 事件里学。
+                # 学不到就只能把全量事件里的 @ 她判成没 @ 她，于是接话判定把该醒的群
+                # 判成睡着 —— 现象是"群里 @ 了她也不回"。
+                self._v2_bot_member_openid = mentioned[0]
             msg["mentions_other_user"] = any(who not in self_ids for who in mentioned)
         # 平台自带的语音识别：asr_refer_text 是白送的，不用它就只能等一个空的
         # "[语音]" 标记。shortcut: 没有 asr 结果时不回落 STT（要改 enrichment 的

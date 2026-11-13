@@ -61,6 +61,23 @@ class QQOpenPlatformService:
             raise ValueError(f"缺少参数: {', '.join(missing)}")
         return tuple(str(params[k]).strip() for k in keys)
 
+    def untrusted_seen(self, groups: list[dict[str, Any]], conn: Any) -> list[str]:
+        """见过的群里，哪些还没进「信任群」名单（那些群她只按概率转达，几乎不回）。
+
+        名单本身在权限管理器里，这里只做只读比对：不自动加信任 —— 那是主人的授权决定。
+        """
+        mgr = getattr(self.plugin, "group_permission_mgr", None)
+        if mgr is None or not hasattr(mgr, "list_groups"):
+            return []
+        listed = {
+            str(row.get("group_id") or "").strip()
+            for row in (mgr.list_groups() or []) if isinstance(row, dict)
+        }
+        return [
+            str(g["group_id"]) for g in groups
+            if str(g.get("group_id") or "").strip() not in listed
+        ]
+
     async def describe(self) -> dict[str, Any]:
         """当前连接的能力表 + 可调动作。给 UI 和"她自己能查"用。"""
         conn = self._connection()
@@ -272,6 +289,12 @@ async def _panel_target(_s: QQOpenPlatformService, conn: Any, p: dict) -> dict:
     )
 
 
+async def _groups_seen(_s: QQOpenPlatformService, conn: Any, p: dict) -> dict:
+    """她真的收到过消息的群。官方机器人的群 id 是 group_openid，不是 QQ 群号。"""
+    groups = await conn.get_group_list()
+    return {"groups": groups, "count": len(groups), "unclaimed": _s.untrusted_seen(groups, conn)}
+
+
 async def _respond_interaction(_s: QQOpenPlatformService, conn: Any, p: dict) -> dict:
     interaction_id = str(p.get("interaction_id") or "").strip()
     if not interaction_id:
@@ -315,6 +338,7 @@ ACTIONS: dict[str, Callable[..., Any]] = {
     "join_requests": _join_requests,
     "approve_join": _approve_join,
     "blacklist": _blacklist,
+    "groups_seen": _groups_seen,
     "typing": _typing,
     "send_voice": _send_voice,
     "send_video": _send_video,

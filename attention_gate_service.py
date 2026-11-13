@@ -464,6 +464,32 @@ class QQAttentionGateService:
         except Exception:
             return True
 
+    def _note_untrusted_group_once(self, group_id: str) -> None:
+        """每个群只提醒一次：这条通道上"不回"最常见的原因就是名单 id 对不上。
+
+        官方机器人的群 id 是十六进制 `group_openid`；从 NapCat 迁过来的人名单里
+        留的是 QQ 群号，两者永远匹配不上，于是那个群被当成普通群、只按概率转达。
+        """
+        told = getattr(self, "_untrusted_group_warned", None)
+        if told is None:
+            told = self._untrusted_group_warned = set()
+        if group_id in told:
+            return
+        told.add(group_id)
+        from .qq_open_platform_v2 import is_official_bot
+
+        if not is_official_bot(getattr(self.plugin, "qq_client", None)):
+            return
+        message = (
+            f"[Gate] 群{group_id} 不在信任群名单里，所以只按概率转达、多数不会回。"
+            "官方机器人的群 id 是这串十六进制 group_openid（不是 QQ 群号）："
+            "把它加进「信任群」名单即可（设置页「我看过的群」能列出全部见过的群）"
+        )
+        self.plugin._emit_log("INFO", message)
+        logger = getattr(self.plugin, "logger", None)
+        if logger:
+            logger.info(message)
+
     def _pending_threshold(self) -> int:
         """积压压力的参照条数。跟着缓冲上限走：缓冲越容易合并，参照越高。"""
         value = (self.plugin._qq_settings or {}).get("buffer_max_count")
@@ -687,6 +713,7 @@ class QQAttentionGateService:
             self.plugin._emit_log(
                 "INFO", f"[Gate] 群{normalized_group_id} 不参与注意力竞争，放行给下游（回/转达由权限层决定）",
             )
+            self._note_untrusted_group_once(normalized_group_id)
             return GateDecision("reply", reason="normal_group_passthrough")
 
         # 3.6 可选的硬门控：**第一句就在跟别人说话** → 这一轮不唤醒。

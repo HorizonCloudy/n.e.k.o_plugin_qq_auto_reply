@@ -132,3 +132,29 @@ def test_frozen_defaults_keep_their_values():
     defaults = settings_schema.defaults()
     for key, value in expected.items():
         assert defaults[key] == value, f"{key} 的默认值被改动：{defaults[key]} != {value}"
+
+def _panel_ids_of(name: str) -> set[str]:
+    html = (PLUGIN_DIR / "static" / name).read_text(encoding="utf-8")
+    return set(re.findall(r"""["'](cfg-att-[a-z0-9-]+)["']""", html))
+
+
+def test_official_panel_exposes_the_same_attention_knobs():
+    """官方机器人面板的注意力控件必须与 NapCat 面板**同一套**。
+
+    两套通道共用同一批 `attention_*` / `dormancy_*` 设置键；只画在一个面板上，
+    另一个通道的用户就只能看着"她不回复"而没有旋钮（2026-11-13 使用者报的就是这个）。
+    同一套契约：多一个是有人把内部量搬回界面，少一个是面板漂移。
+    """
+    assert _panel_ids_of("open_platform.html") == PANEL_CONTROLS, (
+        f"多了 {sorted(_panel_ids_of('open_platform.html') - PANEL_CONTROLS)}，"
+        f"少了 {sorted(PANEL_CONTROLS - _panel_ids_of('open_platform.html'))}"
+    )
+
+
+def test_official_panel_can_turn_dormancy_off():
+    """休眠是"群里聊热了也不回"的直接原因，官方面板必须能看见并关掉它。"""
+    html = (PLUGIN_DIR / "static" / "open_platform.html").read_text(encoding="utf-8")
+    for element_id in ("cfg-dormancy-on", "cfg-dormancy-idle", "cfg-dormancy-wake-score"):
+        assert f'id="{element_id}"' in html, element_id
+        assert f"getElementById('{element_id}')" in html, f"{element_id} 没回填或没提交"
+
